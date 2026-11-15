@@ -23,3 +23,8 @@ ferrite-data/
 *.db
 *.log
 *.zip
+
+# Agent metadata and skills
+.agents/
+skills-lock.json
+
