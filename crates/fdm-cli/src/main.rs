@@ -953,24 +953,20 @@ async fn run_daemon(data_dir: &Path, remote_control: bool, remote_host: &str) ->
 
 async fn wait_until_terminal(eng: &Arc<DownloadEngine>, id: i64) {
     let mut rx = eng.subscribe();
-    loop {
-        if let Some(rec) = eng.get_download(id) {
-            if matches!(
+    while let Some(rec) = eng.get_download(id) {
+        if matches!(
+            rec.state,
+            DownloadState::Completed
+                | DownloadState::Error
+                | DownloadState::Stopped
+                | DownloadState::Paused
+        ) {
+            println!(
+                "Download #{} finished with state: {:?} ({})",
+                rec.id,
                 rec.state,
-                DownloadState::Completed
-                    | DownloadState::Error
-                    | DownloadState::Stopped
-                    | DownloadState::Paused
-            ) {
-                println!(
-                    "Download #{} finished with state: {:?} ({})",
-                    rec.id,
-                    rec.state,
-                    rec.output_path().display()
-                );
-                break;
-            }
-        } else {
+                rec.output_path().display()
+            );
             break;
         }
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
