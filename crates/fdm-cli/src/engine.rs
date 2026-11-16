@@ -118,6 +118,42 @@ pub struct DownloadEngine {
 
 pub type EngineEventAlias = fdm_core::EngineEvent;
 
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn move_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src == dst || !src.exists() {
+        return Ok(());
+    }
+    if let Err(_) = std::fs::rename(src, dst) {
+        if src.is_dir() {
+            copy_dir_all(src, dst)?;
+            std::fs::remove_dir_all(src)?;
+        } else if src.is_file() {
+            if let Some(p) = dst.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::copy(src, dst)?;
+            std::fs::remove_file(src)?;
+        }
+    }
+    Ok(())
+}
+
 impl DownloadEngine {
     pub fn open(data_dir: impl Into<PathBuf>, ephemeral_bt: bool) -> Result<Arc<Self>> {
         let data_dir = data_dir.into();
@@ -304,7 +340,9 @@ impl DownloadEngine {
     }
 
     pub fn create_tag(&self, name: &str, color_hex: &str) -> Result<Tag> {
-        self.db.create_or_update_tag(name, color_hex)
+        let tag = self.db.create_or_update_tag(name, color_hex)?;
+        let _ = self.events_tx.send(EngineEventAlias::SettingsUpdated);
+        Ok(tag)
     }
 
     pub fn edit_tag(
@@ -335,6 +373,7 @@ impl DownloadEngine {
                 let _ = self.db.upsert_download(rec);
             }
         }
+        let _ = self.events_tx.send(EngineEventAlias::SettingsUpdated);
         Ok(())
     }
 
@@ -1260,6 +1299,8 @@ impl DownloadEngine {
                         "existing_file_reaction": ExistingFileReaction::Overwrite
                     });
                     rec.state = DownloadState::Queued;
+                    rec.last_error = None;
+                    rec.abort_reason = DownloadAbortReason::None;
                     true
                 }
                 FileExistsAction::Rename => {
@@ -1275,6 +1316,8 @@ impl DownloadEngine {
                         "existing_file_reaction": ExistingFileReaction::Rename
                     });
                     rec.state = DownloadState::Queued;
+                    rec.last_error = None;
+                    rec.abort_reason = DownloadAbortReason::None;
                     true
                 }
                 FileExistsAction::Abort | FileExistsAction::Skip => {
@@ -1300,12 +1343,14 @@ impl DownloadEngine {
         algo: HashAlgorithm,
         expected: Option<&str>,
     ) -> Result<(String, Option<bool>)> {
-        let mut list = self.downloads.write().unwrap();
-        let rec = list
-            .iter_mut()
-            .find(|d| d.id == id)
-            .context("Download not found")?;
-        let path = rec.output_path();
+        let path = {
+            let list = self.downloads.read().unwrap();
+            let rec = list
+                .iter()
+                .find(|d| d.id == id)
+                .context("Download not found")?;
+            rec.output_path()
+        };
         if !path.is_file() {
             bail!("File does not exist at {}", path.display());
         }
@@ -1314,45 +1359,91 @@ impl DownloadEngine {
             let exp_t = exp.trim();
             !exp_t.is_empty() && actual.eq_ignore_ascii_case(exp_t)
         });
-        if let Some(first) = rec.files.first_mut() {
-            first.computed_hash = Some((algo, actual.clone()));
-            if let Some(exp) = expected {
-                if !exp.trim().is_empty() {
-                    first.expected_hash = Some((algo, exp.trim().to_string()));
+
+        {
+            let mut list = self.downloads.write().unwrap();
+            let rec = list
+                .iter_mut()
+                .find(|d| d.id == id)
+                .context("Download not found")?;
+            if rec.files.is_empty() {
+                rec.files.push(DownloadFileEntry {
+                    index: 0,
+                    relative_path: rec.file_name.clone(),
+                    size_bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                    downloaded_bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                    priority: DownloadPriority::Normal,
+                    media_ready_to_play: false,
+                    expected_hash: None,
+                    computed_hash: None,
+                });
+            }
+            if let Some(first) = rec.files.first_mut() {
+                first.computed_hash = Some((algo, actual.clone()));
+                if let Some(exp) = expected {
+                    if !exp.trim().is_empty() {
+                        first.expected_hash = Some((algo, exp.trim().to_string()));
+                    }
                 }
             }
+            rec.updated_at = Utc::now();
+            self.db.upsert_download(rec)?;
         }
-        rec.updated_at = Utc::now();
-        self.db.upsert_download(rec)?;
         let _ = self.events_tx.send(EngineEventAlias::Updated { id });
         Ok((actual, matches))
     }
 
+
     pub async fn move_download_files(&self, id: DownloadId, dest_dir: &Path) -> Result<PathBuf> {
-        let (src, file_name, is_active) = {
+        let (src, file_name, partial_suffix, is_active) = {
             let list = self.downloads.read().unwrap();
             let rec = list
                 .iter()
                 .find(|d| d.id == id)
                 .context("Download not found")?;
-            (rec.output_path(), rec.file_name.clone(), rec.state.is_active())
+            (
+                rec.output_path(),
+                rec.file_name.clone(),
+                rec.partial_suffix.clone(),
+                rec.state.is_active(),
+            )
         };
         if is_active {
             bail!("Pause download before moving files");
         }
         std::fs::create_dir_all(dest_dir)?;
         let dst = dest_dir.join(&file_name);
+
+        let mut part_moves = Vec::new();
+        if !partial_suffix.is_empty() {
+            let p_src = src.parent().unwrap_or(dest_dir).join(format!("{}{}", file_name, partial_suffix));
+            let p_dst = dest_dir.join(format!("{}{}", file_name, partial_suffix));
+            part_moves.push((p_src, p_dst));
+        }
+        let dot_part_src = src.parent().unwrap_or(dest_dir).join(format!("{}.part", file_name));
+        let dot_part_dst = dest_dir.join(format!("{}.part", file_name));
+        if dot_part_src != src {
+            part_moves.push((dot_part_src, dot_part_dst));
+        }
+
         if src.exists() && src != dst {
-            if let Err(_) = std::fs::rename(&src, &dst) {
-                std::fs::copy(&src, &dst)?;
-                let _ = std::fs::remove_file(&src);
+            move_path_recursive(&src, &dst)?;
+        }
+        for (from, to) in part_moves {
+            if from.exists() && from != to && from != src {
+                move_path_recursive(&from, &to)?;
             }
         }
+
+        let is_present = dst.exists()
+            || (!partial_suffix.is_empty() && dest_dir.join(format!("{}{}", file_name, partial_suffix)).exists())
+            || dest_dir.join(format!("{}.part", file_name)).exists();
+
         {
             let mut list = self.downloads.write().unwrap();
             if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
                 rec.target_dir = dest_dir.to_path_buf();
-                rec.flags.is_missing_files = !dst.exists();
+                rec.flags.is_missing_files = !is_present;
                 rec.updated_at = Utc::now();
                 self.db.upsert_download(rec)?;
             }
@@ -1642,26 +1733,56 @@ impl DownloadEngine {
 
     pub async fn rename_download_file(&self, id: DownloadId, new_name: &str) -> Result<PathBuf> {
         let cleaned = sanitize_filename(new_name);
-        let (old_out, target_dir, is_active) = {
+        let (old_out, target_dir, file_name, partial_suffix, is_active) = {
             let list = self.downloads.read().unwrap();
             let rec = list
                 .iter()
                 .find(|d| d.id == id)
                 .context("Download not found")?;
-            (rec.output_path(), rec.target_dir.clone(), rec.state.is_active())
+            (
+                rec.output_path(),
+                rec.target_dir.clone(),
+                rec.file_name.clone(),
+                rec.partial_suffix.clone(),
+                rec.state.is_active(),
+            )
         };
         if is_active {
             bail!("Pause download before renaming");
         }
         let new_out = target_dir.join(&cleaned);
-        if old_out.exists() && old_out != new_out {
-            std::fs::rename(&old_out, &new_out)?;
+
+        let mut part_renames = Vec::new();
+        if !partial_suffix.is_empty() {
+            let p_old = target_dir.join(format!("{}{}", file_name, partial_suffix));
+            let p_new = target_dir.join(format!("{}{}", cleaned, partial_suffix));
+            part_renames.push((p_old, p_new));
         }
+        let dot_part_old = target_dir.join(format!("{}.part", file_name));
+        let dot_part_new = target_dir.join(format!("{}.part", cleaned));
+        if dot_part_old != old_out {
+            part_renames.push((dot_part_old, dot_part_new));
+        }
+
+        if old_out.exists() && old_out != new_out {
+            move_path_recursive(&old_out, &new_out)?;
+        }
+        for (from, to) in part_renames {
+            if from.exists() && from != to && from != old_out {
+                move_path_recursive(&from, &to)?;
+            }
+        }
+
+        let is_present = new_out.exists()
+            || (!partial_suffix.is_empty() && target_dir.join(format!("{}{}", cleaned, partial_suffix)).exists())
+            || target_dir.join(format!("{}.part", cleaned)).exists();
+
         {
             let mut list = self.downloads.write().unwrap();
             if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
                 rec.file_name = cleaned.clone();
                 rec.title = cleaned;
+                rec.flags.is_missing_files = !is_present;
                 rec.updated_at = Utc::now();
                 self.db.upsert_download(rec)?;
             }
@@ -1811,8 +1932,20 @@ impl DownloadEngine {
     }
 
     pub fn archive_diagnostics_bundle(&self, dest_zip: &Path, logs_only: bool) -> Result<PathBuf> {
-        if let Some(parent) = dest_zip.parent() {
-            std::fs::create_dir_all(parent)?;
+        let abs_dest = if dest_zip.is_absolute() {
+            dest_zip.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(dest_zip)
+        };
+        if let Some(parent) = abs_dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        if abs_dest.exists() {
+            let _ = std::fs::remove_file(&abs_dest);
         }
         let stage = self.data_dir.join(format!(".diag-stage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&stage);
@@ -1828,20 +1961,52 @@ impl DownloadEngine {
         }
         if !logs_only {
             let _ = self.db.backup_to(&stage.join("ferrite.sqlite"));
-            let cfg_json = serde_json::to_string_pretty(&self.get_config())?;
+            let mut redacted_cfg = self.get_config();
+            if !redacted_cfg.app.remote_access_password.is_empty() {
+                redacted_cfg.app.remote_access_password = "***REDACTED***".to_string();
+            }
+            if !redacted_cfg.app.proxy.http.password.is_empty() {
+                redacted_cfg.app.proxy.http.password = "***REDACTED***".to_string();
+            }
+            if !redacted_cfg.app.proxy.https.password.is_empty() {
+                redacted_cfg.app.proxy.https.password = "***REDACTED***".to_string();
+            }
+            if !redacted_cfg.app.proxy.ftp.password.is_empty() {
+                redacted_cfg.app.proxy.ftp.password = "***REDACTED***".to_string();
+            }
+            if !redacted_cfg.app.proxy.socks5.password.is_empty() {
+                redacted_cfg.app.proxy.socks5.password = "***REDACTED***".to_string();
+            }
+            let cfg_json = serde_json::to_string_pretty(&redacted_cfg)?;
             let _ = std::fs::write(stage.join("config.redacted.json"), cfg_json);
         }
         let status = std::process::Command::new("zip")
             .args(["-q", "-r"])
-            .arg(dest_zip)
+            .arg(&abs_dest)
             .arg(".")
             .current_dir(&stage)
             .output();
         let _ = std::fs::remove_dir_all(&stage);
-        if matches!(status, Ok(ref o) if o.status.success()) {
-            Ok(dest_zip.to_path_buf())
-        } else {
-            bail!("Failed creating diagnostic archive at {}", dest_zip.display())
+        match status {
+            Ok(ref o) if o.status.success() && abs_dest.is_file() => Ok(abs_dest),
+            Ok(ref o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                bail!(
+                    "Failed creating diagnostic archive at {}: {}",
+                    dest_zip.display(),
+                    if err.trim().is_empty() {
+                        "zip exited with failure"
+                    } else {
+                        err.trim()
+                    }
+                )
+            }
+            Err(e) => {
+                bail!(
+                    "Failed creating diagnostic archive at {}: zip command unavailable ({e})",
+                    dest_zip.display()
+                )
+            }
         }
     }
 
@@ -2010,7 +2175,7 @@ impl DownloadEngine {
                 + (cfg.core.max_additional_query_info_downloads as usize).min(running_probe + 1)
                 + slow_bonus;
             let total_running = running_main + running_small + running_probe;
-            if total_running >= max_total && running_main >= base_max {
+            if total_running >= max_total {
                 Vec::new()
             } else {
                 let mut candidates: Vec<(usize, DownloadPriority, i64)> = list
@@ -2032,7 +2197,7 @@ impl DownloadEngine {
                 }
                 candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
 
-                let slots = max_total.saturating_sub(total_running).max(1);
+                let slots = max_total.saturating_sub(total_running);
                 let mut picked = Vec::new();
                 for (idx, _, _) in candidates.into_iter().take(slots) {
                     list[idx].state = DownloadState::Starting;
@@ -2258,6 +2423,7 @@ impl DownloadEngine {
                     // Download video & audio temporarily and mux via FFmpeg
                     let orig_dir = record.target_dir.clone();
                     let orig_name = record.file_name.clone();
+                    let orig_title = record.title.clone();
                     let tmp_dir = orig_dir.join(format!(".{}.media_tmp", record.uuid));
                     let _ = std::fs::create_dir_all(&tmp_dir);
 
@@ -2277,7 +2443,11 @@ impl DownloadEngine {
                     )
                     .await;
                     if v_done.state != DownloadState::Completed {
-                        return v_done;
+                        let mut res = v_done;
+                        res.target_dir = orig_dir;
+                        res.file_name = orig_name;
+                        res.title = orig_title;
+                        return res;
                     }
 
                     let mut a_rec = record.clone();
@@ -2296,7 +2466,15 @@ impl DownloadEngine {
                     )
                     .await;
                     if a_done.state != DownloadState::Completed {
-                        return a_done;
+                        let mut res = a_done;
+                        res.target_dir = orig_dir;
+                        res.file_name = orig_name;
+                        res.title = orig_title;
+                        res.downloaded_bytes = v_done.downloaded_bytes.saturating_add(res.downloaded_bytes);
+                        if let (Some(vt), Some(at)) = (v_done.total_bytes, res.total_bytes) {
+                            res.total_bytes = Some(vt.saturating_add(at));
+                        }
+                        return res;
                     }
 
                     let final_out = orig_dir.join(&orig_name);
@@ -2313,6 +2491,7 @@ impl DownloadEngine {
                         }
                         record.target_dir = orig_dir;
                         record.file_name = orig_name;
+                        record.title = orig_title;
                         record.state = DownloadState::Completed;
                         record.downloaded_bytes =
                             std::fs::metadata(&final_out).map(|m| m.len()).unwrap_or(0);
@@ -2327,7 +2506,13 @@ impl DownloadEngine {
                     if cfg.core.set_mark_of_the_web {
                         let _ = set_mark_of_the_web(&final_out, &record.url, "FerriteDM");
                     }
+                    record.target_dir = orig_dir;
+                    record.file_name = orig_name;
+                    record.title = orig_title;
                     record.state = DownloadState::Completed;
+                    record.downloaded_bytes =
+                        std::fs::metadata(&final_out).map(|m| m.len()).unwrap_or(0);
+                    record.total_bytes = Some(record.downloaded_bytes);
                     record.completed_at = Some(Utc::now());
                     return record;
                 }
@@ -2502,20 +2687,22 @@ impl DownloadEngine {
 
                         // Periodic checks every 5 seconds: missing files & expired auto-remove
                         if tick_count % 5 == 0 && d.state == DownloadState::Completed {
-                            let missing = !d.output_path().exists();
-                            if d.flags.is_missing_files != missing {
-                                d.flags.is_missing_files = missing;
-                                let _ = eng.db.upsert_download(d);
-                                let _ = eng.events_tx.send(EngineEventAlias::Updated { id: d.id });
-                            }
-                            if missing && cfg.core.auto_remove_missing_files {
-                                to_remove_expired.push(d.id);
-                            }
-                            if cfg.core.auto_remove_finished {
-                                if let Some(done_at) = d.completed_at {
-                                    let age = now_utc.signed_duration_since(done_at).num_days();
-                                    if age >= cfg.core.auto_remove_finished_keep_days as i64 {
-                                        to_remove_expired.push(d.id);
+                            if d.download_type != DownloadType::Batch {
+                                let missing = !d.output_path().exists();
+                                if d.flags.is_missing_files != missing {
+                                    d.flags.is_missing_files = missing;
+                                    let _ = eng.db.upsert_download(d);
+                                    let _ = eng.events_tx.send(EngineEventAlias::Updated { id: d.id });
+                                }
+                                if missing && cfg.core.auto_remove_missing_files {
+                                    to_remove_expired.push(d.id);
+                                }
+                                if cfg.core.auto_remove_finished {
+                                    if let Some(done_at) = d.completed_at {
+                                        let age = now_utc.signed_duration_since(done_at).num_days();
+                                        if age >= cfg.core.auto_remove_finished_keep_days as i64 {
+                                            to_remove_expired.push(d.id);
+                                        }
                                     }
                                 }
                             }
@@ -3047,6 +3234,366 @@ mod tests {
         assert!(upd.update_available);
         assert_eq!(upd.latest_version.as_deref(), Some("99.0.0"));
         assert!(upd.staged_path.as_ref().is_some_and(|p| p.is_file()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tags_emit_settings_updated_event() {
+        let dir = std::env::temp_dir().join(format!("ferrite_tag_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+        let mut rx = eng.subscribe();
+
+        let tag = eng.create_tag("Work", "#00ff00").unwrap();
+        assert_eq!(tag.name, "Work");
+        let ev1 = rx.recv().await.unwrap();
+        assert!(matches!(ev1, EngineEventAlias::SettingsUpdated));
+
+        eng.delete_tag(tag.id).unwrap();
+        let ev2 = rx.recv().await.unwrap();
+        assert!(matches!(ev2, EngineEventAlias::SettingsUpdated));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_conflict_clears_last_error_and_abort_reason() {
+        let dir = std::env::temp_dir().join(format!("ferrite_conflict_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        let mut req = NewDownloadRequest::from_url("https://example.com/file.bin");
+        req.start_paused = true;
+        let rec = eng.add_download(req).await.unwrap();
+
+        // Simulate conflict state
+        {
+            let mut list = eng.downloads.write().unwrap();
+            let d = list.iter_mut().find(|d| d.id == rec.id).unwrap();
+            d.state = DownloadState::Paused;
+            d.last_error = Some("File already exists: /tmp/file.bin".into());
+            d.abort_reason = DownloadAbortReason::AlreadyExists;
+        }
+
+        // Test Overwrite
+        eng.resolve_conflict(rec.id, FileExistsAction::Overwrite).await.unwrap();
+        let d = eng.get_download(rec.id).unwrap();
+        assert!(matches!(d.state, DownloadState::Queued | DownloadState::Starting));
+        assert_eq!(d.last_error, None);
+        assert_eq!(d.abort_reason, DownloadAbortReason::None);
+
+        // Put back in conflict state
+        {
+            let mut list = eng.downloads.write().unwrap();
+            let d = list.iter_mut().find(|d| d.id == rec.id).unwrap();
+            d.state = DownloadState::Paused;
+            d.last_error = Some("File already exists".into());
+            d.abort_reason = DownloadAbortReason::AlreadyExists;
+        }
+
+        // Test Rename
+        eng.resolve_conflict(rec.id, FileExistsAction::Rename).await.unwrap();
+        let d = eng.get_download(rec.id).unwrap();
+        assert!(matches!(d.state, DownloadState::Queued | DownloadState::Starting));
+        assert_eq!(d.last_error, None);
+        assert_eq!(d.abort_reason, DownloadAbortReason::None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn verify_download_hash_computes_outside_write_lock() {
+        let dir = std::env::temp_dir().join(format!("ferrite_hash_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        let dl_dir = dir.join("downloads");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        let file_path = dl_dir.join("sample.txt");
+        std::fs::write(&file_path, b"hello ferrite hash verification").unwrap();
+
+        let mut req = NewDownloadRequest::from_url("https://example.com/sample.txt");
+        req.target_dir = Some(dl_dir.clone());
+        req.start_paused = true;
+        let rec = eng.add_download(req).await.unwrap();
+
+        let expected_sha256 = compute_file_hash(&file_path, HashAlgorithm::Sha256).unwrap();
+        let (actual, matches) = eng
+            .verify_download_hash(rec.id, HashAlgorithm::Sha256, Some(&expected_sha256))
+            .unwrap();
+        assert_eq!(actual, expected_sha256);
+        assert_eq!(matches, Some(true));
+
+        let updated = eng.get_download(rec.id).unwrap();
+        assert_eq!(
+            updated.files[0].computed_hash,
+            Some((HashAlgorithm::Sha256, expected_sha256.clone()))
+        );
+        assert_eq!(
+            updated.files[0].expected_hash,
+            Some((HashAlgorithm::Sha256, expected_sha256))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn schedule_queue_no_overspawn_when_running_ge_max() {
+        let dir = std::env::temp_dir().join(format!("ferrite_sched_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        let mut cfg = eng.get_config();
+        // Set max concurrency to 1 and bonuses to 0
+        cfg.core.tum_profiles.get_mut(&TrafficUsageMode::High).unwrap().max_concurrent_downloads = 1;
+        cfg.core.max_additional_small_downloads = 0;
+        cfg.core.max_additional_query_info_downloads = 0;
+        cfg.core.max_additional_downloads_if_slow = 0;
+        eng.update_config(cfg).unwrap();
+
+        let mut req1 = NewDownloadRequest::from_url("https://example.com/run1.bin");
+        req1.start_paused = true;
+        let rec1 = eng.add_download(req1).await.unwrap();
+
+        let mut req2 = NewDownloadRequest::from_url("https://example.com/queued2.bin");
+        req2.start_paused = true;
+        let rec2 = eng.add_download(req2).await.unwrap();
+
+        // Mark rec1 as Downloading (active)
+        {
+            let mut list = eng.downloads.write().unwrap();
+            let d1 = list.iter_mut().find(|d| d.id == rec1.id).unwrap();
+            d1.state = DownloadState::Downloading;
+            let d2 = list.iter_mut().find(|d| d.id == rec2.id).unwrap();
+            d2.state = DownloadState::Queued;
+        }
+
+        // Schedule queue: total_running (1) >= max_total (1)
+        eng.schedule_queue().await;
+
+        // rec2 must remain Queued (not over-spawned to Starting)
+        let d2 = eng.get_download(rec2.id).unwrap();
+        assert_eq!(d2.state, DownloadState::Queued);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn move_and_rename_handle_partial_files_and_directories() {
+        let dir = std::env::temp_dir().join(format!("ferrite_move_rename_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        let dl_dir = dir.join("downloads");
+        let dest_dir = dir.join("moved_downloads");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        // 1) Test moving and renaming partial (.part) files
+        let mut req = NewDownloadRequest::from_url("https://example.com/partial.bin");
+        req.target_dir = Some(dl_dir.clone());
+        req.start_paused = true;
+        let rec = eng.add_download(req).await.unwrap();
+
+        let part_file = dl_dir.join("partial.bin.part");
+        std::fs::write(&part_file, b"partial-data").unwrap();
+
+        let moved_path = eng.move_download_files(rec.id, &dest_dir).await.unwrap();
+        assert_eq!(moved_path, dest_dir.join("partial.bin"));
+        assert!(!part_file.exists());
+        let moved_part = dest_dir.join("partial.bin.part");
+        assert!(moved_part.is_file());
+        let updated = eng.get_download(rec.id).unwrap();
+        assert!(!updated.flags.is_missing_files);
+        assert_eq!(updated.target_dir, dest_dir);
+
+        // Rename the partial download
+        let renamed_path = eng.rename_download_file(rec.id, "renamed.bin").await.unwrap();
+        assert_eq!(renamed_path, dest_dir.join("renamed.bin"));
+        assert!(!moved_part.exists());
+        let renamed_part = dest_dir.join("renamed.bin.part");
+        assert!(renamed_part.is_file());
+        let updated_rename = eng.get_download(rec.id).unwrap();
+        assert_eq!(updated_rename.file_name, "renamed.bin");
+        assert!(!updated_rename.flags.is_missing_files);
+
+        // 2) Test moving and renaming multi-file directory
+        let mut req_torrent = NewDownloadRequest::from_url("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=my_torrent_dir");
+        req_torrent.target_dir = Some(dl_dir.clone());
+        req_torrent.start_paused = true;
+        let rec_t = eng.add_download(req_torrent).await.unwrap();
+
+        // Create torrent directory with subfolder and files
+        let torrent_folder = dl_dir.join(&rec_t.file_name);
+        let sub = torrent_folder.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("file1.txt"), b"file1 content").unwrap();
+        std::fs::write(torrent_folder.join("file2.txt"), b"file2 content").unwrap();
+
+        let moved_t_path = eng.move_download_files(rec_t.id, &dest_dir).await.unwrap();
+        assert_eq!(moved_t_path, dest_dir.join(&rec_t.file_name));
+        assert!(!torrent_folder.exists());
+        assert!(dest_dir.join(&rec_t.file_name).join("sub/file1.txt").is_file());
+        assert!(dest_dir.join(&rec_t.file_name).join("file2.txt").is_file());
+
+        let renamed_t = eng.rename_download_file(rec_t.id, "renamed_torrent_dir").await.unwrap();
+        assert_eq!(renamed_t, dest_dir.join("renamed_torrent_dir"));
+        assert!(!dest_dir.join(&rec_t.file_name).exists());
+        assert!(dest_dir.join("renamed_torrent_dir/sub/file1.txt").is_file());
+        assert!(dest_dir.join("renamed_torrent_dir/file2.txt").is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn archive_diagnostics_bundle_redacts_passwords_and_handles_relative_paths() {
+        let dir = std::env::temp_dir().join(format!("ferrite_diag_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        let mut cfg = eng.get_config();
+        cfg.app.remote_access_password = "SuperSecretPassword123".into();
+        cfg.app.proxy.http.password = "HttpProxySecret".into();
+        cfg.app.proxy.socks5.password = "SocksProxySecret".into();
+        eng.update_config(cfg).unwrap();
+
+        let zip_dest = dir.join("diagnostics/bundle.zip");
+        let result = eng.archive_diagnostics_bundle(&zip_dest, false);
+        if let Ok(archived) = result {
+            assert!(archived.is_file());
+            let status = std::process::Command::new("unzip")
+                .args(["-p"])
+                .arg(&archived)
+                .arg("config.redacted.json")
+                .output();
+            if let Ok(out) = status {
+                if out.status.success() {
+                    let content = String::from_utf8_lossy(&out.stdout);
+                    assert!(!content.contains("SuperSecretPassword123"));
+                    assert!(!content.contains("HttpProxySecret"));
+                    assert!(!content.contains("SocksProxySecret"));
+                    assert!(content.contains("***REDACTED***"));
+                }
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn batch_downloads_skipped_in_supervisor_missing_and_autoremoval() {
+        let dir = std::env::temp_dir().join(format!("ferrite_batch_sup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        let mut cfg = eng.get_config();
+        cfg.core.auto_remove_missing_files = true;
+        cfg.core.auto_remove_finished = true;
+        cfg.core.auto_remove_finished_keep_days = 0;
+        eng.update_config(cfg).unwrap();
+
+        let (batch_parent, _children) = eng
+            .add_batch_group("https://example.com/item1.bin", None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(batch_parent.state, DownloadState::Completed);
+
+        // Verify output_path does not exist for batch parent
+        assert!(!batch_parent.output_path().exists());
+
+        // Run supervisor tick check logic
+        {
+            let mut list = eng.downloads.write().unwrap();
+            let mut to_remove_expired = Vec::new();
+            for d in list.iter_mut() {
+                if d.state == DownloadState::Completed {
+                    if d.download_type != DownloadType::Batch {
+                        let missing = !d.output_path().exists();
+                        if d.flags.is_missing_files != missing {
+                            d.flags.is_missing_files = missing;
+                        }
+                        if missing {
+                            to_remove_expired.push(d.id);
+                        }
+                    }
+                }
+            }
+            assert!(to_remove_expired.is_empty(), "Batch should not be marked for auto-removal");
+        }
+
+        let parent_check = eng.get_download(batch_parent.id).unwrap();
+        assert!(!parent_check.flags.is_missing_files, "Batch parent container must not be marked missing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn media_parser_failure_preserves_original_target_dir_and_filename() {
+        let dir = std::env::temp_dir().join(format!("ferrite_media_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        // Install a mock JS plugin that splits audio and video
+        let plugin_dir = dir.join("data/plugins/test_parser");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("manifest.json"),
+            serde_json::json!({
+                "uid": "test-parser-plugin",
+                "name": "Test Parser",
+                "version": "1.0.0",
+                "entry": "parser.js",
+                "domains": ["mockmedia.local"],
+                "enabled": true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("parser.js"),
+            r#"
+            var msParser = {
+                isSupportedSource: function(u) { return true; },
+                parse: function(u) {
+                    return {
+                        title: "Custom Media Title",
+                        variants: [{
+                            url: "http://127.0.0.1:1/nonexistent.mp4",
+                            ext: "mp4",
+                            audio_url: "http://127.0.0.1:1/nonexistent.m4a"
+                        }]
+                    };
+                }
+            };
+            "#,
+        )
+        .unwrap();
+
+        let dl_dir = dir.join("downloads");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+
+        let mut req = NewDownloadRequest::from_url("https://mockmedia.local/watch?v=12345");
+        req.target_dir = Some(dl_dir.clone());
+        req.title = Some("Original Title".into());
+        req.file_name = Some("Custom Media Title.mp4".into());
+        req.download_type = Some(DownloadType::MediaParser);
+        req.start_paused = true;
+        let rec = eng.add_download(req).await.unwrap();
+
+        let cfg = eng.get_config();
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let res = eng
+            .run_media_parser_download(rec, &cfg, &[], None, eng.limiter.clone(), rx, |_| {})
+            .await;
+
+        // Must not point to .media_tmp or video.mp4
+        assert_eq!(res.target_dir, dl_dir);
+        assert_eq!(res.file_name, "Custom Media Title.mp4");
+        assert_eq!(res.title, "Original Title");
+        assert_ne!(res.target_dir.file_name().unwrap_or_default(), ".media_tmp");
+        assert_ne!(res.file_name, "video.mp4");
+        assert_ne!(res.file_name, "audio.m4a");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
