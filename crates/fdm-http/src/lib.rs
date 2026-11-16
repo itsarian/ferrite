@@ -17,7 +17,10 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1363,7 +1366,10 @@ where
 
 fn write_at_exact(file: &File, mut buf: &[u8], mut offset: u64) -> std::io::Result<()> {
     while !buf.is_empty() {
+        #[cfg(unix)]
         let n = file.write_at(buf, offset)?;
+        #[cfg(windows)]
+        let n = file.seek_write(buf, offset)?;
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,
