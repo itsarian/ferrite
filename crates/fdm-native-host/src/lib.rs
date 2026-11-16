@@ -806,7 +806,7 @@ pub fn default_native_manifest_dir(browser: KnownWebBrowser) -> Option<PathBuf> 
             KnownWebBrowser::Opera => Some(cfg.join("opera/NativeMessagingHosts")),
             KnownWebBrowser::Firefox => Some(home.join(".mozilla/native-messaging-hosts")),
             KnownWebBrowser::Safari => None,
-        };
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
