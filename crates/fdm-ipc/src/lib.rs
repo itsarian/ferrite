@@ -17,7 +17,11 @@ use std::task::{Context as TaskContext, Poll};
 use tokio::io::{
     AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
 };
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::TcpListener;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -103,6 +107,17 @@ pub fn default_socket_path(data_dir: &Path) -> PathBuf {
     data_dir.join("ferrite.sock")
 }
 
+#[cfg(windows)]
+fn pipe_name_from_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    if s.starts_with(r"\\.\pipe\") {
+        s.to_string()
+    } else {
+        let hash = sha256_str(s.as_bytes());
+        format!(r"\\.\pipe\ferrite-dm-{}", &hash[..16])
+    }
+}
+
 pub struct IpcClient {
     socket_path: PathBuf,
 }
@@ -114,6 +129,7 @@ impl IpcClient {
         }
     }
 
+    #[cfg(unix)]
     pub async fn send(&self, req: &IpcRequest) -> Result<IpcResponse> {
         let stream = UnixStream::connect(&self.socket_path)
             .await
@@ -138,6 +154,27 @@ impl IpcClient {
         Ok(serde_json::from_str(&resp_line)?)
     }
 
+    #[cfg(windows)]
+    pub async fn send(&self, req: &IpcRequest) -> Result<IpcResponse> {
+        let pipe_name = pipe_name_from_path(&self.socket_path);
+        let client = ClientOptions::new()
+            .open(&pipe_name)
+            .with_context(|| format!("Failed to connect to daemon pipe {}", pipe_name))?;
+        let (reader, mut writer) = tokio::io::split(client);
+        let mut line = serde_json::to_string(req)?;
+        line.push('\n');
+        writer.write_all(line.as_bytes()).await?;
+        writer.flush().await?;
+
+        let mut buf_reader = BufReader::new(reader);
+        let mut resp_line = String::new();
+        buf_reader.read_line(&mut resp_line).await?;
+        if resp_line.trim().is_empty() {
+            anyhow::bail!("Daemon closed IPC socket without response");
+        }
+        Ok(serde_json::from_str(&resp_line)?)
+    }
+
     pub async fn ping(&self) -> bool {
         matches!(
             self.send(&IpcRequest::Ping).await,
@@ -146,6 +183,7 @@ impl IpcClient {
     }
 }
 
+#[cfg(unix)]
 pub async fn start_ipc_server<F, Fut>(
     socket_path: PathBuf,
     handler: Arc<F>,
@@ -169,11 +207,8 @@ where
     }
 
     let listener = UnixListener::bind(&socket_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
 
     let handle = tokio::spawn(async move {
         loop {
@@ -183,6 +218,62 @@ where
             let h = Arc::clone(&handler);
             tokio::spawn(async move {
                 let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let resp = match serde_json::from_str::<IpcRequest>(&line) {
+                        Ok(req) => h(req).await,
+                        Err(e) => IpcResponse::err("invalid_request", e.to_string()),
+                    };
+                    if let Ok(mut out) = serde_json::to_string(&resp) {
+                        out.push('\n');
+                        if writer.write_all(out.as_bytes()).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    Ok(handle)
+}
+
+#[cfg(windows)]
+pub async fn start_ipc_server<F, Fut>(
+    socket_path: PathBuf,
+    handler: Arc<F>,
+) -> Result<tokio::task::JoinHandle<()>>
+where
+    F: Fn(IpcRequest) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = IpcResponse> + Send + 'static,
+{
+    if IpcClient::new(&socket_path).ping().await {
+        anyhow::bail!(
+            "Ferrite DM daemon is already running on {}",
+            socket_path.display()
+        );
+    }
+
+    let pipe_name = pipe_name_from_path(&socket_path);
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&pipe_name)?;
+
+    let handle = tokio::spawn(async move {
+        loop {
+            if server.connect().await.is_err() {
+                break;
+            }
+            let connected_client = server;
+            server = match ServerOptions::new().create(&pipe_name) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let h = Arc::clone(&handler);
+            tokio::spawn(async move {
+                let (reader, mut writer) = tokio::io::split(connected_client);
                 let mut lines = BufReader::new(reader).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if line.trim().is_empty() {
