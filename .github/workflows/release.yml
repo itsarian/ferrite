@@ -211,65 +211,9 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  build-windows:
-    name: Build Windows CLI (x86_64)
-    needs: metadata
-    runs-on: windows-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: x86_64-pc-windows-msvc
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "windows-release"
-
-      - name: Build Windows CLI Binaries
-        shell: bash
-        run: |
-          cargo build --release -p fdm-cli -p fdm-native-host
-
-      - name: Package Windows Standalone Zip
-        shell: pwsh
-        run: |
-          $version = "${{ needs.metadata.outputs.version }}"
-          $stage = "dist/windows-stage/ferrite-dm-$version"
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
-
-          Copy-Item "target/release/ferrite-dm.exe" "$stage/"
-          Copy-Item "target/release/ferrite-native-host.exe" "$stage/"
-          Copy-Item "scripts/install-cli.ps1" "$stage/install.ps1"
-          Copy-Item "scripts/uninstall-cli.ps1" "$stage/uninstall.ps1"
-          Copy-Item "scripts/install-cli.ps1" "$stage/install-cli.ps1"
-          Copy-Item "scripts/uninstall-cli.ps1" "$stage/uninstall-cli.ps1"
-          Copy-Item "scripts/install.bat" "$stage/install.bat"
-          Copy-Item "scripts/uninstall.bat" "$stage/uninstall.bat"
-          if (Test-Path "README.md") { Copy-Item "README.md" "$stage/" }
-          Get-ChildItem -Path "." -Filter "LICENSE*" | ForEach-Object { Copy-Item $_.FullName "$stage/" }
-
-          $zipName = "ferrite-dm-$version-windows-x86_64.zip"
-          Compress-Archive -Path "dist/windows-stage/ferrite-dm-$version" -DestinationPath "dist/$zipName" -Force
-
-      - name: Upload Windows Release Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-x86_64
-          path: dist/ferrite-dm-*-windows-x86_64.zip
-          retention-days: 1
-          if-no-files-found: error
-
   publish-release:
     name: Publish GitHub Release
-    needs: [metadata, build-macos, build-linux, build-windows]
+    needs: [metadata, build-macos, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -796,7 +796,7 @@ pub fn default_native_manifest_dir(browser: KnownWebBrowser) -> Option<PathBuf> 
         let base = directories::BaseDirs::new()?;
         let cfg = base.config_dir();
         let home = base.home_dir();
-        return match browser {
+        match browser {
             KnownWebBrowser::Chrome => Some(cfg.join("google-chrome/NativeMessagingHosts")),
             KnownWebBrowser::Brave => {
                 Some(cfg.join("BraveSoftware/Brave-Browser/NativeMessagingHosts"))

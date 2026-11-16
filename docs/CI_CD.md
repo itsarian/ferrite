@@ -58,7 +58,6 @@ flowchart TD
         MAC_TEST["macOS: Full Workspace & GPUI Test"]
         PKG_CHECK["Packaging Assets Validation"]
         LNX_TEST["Linux: Cross-Platform Crates Test"]
-        WIN_TEST["Windows: Cross-Platform Crates Test"]
     end
 
     subgraph Audit ["Security Audit (.github/workflows/audit.yml)"]
@@ -154,12 +153,7 @@ The test matrix accommodates crate-specific platform dependencies:
     cargo check --workspace --exclude fdm-gui
     cargo test --workspace --exclude fdm-gui
     ```
-- **Windows (`windows-latest`):**
-  - Runs compilation checks and unit tests for portable crates:
-    ```bash
-    cargo check --workspace --exclude fdm-gui
-    cargo test --workspace --exclude fdm-gui
-    ```
+- **Windows:** Deferred / roadmap; cross-platform OS integration abstraction layer prepared in `fdm-core` and `fdm-ipc` for future enablement.
 
 #### 5. Intelligent Caching (`rust-cache@v2`)
 Workflows leverage `Swatinem/rust-cache@v2`, which hashes `Cargo.lock` and workspace configuration. This reduces average build durations from ~8 minutes down to under 90 seconds by persisting `target/` artifacts and `~/.cargo/registry/index`.

@@ -97,10 +97,6 @@ jobs:
             os: ubuntu-latest
             workspace_scope: "--workspace --exclude fdm-gui"
             is_macos: false
-          - name: Windows (Cross-Platform Crates)
-            os: windows-latest
-            workspace_scope: "--workspace --exclude fdm-gui"
-            is_macos: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
