@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
-use fdm_core::{
-    DownloadType, FdmConfig, HttpRequestOptions, KnownWebBrowser, NewDownloadRequest,
-};
+use fdm_core::{DownloadType, FdmConfig, HttpRequestOptions, KnownWebBrowser, NewDownloadRequest};
 use fdm_ipc::{IpcClient, IpcRequest, IpcResponse, default_socket_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -300,17 +298,16 @@ pub fn should_ignore_download_by_settings(
         .get("skipServersEnabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
-    {
-        if let (Some(host), Some(servers)) = (
+        && let (Some(host), Some(servers)) = (
             parsed.as_ref().and_then(|u| u.host_str()),
             settings.get("skipServers").and_then(|v| v.as_array()),
-        ) {
-            let host_l = host.to_ascii_lowercase();
-            for s in servers.iter().filter_map(|x| x.as_str()) {
-                let s_l = s.trim().to_ascii_lowercase();
-                if !s_l.is_empty() && (host_l == s_l || host_l.ends_with(&format!(".{s_l}"))) {
-                    return true;
-                }
+        )
+    {
+        let host_l = host.to_ascii_lowercase();
+        for s in servers.iter().filter_map(|x| x.as_str()) {
+            let s_l = s.trim().to_ascii_lowercase();
+            if !s_l.is_empty() && (host_l == s_l || host_l.ends_with(&format!(".{s_l}"))) {
+                return true;
             }
         }
     }
@@ -320,7 +317,7 @@ pub fn should_ignore_download_by_settings(
         .or_else(|| {
             parsed.as_ref().and_then(|u| {
                 u.path_segments()
-                    .and_then(|s| s.last())
+                    .and_then(|mut s| s.next_back())
                     .and_then(|seg| Path::new(seg).extension().and_then(|e| e.to_str()))
             })
         })
@@ -331,7 +328,11 @@ pub fn should_ignore_download_by_settings(
         let skip_exts: Vec<String> = settings
             .get("skipExtensions")
             .and_then(|v| v.as_str())
-            .map(|s| s.split_whitespace().map(|x| x.trim_start_matches('.').to_ascii_lowercase()).collect())
+            .map(|s| {
+                s.split_whitespace()
+                    .map(|x| x.trim_start_matches('.').to_ascii_lowercase())
+                    .collect()
+            })
             .unwrap_or_default();
         if skip_exts.iter().any(|e| e == &ext) {
             return true;
@@ -339,7 +340,11 @@ pub fn should_ignore_download_by_settings(
         let catch_exts: Vec<String> = settings
             .get("catchExtensions")
             .and_then(|v| v.as_str())
-            .map(|s| s.split_whitespace().map(|x| x.trim_start_matches('.').to_ascii_lowercase()).collect())
+            .map(|s| {
+                s.split_whitespace()
+                    .map(|x| x.trim_start_matches('.').to_ascii_lowercase())
+                    .collect()
+            })
             .unwrap_or_default();
         if !catch_exts.is_empty() && !catch_exts.iter().any(|e| e == &ext) {
             return true;
@@ -368,7 +373,10 @@ fn parse_download_item(item: &Value) -> Option<NewDownloadRequest> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     req.title = req.file_name.clone();
-    req.silent = item.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
+    req.silent = item
+        .get("silent")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let lower = url.to_ascii_lowercase();
     if lower.contains(".m3u8") {
@@ -448,7 +456,10 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
                 .get("browser")
                 .cloned()
                 .unwrap_or_else(|| json!("chrome"));
-            let daemon_ok = matches!(bridge.call(IpcRequest::Ping).await, Ok(IpcResponse::Ok { .. }));
+            let daemon_ok = matches!(
+                bridge.call(IpcRequest::Ping).await,
+                Ok(IpcResponse::Ok { .. })
+            );
             ok_reply(
                 id,
                 task_type,
@@ -463,7 +474,11 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
         }
         "ui_strings" => {
             let strings = NativeUiStrings::default();
-            ok_reply(id, task_type, serde_json::to_value(strings).unwrap_or(json!({})))
+            ok_reply(
+                id,
+                task_type,
+                serde_json::to_value(strings).unwrap_or(json!({})),
+            )
         }
         "query_settings" => match bridge.call(IpcRequest::BrowserQuerySettings).await {
             Ok(IpcResponse::Ok { data }) => ok_reply(
@@ -483,7 +498,9 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
                 .cloned()
                 .unwrap_or_else(|| task.clone());
             match bridge.call(IpcRequest::BrowserPostSettings(patch)).await {
-                Ok(IpcResponse::Ok { data }) => ok_reply(id, task_type, json!({ "settings": data })),
+                Ok(IpcResponse::Ok { data }) => {
+                    ok_reply(id, task_type, json!({ "settings": data }))
+                }
                 Ok(IpcResponse::Err { code, message }) => err_reply(id, task_type, &code, &message),
                 Err(e) => err_reply(id, task_type, "app_not_installed", &e.to_string()),
             }
@@ -533,19 +550,19 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
                 let Some(req) = parse_download_item(item) else {
                     continue;
                 };
-                if let Some(ref settings) = browser_settings {
-                    if should_ignore_download_by_settings(
+                if let Some(ref settings) = browser_settings
+                    && should_ignore_download_by_settings(
                         &req.url,
                         req.file_name.as_deref(),
                         settings,
                         key_pressed,
-                    ) {
-                        ignored_count += 1;
-                        continue;
-                    }
+                    )
+                {
+                    ignored_count += 1;
+                    continue;
                 }
                 let url_copy = req.url.clone();
-                match bridge.call(IpcRequest::AddDownload(req)).await {
+                match bridge.call(IpcRequest::AddDownload(Box::new(req))).await {
                     Ok(IpcResponse::Ok { data }) => {
                         if let Some(dl_id) = data.get("id").and_then(|v| v.as_i64()) {
                             download_ids.push(dl_id);
@@ -627,18 +644,15 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
                         "isHls": lower.contains(".m3u8"),
                         "isDash": lower.contains(".mpd"),
                     }));
-                    if create_now {
-                        if let Some(mut req) = parse_download_item(item) {
-                            if req.download_type.is_none() {
-                                req.download_type = Some(DownloadType::MediaParser);
-                            }
-                            if let Ok(IpcResponse::Ok { data }) =
-                                bridge.call(IpcRequest::AddDownload(req)).await
-                            {
-                                if let Some(dl_id) = data.get("id").and_then(|v| v.as_i64()) {
-                                    created_ids.push(dl_id);
-                                }
-                            }
+                    if create_now && let Some(mut req) = parse_download_item(item) {
+                        if req.download_type.is_none() {
+                            req.download_type = Some(DownloadType::MediaParser);
+                        }
+                        if let Ok(IpcResponse::Ok { data }) =
+                            bridge.call(IpcRequest::AddDownload(Box::new(req))).await
+                            && let Some(dl_id) = data.get("id").and_then(|v| v.as_i64())
+                        {
+                            created_ids.push(dl_id);
                         }
                     }
                 }
@@ -775,7 +789,7 @@ pub fn default_native_manifest_dir(browser: KnownWebBrowser) -> Option<PathBuf> 
             KnownWebBrowser::Firefox => "Mozilla/NativeMessagingHosts",
             KnownWebBrowser::Safari => return None,
         };
-        return Some(app_support.join(rel));
+        Some(app_support.join(rel))
     }
     #[cfg(target_os = "linux")]
     {
@@ -783,7 +797,9 @@ pub fn default_native_manifest_dir(browser: KnownWebBrowser) -> Option<PathBuf> 
         let home = base.home_dir();
         return match browser {
             KnownWebBrowser::Chrome => Some(cfg.join("google-chrome/NativeMessagingHosts")),
-            KnownWebBrowser::Brave => Some(cfg.join("BraveSoftware/Brave-Browser/NativeMessagingHosts")),
+            KnownWebBrowser::Brave => {
+                Some(cfg.join("BraveSoftware/Brave-Browser/NativeMessagingHosts"))
+            }
             KnownWebBrowser::Edge => Some(cfg.join("microsoft-edge/NativeMessagingHosts")),
             KnownWebBrowser::Vivaldi => Some(cfg.join("vivaldi/NativeMessagingHosts")),
             KnownWebBrowser::Opera => Some(cfg.join("opera/NativeMessagingHosts")),
@@ -839,13 +855,15 @@ mod tests {
                 log.lock().unwrap().push(req.clone());
                 match req {
                     IpcRequest::Ping => Ok(IpcResponse::ok(json!({ "pong": true }))),
-                    IpcRequest::BrowserQuerySettings => {
-                        Ok(IpcResponse::ok(fdm_ipc::build_browser_settings_payload(&settings)))
-                    }
+                    IpcRequest::BrowserQuerySettings => Ok(IpcResponse::ok(
+                        fdm_ipc::build_browser_settings_payload(&settings),
+                    )),
                     IpcRequest::BrowserPostSettings(patch) => {
                         let mut cfg = settings.clone();
                         fdm_ipc::apply_browser_settings_patch(&mut cfg, &patch);
-                        Ok(IpcResponse::ok(fdm_ipc::build_browser_settings_payload(&cfg)))
+                        Ok(IpcResponse::ok(fdm_ipc::build_browser_settings_payload(
+                            &cfg,
+                        )))
                     }
                     IpcRequest::AddDownload(dl) => Ok(IpcResponse::ok(json!({
                         "id": 42,
@@ -878,7 +896,11 @@ mod tests {
         let bridge = MockBridge::new();
 
         // 1. handshake & ui_strings
-        let hs = dispatch_native_task(&bridge, &json!({ "id": 1, "type": "handshake", "browser": "chrome" })).await;
+        let hs = dispatch_native_task(
+            &bridge,
+            &json!({ "id": 1, "type": "handshake", "browser": "chrome" }),
+        )
+        .await;
         assert_eq!(hs["error"], "");
         assert_eq!(hs["result"]["daemon_connected"], true);
 
@@ -901,7 +923,10 @@ mod tests {
         )
         .await;
         assert_eq!(create["error"], "");
-        assert_eq!(create["result"]["catchedDownloads"][0], "https://cdn.example.com/archive.zip");
+        assert_eq!(
+            create["result"]["catchedDownloads"][0],
+            "https://cdn.example.com/archive.zip"
+        );
         assert_eq!(create["result"]["downloadIds"][0], 42);
 
         // 3. create_downloads respects skipServers filter (rapidgator.net is default skipped)
@@ -946,7 +971,11 @@ mod tests {
         assert_eq!(bypassed["error"], "ignoredDueSettings");
 
         // 6. key_state resolves configured bypass key when keyCode is 0 or omitted
-        let ks = dispatch_native_task(&bridge, &json!({ "id": 7, "type": "key_state", "keyCode": 0 })).await;
+        let ks = dispatch_native_task(
+            &bridge,
+            &json!({ "id": 7, "type": "key_state", "keyCode": 0 }),
+        )
+        .await;
         assert_eq!(ks["error"], "");
         assert_eq!(ks["result"]["keyCode"], "Alt");
 
@@ -957,10 +986,16 @@ mod tests {
 
     #[test]
     fn modifier_flag_matching_supports_names_and_keycodes() {
-        assert!(is_modifier_pressed_in_flags(&json!("Alt"), CG_FLAG_ALTERNATE));
+        assert!(is_modifier_pressed_in_flags(
+            &json!("Alt"),
+            CG_FLAG_ALTERNATE
+        ));
         assert!(is_modifier_pressed_in_flags(&json!(18), CG_FLAG_ALTERNATE));
         assert!(!is_modifier_pressed_in_flags(&json!("Alt"), CG_FLAG_SHIFT));
-        assert!(is_modifier_pressed_in_flags(&json!("Ctrl"), CG_FLAG_CONTROL));
+        assert!(is_modifier_pressed_in_flags(
+            &json!("Ctrl"),
+            CG_FLAG_CONTROL
+        ));
         assert!(is_modifier_pressed_in_flags(&json!(17), CG_FLAG_CONTROL));
         assert!(is_modifier_pressed_in_flags(&json!("Shift"), CG_FLAG_SHIFT));
         assert!(is_modifier_pressed_in_flags(&json!(16), CG_FLAG_SHIFT));
@@ -989,7 +1024,8 @@ mod tests {
             &dir.join("firefox"),
         )
         .unwrap();
-        let raw_ff: Value = serde_json::from_str(&std::fs::read_to_string(&ff_path).unwrap()).unwrap();
+        let raw_ff: Value =
+            serde_json::from_str(&std::fs::read_to_string(&ff_path).unwrap()).unwrap();
         assert_eq!(
             raw_ff["allowed_extensions"][0],
             "fdm_ffext@freedownloadmanager.org"

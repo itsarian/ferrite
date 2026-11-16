@@ -133,8 +133,16 @@ impl StandaloneAddWindow {
             })
         };
 
-        let def_dir = cfg.core.default_download_path.to_string_lossy().into_owned();
-        let url_input = mk_input(cx, "https://..., magnet:?xt=..., or .torrent path", &prefill_url);
+        let def_dir = cfg
+            .core
+            .default_download_path
+            .to_string_lossy()
+            .into_owned();
+        let url_input = mk_input(
+            cx,
+            "https://..., magnet:?xt=..., or .torrent path",
+            &prefill_url,
+        );
         let dir_input = mk_input(cx, "Destination directory", &def_dir);
         let name_input = mk_input(cx, "Optional output filename", "");
         let ref_input = mk_input(cx, "HTTP Referer (optional)", "");
@@ -163,7 +171,8 @@ impl StandaloneAddWindow {
 
         cx.observe(&view.url_input, |_, _, cx| cx.notify()).detach();
         cx.observe(&view.dir_input, |_, _, cx| cx.notify()).detach();
-        cx.observe(&view.name_input, |_, _, cx| cx.notify()).detach();
+        cx.observe(&view.name_input, |_, _, cx| cx.notify())
+            .detach();
         let fh = url_input.read(cx).focus_handle.clone();
         window.focus(&fh);
         if !prefill_url.trim().is_empty() {
@@ -180,24 +189,29 @@ impl StandaloneAddWindow {
             prompt: Some("Choose Save Folder".into()),
         });
         let input = self.dir_input.clone();
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(chosen) = paths.into_iter().next() {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(Ok(Some(paths))) = rx.await
+                    && let Some(chosen) = paths.into_iter().next()
+                {
                     let s = chosen.to_string_lossy().into_owned();
                     let _ = this.update(cx, |_, cx| {
                         input.update(cx, |inp, cx| inp.set_text(&s, cx));
                         cx.notify();
                     });
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 
     fn trigger_probe(&mut self, cx: &mut Context<Self>) {
         let url = self.url_input.read(cx).text().trim().to_string();
         if url.is_empty() {
-            self.status_msg = Some(("Enter a URL, magnet URI, or .torrent path first".into(), true));
+            self.status_msg = Some((
+                "Enter a URL, magnet URI, or .torrent path first".into(),
+                true,
+            ));
             cx.notify();
             return;
         }
@@ -210,34 +224,36 @@ impl StandaloneAddWindow {
         self.rt.spawn(async move {
             let _ = tx.send(eng.probe_source(&url).await.map_err(|e| e.to_string()));
         });
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if let Ok(res) = rx.await {
-                let _ = this.update(cx, |view, cx| {
-                    view.probe_busy = false;
-                    match res {
-                        Ok(outcome) => {
-                            let dir_s = outcome.resolved_dir.to_string_lossy().into_owned();
-                            let name_s = outcome.resolved_file_name.clone();
-                            view.dir_input.update(cx, |i, cx| i.set_text(&dir_s, cx));
-                            view.name_input.update(cx, |i, cx| i.set_text(&name_s, cx));
-                            view.selected_files = outcome
-                                .files
-                                .iter()
-                                .filter(|f| f.priority != DownloadPriority::DontDownload)
-                                .map(|f| f.index)
-                                .collect();
-                            view.selected_variant = 0;
-                            view.probe_outcome = Some(outcome);
-                            view.probe_anim_epoch = view.probe_anim_epoch.wrapping_add(1);
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(res) = rx.await {
+                    let _ = this.update(cx, |view, cx| {
+                        view.probe_busy = false;
+                        match res {
+                            Ok(outcome) => {
+                                let dir_s = outcome.resolved_dir.to_string_lossy().into_owned();
+                                let name_s = outcome.resolved_file_name.clone();
+                                view.dir_input.update(cx, |i, cx| i.set_text(&dir_s, cx));
+                                view.name_input.update(cx, |i, cx| i.set_text(&name_s, cx));
+                                view.selected_files = outcome
+                                    .files
+                                    .iter()
+                                    .filter(|f| f.priority != DownloadPriority::DontDownload)
+                                    .map(|f| f.index)
+                                    .collect();
+                                view.selected_variant = 0;
+                                view.probe_outcome = Some(outcome);
+                                view.probe_anim_epoch = view.probe_anim_epoch.wrapping_add(1);
+                            }
+                            Err(e) => {
+                                view.status_msg = Some((format!("Probe failed: {e}"), true));
+                            }
                         }
-                        Err(e) => {
-                            view.status_msg = Some((format!("Probe failed: {e}"), true));
-                        }
-                    }
-                    cx.notify();
-                });
-            }
-        })
+                        cx.notify();
+                    });
+                }
+            },
+        )
         .detach();
         cx.notify();
     }
@@ -258,19 +274,19 @@ impl StandaloneAddWindow {
 
         if let Some(ref outcome) = self.probe_outcome {
             if outcome.download_type == DownloadType::MediaParser {
-                if let Some(ref media) = outcome.media {
-                    if let Some(var) = media.variants.get(self.selected_variant) {
-                        if var.audio_url.is_none() {
-                            source_url = var.url.clone();
-                            req = NewDownloadRequest::from_url(source_url.clone());
-                            chosen_type = if source_url.to_ascii_lowercase().contains(".m3u8") {
-                                Some(DownloadType::HlsM3u8)
-                            } else {
-                                Some(DownloadType::Www)
-                            };
+                if let Some(ref media) = outcome.media
+                    && let Some(var) = media.variants.get(self.selected_variant)
+                {
+                    if var.audio_url.is_none() {
+                        source_url = var.url.clone();
+                        req = NewDownloadRequest::from_url(source_url.clone());
+                        chosen_type = if source_url.to_ascii_lowercase().contains(".m3u8") {
+                            Some(DownloadType::HlsM3u8)
                         } else {
-                            chosen_type = Some(DownloadType::MediaParser);
-                        }
+                            Some(DownloadType::Www)
+                        };
+                    } else {
+                        chosen_type = Some(DownloadType::MediaParser);
                     }
                 }
             } else {
@@ -308,27 +324,35 @@ impl StandaloneAddWindow {
         let eng = Arc::clone(&self.engine);
         let (tx, rx) = oneshot::channel();
         self.rt.spawn(async move {
-            let _ = tx.send(eng.add_download(req).await.map(|r| r.id).map_err(|e| e.to_string()));
+            let _ = tx.send(
+                eng.add_download(req)
+                    .await
+                    .map(|r| r.id)
+                    .map_err(|e| e.to_string()),
+            );
         });
 
         let win = window.window_handle();
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if let Ok(res) = rx.await {
-                match res {
-                    Ok(_) => {
-                        let _ = win.update(cx, |_, w, _| {
-                            w.remove_window();
-                        });
-                    }
-                    Err(e) => {
-                        let _ = this.update(cx, |view, cx| {
-                            view.status_msg = Some((format!("Failed to add download: {e}"), true));
-                            cx.notify();
-                        });
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(res) = rx.await {
+                    match res {
+                        Ok(_) => {
+                            let _ = win.update(cx, |_, w, _| {
+                                w.remove_window();
+                            });
+                        }
+                        Err(e) => {
+                            let _ = this.update(cx, |view, cx| {
+                                view.status_msg =
+                                    Some((format!("Failed to add download: {e}"), true));
+                                cx.notify();
+                            });
+                        }
                     }
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 }
@@ -437,7 +461,11 @@ impl Render for StandaloneAddWindow {
                                     ))
                                     .child(action_btn(
                                         "sa-probe",
-                                        if self.probe_busy { loc.probing } else { loc.probe },
+                                        if self.probe_busy {
+                                            loc.probing
+                                        } else {
+                                            loc.probe
+                                        },
                                         &p,
                                         false,
                                         cx,
@@ -490,72 +518,109 @@ impl Render for StandaloneAddWindow {
                                                     .flex()
                                                     .flex_col()
                                                     .gap_1()
-                                                    .children(out.files.into_iter().take(40).map(|f| {
-                                                        let f_idx = f.index;
-                                                        let checked = sel_files.contains(&f_idx);
-                                                        div()
-                                                            .id(SharedString::from(format!("sa-f-{f_idx}")))
-                                                            .flex()
-                                                            .flex_row()
-                                                            .items_center()
-                                                            .justify_between()
-                                                            .gap_2()
-                                                            .cursor_pointer()
-                                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                                if !this.selected_files.remove(&f_idx) {
-                                                                    this.selected_files.insert(f_idx);
-                                                                }
-                                                                cx.notify();
-                                                            }))
-                                                            .child(
-                                                                div()
-                                                                    .flex()
-                                                                    .flex_row()
-                                                                    .items_center()
-                                                                    .gap_1p5()
-                                                                    .min_w_0()
-                                                                    .child(fdm_checkbox(checked, &p))
-                                                                    .child(
-                                                                        div()
-                                                                            .text_size(p.fpx(11.))
-                                                                            .text_color(p.text_primary)
-                                                                            .truncate()
-                                                                            .child(f.relative_path),
-                                                                    ),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(p.fpx(11.))
-                                                                    .text_color(p.text_muted)
-                                                                    .child(format_bytes(f.size_bytes)),
-                                                            )
-                                                    })),
+                                                    .children(out.files.into_iter().take(40).map(
+                                                        |f| {
+                                                            let f_idx = f.index;
+                                                            let checked =
+                                                                sel_files.contains(&f_idx);
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "sa-f-{f_idx}"
+                                                                )))
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .justify_between()
+                                                                .gap_2()
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        if !this
+                                                                            .selected_files
+                                                                            .remove(&f_idx)
+                                                                        {
+                                                                            this.selected_files
+                                                                                .insert(f_idx);
+                                                                        }
+                                                                        cx.notify();
+                                                                    },
+                                                                ))
+                                                                .child(
+                                                                    div()
+                                                                        .flex()
+                                                                        .flex_row()
+                                                                        .items_center()
+                                                                        .gap_1p5()
+                                                                        .min_w_0()
+                                                                        .child(fdm_checkbox(
+                                                                            checked, &p,
+                                                                        ))
+                                                                        .child(
+                                                                            div()
+                                                                                .text_size(
+                                                                                    p.fpx(11.),
+                                                                                )
+                                                                                .text_color(
+                                                                                    p.text_primary,
+                                                                                )
+                                                                                .truncate()
+                                                                                .child(
+                                                                                    f.relative_path,
+                                                                                ),
+                                                                        ),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(p.fpx(11.))
+                                                                        .text_color(p.text_muted)
+                                                                        .child(format_bytes(
+                                                                            f.size_bytes,
+                                                                        )),
+                                                                )
+                                                        },
+                                                    )),
                                             )
                                         })
                                         .when_some(out.media, |el2, m| {
                                             el2.child(
-                                                div().flex().flex_row().flex_wrap().gap_1().children(
-                                                    m.variants.into_iter().enumerate().take(8).map(|(i, v)| {
-                                                        chip_toggle(
-                                                            format!("sa-var-{i}"),
-                                                            format!("{} ({})", v.title, v.ext),
-                                                            sel_var == i,
-                                                            &p,
-                                                            cx,
-                                                            move |this, _, _, cx| {
-                                                                this.selected_variant = i;
-                                                                cx.notify();
-                                                            },
-                                                        )
-                                                    }),
-                                                ),
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .flex_wrap()
+                                                    .gap_1()
+                                                    .children(
+                                                        m.variants
+                                                            .into_iter()
+                                                            .enumerate()
+                                                            .take(8)
+                                                            .map(|(i, v)| {
+                                                                chip_toggle(
+                                                                    format!("sa-var-{i}"),
+                                                                    format!(
+                                                                        "{} ({})",
+                                                                        v.title, v.ext
+                                                                    ),
+                                                                    sel_var == i,
+                                                                    &p,
+                                                                    cx,
+                                                                    move |this, _, _, cx| {
+                                                                        this.selected_variant = i;
+                                                                        cx.notify();
+                                                                    },
+                                                                )
+                                                            }),
+                                                    ),
                                             )
                                         })
                                         .with_animation(
-                                            SharedString::from(format!("sa-probe-anim-{probe_epoch}")),
+                                            SharedString::from(format!(
+                                                "sa-probe-anim-{probe_epoch}"
+                                            )),
                                             Animation::new(Duration::from_millis(160))
                                                 .with_easing(ease_out_quint()),
-                                            |el, delta| el.opacity(delta).mt(px(6.0 * (1.0 - delta))),
+                                            |el, delta| {
+                                                el.opacity(delta).mt(px(6.0 * (1.0 - delta)))
+                                            },
                                         ),
                                 )
                             })
@@ -591,7 +656,9 @@ impl Render for StandaloneAddWindow {
                                     .justify_between()
                                     .text_size(p.fpx(11.))
                                     .text_color(p.text_muted)
-                                    .child(div().truncate().child(format!("Resolved: {expanded_dir}")))
+                                    .child(
+                                        div().truncate().child(format!("Resolved: {expanded_dir}")),
+                                    )
                                     .when_some(avail_disk, |el, free| {
                                         el.child(badge_themed(
                                             format!("Free: {}", format_bytes(free)),
@@ -624,20 +691,22 @@ impl Render for StandaloneAddWindow {
                                     .flex_row()
                                     .items_center()
                                     .justify_between()
-                                    .child(div().text_size(p.fpx(12.)).text_color(p.text_secondary).child("Priority"))
                                     .child(
                                         div()
-                                            .flex()
-                                            .flex_row()
-                                            .gap_1()
-                                            .children(
-                                                [
-                                                    (DownloadPriority::Low, "Low"),
-                                                    (DownloadPriority::Normal, "Normal"),
-                                                    (DownloadPriority::High, "High"),
-                                                ]
-                                                .into_iter()
-                                                .map(|(pr, lbl)| {
+                                            .text_size(p.fpx(12.))
+                                            .text_color(p.text_secondary)
+                                            .child("Priority"),
+                                    )
+                                    .child(
+                                        div().flex().flex_row().gap_1().children(
+                                            [
+                                                (DownloadPriority::Low, "Low"),
+                                                (DownloadPriority::Normal, "Normal"),
+                                                (DownloadPriority::High, "High"),
+                                            ]
+                                            .into_iter()
+                                            .map(
+                                                |(pr, lbl)| {
                                                     chip_toggle(
                                                         format!("sa-prio-{pr:?}"),
                                                         lbl,
@@ -649,8 +718,9 @@ impl Render for StandaloneAddWindow {
                                                             cx.notify();
                                                         },
                                                     )
-                                                }),
+                                                },
                                             ),
+                                        ),
                                     )
                             })
                             .child(switch_row(
@@ -688,7 +758,8 @@ impl Render for StandaloneAddWindow {
                             ))
                             .with_animation(
                                 SharedString::from(format!("sa-win-enter-{enter_epoch}")),
-                                Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
+                                Animation::new(Duration::from_millis(160))
+                                    .with_easing(ease_out_quint()),
                                 |el, delta| {
                                     el.opacity((0.4 + 0.6 * delta).min(1.0))
                                         .mt(px(8.0 * (1.0 - delta)))
@@ -708,9 +779,16 @@ impl Render for StandaloneAddWindow {
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .child(action_btn("sa-cancel", loc.cancel, &p, false, cx, |_, _, w, _| {
-                        w.remove_window();
-                    }))
+                    .child(action_btn(
+                        "sa-cancel",
+                        loc.cancel,
+                        &p,
+                        false,
+                        cx,
+                        |_, _, w, _| {
+                            w.remove_window();
+                        },
+                    ))
                     .child(action_btn(
                         "sa-submit",
                         loc.download,
@@ -779,30 +857,32 @@ impl StandaloneDownloadWindow {
         });
 
         let win = window.window_handle();
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            while let Some(ev) = mpsc_rx.recv().await {
-                if matches!(ev, EngineEvent::Removed { id: ev_id } if ev_id == id) {
-                    let _ = win.update(cx, |_, w, _| w.remove_window());
-                    break;
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                while let Some(ev) = mpsc_rx.recv().await {
+                    if matches!(ev, EngineEvent::Removed { id: ev_id } if ev_id == id) {
+                        let _ = win.update(cx, |_, w, _| w.remove_window());
+                        break;
+                    }
+                    let ok = this
+                        .update(cx, |view, cx| {
+                            view.record = view.engine.get_download(view.id);
+                            let cfg = view.engine.get_config();
+                            view.theme = ThemePalette::from_config(
+                                cfg.app.theme_mode,
+                                cfg.app.ui_style,
+                                cfg.app.overall_zoom_pct,
+                                cfg.app.fonts_zoom_pct,
+                            );
+                            cx.notify();
+                        })
+                        .is_ok();
+                    if !ok {
+                        break;
+                    }
                 }
-                let ok = this
-                    .update(cx, |view, cx| {
-                        view.record = view.engine.get_download(view.id);
-                        let cfg = view.engine.get_config();
-                        view.theme = ThemePalette::from_config(
-                            cfg.app.theme_mode,
-                            cfg.app.ui_style,
-                            cfg.app.overall_zoom_pct,
-                            cfg.app.fonts_zoom_pct,
-                        );
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !ok {
-                    break;
-                }
-            }
-        })
+            },
+        )
         .detach();
 
         let record = engine.get_download(id);
@@ -837,14 +917,16 @@ impl StandaloneDownloadWindow {
             };
             let _ = tx.send(res.map_err(|e| e.to_string()));
         });
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if let Ok(Err(e)) = rx.await {
-                let _ = this.update(cx, |view, cx| {
-                    view.error_banner = Some(e);
-                    cx.notify();
-                });
-            }
-        })
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(Err(e)) = rx.await {
+                    let _ = this.update(cx, |view, cx| {
+                        view.error_banner = Some(e);
+                        cx.notify();
+                    });
+                }
+            },
+        )
         .detach();
     }
 
@@ -881,9 +963,16 @@ impl Render for StandaloneDownloadWindow {
                 .justify_center()
                 .gap_3()
                 .child(div().text_size(p.fpx(13.)).child("Download removed"))
-                .child(action_btn("sd-close-empty", loc.close, &p, true, cx, |_, _, w, _| {
-                    w.remove_window();
-                }));
+                .child(action_btn(
+                    "sd-close-empty",
+                    loc.close,
+                    &p,
+                    true,
+                    cx,
+                    |_, _, w, _| {
+                        w.remove_window();
+                    },
+                ));
         };
 
         let (type_icon, type_color) = download_icon_and_color(&rec);
@@ -893,7 +982,11 @@ impl Render for StandaloneDownloadWindow {
         let running = rec.state.is_running_or_seeding() || rec.state == DownloadState::Queued;
         let completed = rec.state == DownloadState::Completed;
         let size_txt = match rec.total_bytes {
-            Some(t) => format!("{} / {}", format_bytes(rec.downloaded_bytes), format_bytes(t)),
+            Some(t) => format!(
+                "{} / {}",
+                format_bytes(rec.downloaded_bytes),
+                format_bytes(t)
+            ),
             None => format_bytes(rec.downloaded_bytes),
         };
         let url_for_copy = rec.url.clone();
@@ -983,7 +1076,11 @@ impl Render for StandaloneDownloadWindow {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(svg_icon(type_icon, p.spx_f32(20.), rgb(0xffffff).into())),
+                                    .child(svg_icon(
+                                        type_icon,
+                                        p.spx_f32(20.),
+                                        rgb(0xffffff).into(),
+                                    )),
                             )
                             .child(
                                 div()
@@ -1000,14 +1097,13 @@ impl Render for StandaloneDownloadWindow {
                                             .child(ellipsis_text(rec.title.clone())),
                                     )
                                     .child(
-                                        div()
-                                            .text_size(p.fpx(11.))
-                                            .text_color(p.text_muted)
-                                            .child(ellipsis_text(format!(
+                                        div().text_size(p.fpx(11.)).text_color(p.text_muted).child(
+                                            ellipsis_text(format!(
                                                 "{} · {}",
                                                 extract_domain_label(&rec.url),
                                                 out_path.display()
-                                            ))),
+                                            )),
+                                        ),
                                     ),
                             )
                             .child(badge_themed(st_label, st_color, p.bg_300, &p)),
@@ -1063,7 +1159,10 @@ impl Render for StandaloneDownloadWindow {
                                         format_speed(rec.download_speed_bps),
                                         format_speed(rec.upload_speed_bps)
                                     ))
-                                    .child(format!("{} active connections", rec.connections_active)),
+                                    .child(format!(
+                                        "{} active connections",
+                                        rec.connections_active
+                                    )),
                             ),
                     )
                     .when_some(rec.last_error.clone(), |el, err| {
@@ -1135,15 +1234,9 @@ impl Render for StandaloneDownloadWindow {
                             .items_center()
                             .gap_2()
                             .when(!completed, |el| {
-                                el.child(danger_btn(
-                                    "sd-stop",
-                                    "Stop",
-                                    &p,
-                                    cx,
-                                    |this, _, _, cx| {
-                                        this.stop_download(cx);
-                                    },
-                                ))
+                                el.child(danger_btn("sd-stop", "Stop", &p, cx, |this, _, _, cx| {
+                                    this.stop_download(cx);
+                                }))
                                 .child(action_btn(
                                     "sd-toggle",
                                     if running { "Pause" } else { "Start" },

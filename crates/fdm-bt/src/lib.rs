@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use fdm_core::{
     DownloadAbortReason, DownloadFileEntry, DownloadPriority, DownloadRecord, DownloadState,
-    FdmConfig, FileType, PeerInfo, TrackerInfo,
-    os_integration::set_mark_of_the_web,
+    FdmConfig, FileType, PeerInfo, TrackerInfo, os_integration::set_mark_of_the_web,
     routing::classify_file_type,
 };
 use fdm_http::ControlCommand;
@@ -50,7 +49,10 @@ fn non_zero_limit(bps: u64) -> Option<NonZeroU32> {
     }
 }
 
-pub fn build_session_options(config: &FdmConfig, persistence_dir: Option<PathBuf>) -> SessionOptions {
+pub fn build_session_options(
+    config: &FdmConfig,
+    persistence_dir: Option<PathBuf>,
+) -> SessionOptions {
     let profile = config.active_profile();
     let mode = if config.core.bt_enable_utp {
         ListenerMode::TcpAndUtp
@@ -96,7 +98,13 @@ pub fn build_session_options(config: &FdmConfig, persistence_dir: Option<PathBuf
     {
         let s = &config.app.proxy.socks5;
         let proxy_url = if !s.username.is_empty() {
-            format!("socks5h://{}:{}@{}:{}", s.username, s.password, s.host.trim(), s.port)
+            format!(
+                "socks5h://{}:{}@{}:{}",
+                s.username,
+                s.password,
+                s.host.trim(),
+                s.port
+            )
         } else {
             format!("socks5h://{}:{}", s.host.trim(), s.port)
         };
@@ -326,7 +334,8 @@ impl BtSessionManager {
             }
         };
 
-        let mut merged_trackers: Vec<String> = record.trackers.iter().map(|t| t.url.clone()).collect();
+        let mut merged_trackers: Vec<String> =
+            record.trackers.iter().map(|t| t.url.clone()).collect();
         if config.core.bt_enable_tracker_list {
             for tr in &config.core.bt_tracker_list {
                 let s = tr.trim().to_string();
@@ -374,9 +383,7 @@ impl BtSessionManager {
         on_progress(&record);
 
         let handle = match self.session.add_torrent(add_torrent, Some(opts)).await {
-            Ok(AddTorrentResponse::Added(_, h)) | Ok(AddTorrentResponse::AlreadyManaged(_, h)) => {
-                h
-            }
+            Ok(AddTorrentResponse::Added(_, h)) | Ok(AddTorrentResponse::AlreadyManaged(_, h)) => h,
             Ok(AddTorrentResponse::ListOnly(_)) => {
                 record.state = DownloadState::Error;
                 record.last_error = Some("Unexpected ListOnly response".into());
@@ -417,16 +424,15 @@ impl BtSessionManager {
 
         // Play ASAP sequential hint: open stream handle for first playable video/audio file if requested
         let mut _stream_guard = None;
-        if record.flags.sequential_play_asap {
-            if let Some(f) = record
+        if record.flags.sequential_play_asap
+            && let Some(f) = record
                 .files
                 .iter()
                 .find(|f| f.priority != DownloadPriority::DontDownload)
-            {
-                let ft = classify_file_type(&f.relative_path, None);
-                if matches!(ft, FileType::Video | FileType::Audio) {
-                    _stream_guard = handle.clone().stream(f.index).await.ok();
-                }
+        {
+            let ft = classify_file_type(&f.relative_path, None);
+            if matches!(ft, FileType::Video | FileType::Audio) {
+                _stream_guard = handle.clone().stream(f.index).await.ok();
             }
         }
 
@@ -472,9 +478,9 @@ impl BtSessionManager {
             for (idx, bytes_done) in stats.file_progress.iter().enumerate() {
                 if let Some(entry) = record.files.get_mut(idx) {
                     entry.downloaded_bytes = *bytes_done;
-                    if entry.size_bytes > 0 && *bytes_done >= entry.size_bytes {
-                        entry.media_ready_to_play = true;
-                    } else if record.flags.sequential_play_asap && *bytes_done >= 512 * 1024 {
+                    if (entry.size_bytes > 0 && *bytes_done >= entry.size_bytes)
+                        || (record.flags.sequential_play_asap && *bytes_done >= 512 * 1024)
+                    {
                         entry.media_ready_to_play = true;
                     }
                 }
@@ -483,18 +489,11 @@ impl BtSessionManager {
             if let Some(ref live) = stats.live {
                 record.download_speed_bps = live.download_speed.as_bytes();
                 record.upload_speed_bps = live.upload_speed.as_bytes();
-                record.connections_active = live.snapshot.peer_stats.live as u32;
-                record.eta_secs = live
-                    .time_remaining
-                    .as_ref()
-                    .and_then(|_| {
-                        let rem = stats.total_bytes.saturating_sub(stats.progress_bytes);
-                        if record.download_speed_bps > 0 {
-                            Some(rem / record.download_speed_bps)
-                        } else {
-                            None
-                        }
-                    });
+                record.connections_active = live.snapshot.peer_stats.live;
+                record.eta_secs = live.time_remaining.as_ref().and_then(|_| {
+                    let rem = stats.total_bytes.saturating_sub(stats.progress_bytes);
+                    rem.checked_div(record.download_speed_bps)
+                });
                 if let Some(live_handle) = handle.live() {
                     let snap = live_handle.per_peer_stats_snapshot(Default::default());
                     record.peers = snap
@@ -759,17 +758,17 @@ pub fn scan_torrent_watch_folder(
                 path: p,
                 is_magnet_file: false,
             });
-        } else if ext == "magnet" {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                let trimmed = content.trim().to_string();
-                if trimmed.starts_with("magnet:") {
-                    already_seen.insert(p.clone());
-                    found.push(WatchFolderItem {
-                        source: trimmed,
-                        path: p,
-                        is_magnet_file: true,
-                    });
-                }
+        } else if ext == "magnet"
+            && let Ok(content) = std::fs::read_to_string(&p)
+        {
+            let trimmed = content.trim().to_string();
+            if trimmed.starts_with("magnet:") {
+                already_seen.insert(p.clone());
+                found.push(WatchFolderItem {
+                    source: trimmed,
+                    path: p,
+                    is_magnet_file: true,
+                });
             }
         }
     }

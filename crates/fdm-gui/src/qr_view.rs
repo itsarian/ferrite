@@ -19,12 +19,11 @@ pub fn render_qr_element(data: &str, module_px: f32) -> AnyElement {
         let mut cells = Vec::with_capacity(width);
         for x in 0..width {
             let dark = colors[y * width + x] == Color::Dark;
-            cells.push(
-                div()
-                    .w(px(module_px))
-                    .h(px(module_px))
-                    .bg(if dark { rgb(0x0f172a) } else { rgb(0xffffff) }),
-            );
+            cells.push(div().w(px(module_px)).h(px(module_px)).bg(if dark {
+                rgb(0x0f172a)
+            } else {
+                rgb(0xffffff)
+            }));
         }
         rows.push(div().flex().flex_row().children(cells));
     }

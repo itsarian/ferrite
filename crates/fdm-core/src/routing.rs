@@ -50,7 +50,11 @@ pub fn url_host_hash(url_str: &str) -> Option<String> {
 }
 
 /// Expand FDM-style path macros (`%date%`, `%year%`, `%month%`, `%day%`, `%host%`, `%server%`, `%path_on_server%`, `%ext%`, `%type%`, `%content_type%`).
-pub fn expand_path_macros(template: &str, url_str: Option<&str>, file_name: Option<&str>) -> String {
+pub fn expand_path_macros(
+    template: &str,
+    url_str: Option<&str>,
+    file_name: Option<&str>,
+) -> String {
     let now = Local::now();
     let parsed_url = url_str.and_then(|u| Url::parse(u).ok());
     let host = parsed_url
@@ -112,12 +116,11 @@ pub fn resolve_target_dir(
     }
 
     if !config.core.fixed_download_path {
-        if config.core.download_path_depends_on_source_url {
-            if let Some(h) = url_host_hash(url_str) {
-                if let Some(p) = config.path_by_url_hash.get(&h) {
-                    return p.clone();
-                }
-            }
+        if config.core.download_path_depends_on_source_url
+            && let Some(h) = url_host_hash(url_str)
+            && let Some(p) = config.path_by_url_hash.get(&h)
+        {
+            return p.clone();
         }
         if config.core.download_path_depends_on_file_type {
             let ft = classify_file_type(file_name, mime_type);
@@ -163,15 +166,15 @@ pub fn remember_target_dir_preference(
         return false;
     }
     let mut changed = false;
-    if config.core.download_path_depends_on_source_url {
-        if let Some(h) = url_host_hash(url_str) {
-            let is_custom_or_known = chosen_dir != config.core.default_download_path
-                || config.path_by_url_hash.contains_key(&h);
-            if is_custom_or_known && config.path_by_url_hash.get(&h) != Some(&chosen_dir.to_path_buf())
-            {
-                config.path_by_url_hash.insert(h, chosen_dir.to_path_buf());
-                changed = true;
-            }
+    if config.core.download_path_depends_on_source_url
+        && let Some(h) = url_host_hash(url_str)
+    {
+        let is_custom_or_known = chosen_dir != config.core.default_download_path
+            || config.path_by_url_hash.contains_key(&h);
+        if is_custom_or_known && config.path_by_url_hash.get(&h) != Some(&chosen_dir.to_path_buf())
+        {
+            config.path_by_url_hash.insert(h, chosen_dir.to_path_buf());
+            changed = true;
         }
     }
     if config.recent_folders.first() != Some(&chosen_dir.to_path_buf()) {
@@ -214,7 +217,7 @@ pub fn infer_filename_from_url(url_str: &str) -> String {
         return "magnet-download".into();
     }
     if let Ok(u) = Url::parse(url_str) {
-        if let Some(seg) = u.path_segments().and_then(|s| s.last()) {
+        if let Some(seg) = u.path_segments().and_then(|mut s| s.next_back()) {
             let decoded = urlencoding_decode(seg);
             if !decoded.is_empty() && decoded != "/" {
                 return sanitize_filename(&decoded);
@@ -232,15 +235,16 @@ pub fn urlencoding_decode(input: &str) -> String {
     let raw = input.as_bytes();
     let mut i = 0;
     while i < raw.len() {
-        if raw[i] == b'%' && i + 2 < raw.len() {
-            if let (Some(h), Some(l)) = (
+        if raw[i] == b'%'
+            && i + 2 < raw.len()
+            && let (Some(h), Some(l)) = (
                 char::from(raw[i + 1]).to_digit(16),
                 char::from(raw[i + 2]).to_digit(16),
-            ) {
-                bytes.push(((h << 4) | l) as u8);
-                i += 3;
-                continue;
-            }
+            )
+        {
+            bytes.push(((h << 4) | l) as u8);
+            i += 3;
+            continue;
         }
         bytes.push(raw[i]);
         i += 1;

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -8,6 +8,7 @@ const MAX_BATCH_URLS: usize = 10_000;
 /// - Numeric ranges with optional zero-padding and step: `[1-10]`, `[001-020:2]`
 /// - Single-character alphabetic ranges: `[a-f]`, `[A-Z:2]`
 /// - Alternation lists: `{linux,macos,windows}`
+///
 /// Supports multiple patterns in one template via ordered Cartesian expansion.
 pub fn expand_batch_pattern(template: &str) -> Result<Vec<String>> {
     let input = template.trim();
@@ -199,7 +200,8 @@ mod tests {
 
     #[test]
     fn expands_numeric_alpha_and_braces() {
-        let urls = expand_batch_pattern("https://cdn.test/{img,thumb}_[01-05:2]_[a-b].png").unwrap();
+        let urls =
+            expand_batch_pattern("https://cdn.test/{img,thumb}_[01-05:2]_[a-b].png").unwrap();
         assert_eq!(
             urls,
             vec![

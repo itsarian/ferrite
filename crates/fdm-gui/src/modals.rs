@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[allow(clippy::too_many_arguments)]
 fn modal_shell(
     id: &'static str,
     title: impl Into<String>,
@@ -218,36 +219,36 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
                         .child(div().text_xs().text_color(p.text_muted).child(sz)),
                 );
 
-            if let Some(ref media) = out.media {
-                if !media.variants.is_empty() {
-                    box_div = box_div.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(p.text_muted)
-                                    .child("Media Format / Quality:"),
-                            )
-                            .child(div().flex().flex_row().flex_wrap().gap_1().children(
-                                media.variants.iter().enumerate().take(10).map(|(idx, v)| {
-                                    chip_toggle(
-                                        format!("add-var-{idx}"),
-                                        format!("{} ({})", v.title, v.ext),
-                                        sel_var == idx,
-                                        &p,
-                                        cx,
-                                        move |this, _, _, cx| {
-                                            this.add_selected_variant = idx;
-                                            cx.notify();
-                                        },
-                                    )
-                                }),
-                            )),
-                    );
-                }
+            if let Some(ref media) = out.media
+                && !media.variants.is_empty()
+            {
+                box_div = box_div.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.text_muted)
+                                .child("Media Format / Quality:"),
+                        )
+                        .child(div().flex().flex_row().flex_wrap().gap_1().children(
+                            media.variants.iter().enumerate().take(10).map(|(idx, v)| {
+                                chip_toggle(
+                                    format!("add-var-{idx}"),
+                                    format!("{} ({})", v.title, v.ext),
+                                    sel_var == idx,
+                                    &p,
+                                    cx,
+                                    move |this, _, _, cx| {
+                                        this.add_selected_variant = idx;
+                                        cx.notify();
+                                    },
+                                )
+                            }),
+                        )),
+                );
             }
 
             if !out.files.is_empty() {
@@ -263,16 +264,11 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
                                 .flex_row()
                                 .items_center()
                                 .justify_between()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(p.text_muted)
-                                        .child(format!(
-                                            "Files ({}/{} selected)",
-                                            sel_files.len(),
-                                            out.files.len()
-                                        )),
-                                )
+                                .child(div().text_xs().text_color(p.text_muted).child(format!(
+                                    "Files ({}/{} selected)",
+                                    sel_files.len(),
+                                    out.files.len()
+                                )))
                                 .child(
                                     div()
                                         .flex()
@@ -358,15 +354,11 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
                         ),
                 );
             }
-            el.child(
-                box_div
-                    .id("add-probe-card")
-                    .with_animation(
-                        SharedString::from(format!("add-probe-anim-{probe_epoch}")),
-                        Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
-                        |el, delta| el.opacity(delta).mt(px(6.0 * (1.0 - delta))),
-                    ),
-            )
+            el.child(box_div.id("add-probe-card").with_animation(
+                SharedString::from(format!("add-probe-anim-{probe_epoch}")),
+                Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
+                |el, delta| el.opacity(delta).mt(px(6.0 * (1.0 - delta))),
+            ))
         })
         .child(
             div()
@@ -414,7 +406,12 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
                         .flex_row()
                         .items_center()
                         .gap_1()
-                        .child(div().text_size(p.fpx(11.)).text_color(p.text_muted).child("Macros:"))
+                        .child(
+                            div()
+                                .text_size(p.fpx(11.))
+                                .text_color(p.text_muted)
+                                .child("Macros:"),
+                        )
                         .children(["%date%", "%host%", "%type%"].into_iter().map(|m| {
                             chip_toggle(
                                 format!("add-mac-{m}"),
@@ -433,7 +430,12 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
                             )
                         })),
                 )
-                .child(badge_themed(free_space_txt, p.text_secondary, p.bg_input, &p)),
+                .child(badge_themed(
+                    free_space_txt,
+                    p.text_secondary,
+                    p.bg_input,
+                    &p,
+                )),
         )
         .when(dir_str.contains('%'), |el| {
             el.child(
@@ -686,9 +688,12 @@ fn render_batch_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> Any
                         .text_color(p.text_secondary)
                         .child(format!("Preview: {preview_count} expanded URL(s)")),
                 )
-                .children(preview.into_iter().take(6).map(|u| {
-                    div().text_xs().text_color(p.text_muted).truncate().child(u)
-                })),
+                .children(
+                    preview
+                        .into_iter()
+                        .take(6)
+                        .map(|u| div().text_xs().text_color(p.text_muted).truncate().child(u)),
+                ),
         )
         .into_any_element();
 
@@ -822,32 +827,28 @@ fn render_hash_modal(
         .flex_col()
         .gap_3()
         .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_1p5()
-                .children(
-                    [
-                        HashAlgorithm::Md5,
-                        HashAlgorithm::Sha1,
-                        HashAlgorithm::Sha256,
-                        HashAlgorithm::Sha512,
-                    ]
-                    .into_iter()
-                    .map(|alg| {
-                        chip_toggle(
-                            format!("hash-alg-{alg:?}"),
-                            alg.label(),
-                            cur_algo == alg,
-                            &p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.hash_algo = alg;
-                                cx.notify();
-                            },
-                        )
-                    }),
-                ),
+            div().flex().flex_row().gap_1p5().children(
+                [
+                    HashAlgorithm::Md5,
+                    HashAlgorithm::Sha1,
+                    HashAlgorithm::Sha256,
+                    HashAlgorithm::Sha512,
+                ]
+                .into_iter()
+                .map(|alg| {
+                    chip_toggle(
+                        format!("hash-alg-{alg:?}"),
+                        alg.label(),
+                        cur_algo == alg,
+                        &p,
+                        cx,
+                        move |this, _, _, cx| {
+                            this.hash_algo = alg;
+                            cx.notify();
+                        },
+                    )
+                }),
+            ),
         )
         .child(labeled_field(
             "Expected Hex Checksum (optional)",
@@ -1053,19 +1054,23 @@ fn render_convert_modal(
                                 .gap_1p5()
                                 .items_center()
                                 .child(div().text_xs().text_color(p.text_muted).child("VBR Level:"))
-                                .children([(0u8, "V0 (Best)"), (2, "V2 (High)"), (4, "V4 (Standard)")].into_iter().map(|(q, lbl)| {
-                                    chip_toggle(
-                                        format!("conv-vbr-{q}"),
-                                        lbl,
-                                        vbr_q == q,
-                                        &p,
-                                        cx,
-                                        move |this, _, _, cx| {
-                                            this.convert_vbr_quality = q;
-                                            cx.notify();
-                                        },
-                                    )
-                                })),
+                                .children(
+                                    [(0u8, "V0 (Best)"), (2, "V2 (High)"), (4, "V4 (Standard)")]
+                                        .into_iter()
+                                        .map(|(q, lbl)| {
+                                            chip_toggle(
+                                                format!("conv-vbr-{q}"),
+                                                lbl,
+                                                vbr_q == q,
+                                                &p,
+                                                cx,
+                                                move |this, _, _, cx| {
+                                                    this.convert_vbr_quality = q;
+                                                    cx.notify();
+                                                },
+                                            )
+                                        }),
+                                ),
                         )
                     }),
             )
@@ -1285,18 +1290,16 @@ fn render_remote_qr_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) ->
                     .text_color(p.danger)
                     .child(format!("Remote control server unavailable: {err_msg}")),
             )
-            .child(
-                div().flex().flex_row().child(action_btn(
-                    "qr-retry",
-                    "Start / Retry Remote Server",
-                    &p,
-                    false,
-                    cx,
-                    |this, _, _, cx| {
-                        this.open_remote_qr_modal(cx);
-                    },
-                )),
-            )
+            .child(div().flex().flex_row().child(action_btn(
+                "qr-retry",
+                "Start / Retry Remote Server",
+                &p,
+                false,
+                cx,
+                |this, _, _, cx| {
+                    this.open_remote_qr_modal(cx);
+                },
+            )))
             .into_any_element()
     };
 

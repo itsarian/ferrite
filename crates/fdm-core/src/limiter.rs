@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
@@ -100,7 +100,11 @@ mod tests {
         let start = Instant::now();
         limiter.acquire(10_000).await;
         let elapsed = start.elapsed();
-        assert!(elapsed >= Duration::from_millis(120), "elapsed was {:?}", elapsed);
+        assert!(
+            elapsed >= Duration::from_millis(120),
+            "elapsed was {:?}",
+            elapsed
+        );
 
         // Zero limit bypasses throttling immediately.
         limiter.set_limit_bps(0);

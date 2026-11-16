@@ -1,6 +1,8 @@
 use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use fdm_cli::DownloadEngine;
-use fdm_core::{DownloadState, FilterQuery, HashAlgorithm, NewDownloadRequest, StateFilter, hash::sha256_str};
+use fdm_core::{
+    DownloadState, FilterQuery, HashAlgorithm, NewDownloadRequest, StateFilter, hash::sha256_str,
+};
 use fdm_ipc::{IpcClient, IpcRequest, IpcResponse, default_socket_path};
 use fdm_native_host::{DaemonBridge, dispatch_native_task};
 use serde_json::json;
@@ -194,7 +196,11 @@ async fn e2e_engine_hls_aes128_stream() {
                     let mut buf = [0u8; 2048];
                     let n = sock.read(&mut buf).await.unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]);
-                    let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("/");
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
                     let (ctype, body): (&str, Vec<u8>) = if path == "/stream.m3u8" {
                         let m3u8 = format!(
                             "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://{addr}/k.key\"\n#EXTINF:4.0,\nhttp://{addr}/seg1.ts\n#EXT-X-ENDLIST\n"

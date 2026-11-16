@@ -1,11 +1,10 @@
 use aes::cipher::{BlockDecryptMut, KeyIvInit};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use fdm_core::{
     BandwidthLimiter, DownloadAbortReason, DownloadFileEntry, DownloadPriority, DownloadRecord,
-    DownloadState, FdmConfig, SegmentProgress, SegmentState,
-    os_integration::set_mark_of_the_web,
+    DownloadState, FdmConfig, SegmentProgress, SegmentState, os_integration::set_mark_of_the_web,
 };
-use fdm_http::{build_http_client, ControlCommand};
+use fdm_http::{ControlCommand, build_http_client};
 use m3u8_rs::{MasterPlaylist, MediaPlaylist, Playlist};
 use reqwest::Client;
 use std::collections::HashSet;
@@ -63,12 +62,12 @@ fn parse_iv(iv_opt: &Option<String>, seq_num: u64) -> [u8; 16] {
             .trim_start_matches("0x")
             .trim_start_matches("0X");
         let padded = format!("{:0>32}", stripped);
-        if let Ok(bytes) = hex::decode(padded) {
-            if bytes.len() == 16 {
-                let mut out = [0u8; 16];
-                out.copy_from_slice(&bytes);
-                return out;
-            }
+        if let Ok(bytes) = hex::decode(padded)
+            && bytes.len() == 16
+        {
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&bytes);
+            return out;
         }
     }
     let mut out = [0u8; 16];
@@ -88,7 +87,13 @@ fn decrypt_aes128_cbc(ciphertext: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Resul
 }
 
 pub async fn inspect_hls_variants(client: &Client, url: &str) -> Result<Vec<HlsVariantInfo>> {
-    let body = client.get(url).send().await?.error_for_status()?.bytes().await?;
+    let body = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
     let base = Url::parse(url)?;
     match m3u8_rs::parse_playlist_res(&body) {
         Ok(Playlist::MasterPlaylist(master)) => Ok(extract_variants(&base, &master)),
@@ -119,17 +124,21 @@ fn extract_variants(base: &Url, master: &MasterPlaylist) -> Vec<HlsVariantInfo> 
             })
         })
         .collect();
-    list.sort_by(|a, b| b.bandwidth.cmp(&a.bandwidth));
+    list.sort_by_key(|a| std::cmp::Reverse(a.bandwidth));
     list
 }
 
-fn extract_audio_rendition(base: &Url, master: &MasterPlaylist, audio_group: &Option<String>) -> Option<String> {
+fn extract_audio_rendition(
+    base: &Url,
+    master: &MasterPlaylist,
+    audio_group: &Option<String>,
+) -> Option<String> {
     for alt in &master.alternatives {
         if matches!(alt.media_type, m3u8_rs::AlternativeMediaType::Audio) {
-            if let Some(grp) = audio_group {
-                if &alt.group_id != grp {
-                    continue;
-                }
+            if let Some(grp) = audio_group
+                && &alt.group_id != grp
+            {
+                continue;
             }
             if let Some(ref uri) = alt.uri {
                 return resolve_url(base, uri).ok();
@@ -140,10 +149,10 @@ fn extract_audio_rendition(base: &Url, master: &MasterPlaylist, audio_group: &Op
 }
 
 fn resolve_ffmpeg_binary(config: &FdmConfig) -> Option<PathBuf> {
-    if let Some(ref p) = config.core.ffmpeg_path {
-        if p.exists() {
-            return Some(p.clone());
-        }
+    if let Some(ref p) = config.core.ffmpeg_path
+        && p.exists()
+    {
+        return Some(p.clone());
     }
     for cand in [
         "/opt/homebrew/bin/ffmpeg",
@@ -291,9 +300,7 @@ where
     };
 
     std::fs::create_dir_all(&record.target_dir)?;
-    let work_dir = record
-        .target_dir
-        .join(format!(".{}.hls_tmp", record.uuid));
+    let work_dir = record.target_dir.join(format!(".{}.hls_tmp", record.uuid));
     std::fs::create_dir_all(&work_dir)?;
 
     let video_raw_path = if audio_url.is_some() {
@@ -369,6 +376,7 @@ where
     Ok(OutcomeHls::Completed)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_media_playlist_to_file<F>(
     client: &Client,
     playlist_url: &str,
@@ -389,7 +397,10 @@ where
     let total_downloaded = Arc::new(AtomicU64::new(record.downloaded_bytes));
     let key_cache: Arc<Mutex<std::collections::HashMap<String, [u8; 16]>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let workers = config.active_profile().max_connections_per_server.max(1).min(8) as usize;
+    let workers = config
+        .active_profile()
+        .max_connections_per_server
+        .clamp(1, 8) as usize;
 
     record.state = DownloadState::Downloading;
 
@@ -418,10 +429,7 @@ where
         for (idx, seg) in media.segments.iter().enumerate() {
             if let Some(ref k) = seg.key {
                 if k.method == m3u8_rs::KeyMethod::AES128 {
-                    cur_key_uri = k
-                        .uri
-                        .as_ref()
-                        .and_then(|u| resolve_url(&base, u).ok());
+                    cur_key_uri = k.uri.as_ref().and_then(|u| resolve_url(&base, u).ok());
                     cur_iv = k.iv.clone();
                 } else {
                     cur_key_uri = None;
@@ -429,19 +437,23 @@ where
                 }
             }
 
-            if !init_downloaded {
-                if let Some(ref map) = seg.map {
-                    let map_url = resolve_url(&base, &map.uri)?;
-                    if seen_urls.insert(format!("MAP:{map_url}")) {
-                        let map_path = seg_dir.join("000000_init.mp4");
-                        let b = client.get(&map_url).send().await?.error_for_status()?.bytes().await?;
-                        limiter.acquire(b.len()).await;
-                        std::fs::write(&map_path, &b)?;
-                        total_downloaded.fetch_add(b.len() as u64, Ordering::Relaxed);
-                        seq_files.push(map_path);
-                    }
-                    init_downloaded = true;
+            if !init_downloaded && let Some(ref map) = seg.map {
+                let map_url = resolve_url(&base, &map.uri)?;
+                if seen_urls.insert(format!("MAP:{map_url}")) {
+                    let map_path = seg_dir.join("000000_init.mp4");
+                    let b = client
+                        .get(&map_url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .bytes()
+                        .await?;
+                    limiter.acquire(b.len()).await;
+                    std::fs::write(&map_path, &b)?;
+                    total_downloaded.fetch_add(b.len() as u64, Ordering::Relaxed);
+                    seq_files.push(map_path);
                 }
+                init_downloaded = true;
             }
 
             let seg_url = resolve_url(&base, &seg.uri)?;
@@ -465,9 +477,7 @@ where
                     url: seg_url,
                     byte_range,
                     key_uri: cur_key_uri.clone(),
-                    key_iv: cur_key_uri
-                        .as_ref()
-                        .map(|_| parse_iv(&cur_iv, seq_num)),
+                    key_iv: cur_key_uri.as_ref().map(|_| parse_iv(&cur_iv, seq_num)),
                     seq_num,
                 });
             }
@@ -487,7 +497,9 @@ where
                 })
                 .collect();
 
-            let jobs_q = Arc::new(Mutex::new(std::collections::VecDeque::from(new_jobs.clone())));
+            let jobs_q = Arc::new(Mutex::new(std::collections::VecDeque::from(
+                new_jobs.clone(),
+            )));
             let paths_map = Arc::new(Mutex::new(vec![None::<PathBuf>; new_jobs.len()]));
             let cancel_flag = Arc::new(AtomicBool::new(false));
             let pause_flag = Arc::new(AtomicBool::new(false));
@@ -509,8 +521,7 @@ where
 
                 handles.push(tokio::spawn(async move {
                     loop {
-                        if cancel_flag.load(Ordering::Relaxed)
-                            || pause_flag.load(Ordering::Relaxed)
+                        if cancel_flag.load(Ordering::Relaxed) || pause_flag.load(Ordering::Relaxed)
                         {
                             break;
                         }
@@ -553,33 +564,31 @@ where
                                 let cached = key_cache.lock().unwrap().get(key_url).copied();
                                 let key = match cached {
                                     Some(k) => k,
-                                    None => {
-                                        match client.get(key_url).send().await {
-                                            Ok(r) => match r.bytes().await {
-                                                Ok(kb) if kb.len() == 16 => {
-                                                    let mut arr = [0u8; 16];
-                                                    arr.copy_from_slice(&kb);
-                                                    key_cache
-                                                        .lock()
-                                                        .unwrap()
-                                                        .insert(key_url.clone(), arr);
-                                                    arr
-                                                }
-                                                _ => {
-                                                    let mut g = err_slot.lock().unwrap();
-                                                    *g = Some("Invalid AES-128 key length".into());
-                                                    cancel_flag.store(true, Ordering::Relaxed);
-                                                    break;
-                                                }
-                                            },
-                                            Err(e) => {
+                                    None => match client.get(key_url).send().await {
+                                        Ok(r) => match r.bytes().await {
+                                            Ok(kb) if kb.len() == 16 => {
+                                                let mut arr = [0u8; 16];
+                                                arr.copy_from_slice(&kb);
+                                                key_cache
+                                                    .lock()
+                                                    .unwrap()
+                                                    .insert(key_url.clone(), arr);
+                                                arr
+                                            }
+                                            _ => {
                                                 let mut g = err_slot.lock().unwrap();
-                                                *g = Some(format!("Key fetch error: {e}"));
+                                                *g = Some("Invalid AES-128 key length".into());
                                                 cancel_flag.store(true, Ordering::Relaxed);
                                                 break;
                                             }
+                                        },
+                                        Err(e) => {
+                                            let mut g = err_slot.lock().unwrap();
+                                            *g = Some(format!("Key fetch error: {e}"));
+                                            cancel_flag.store(true, Ordering::Relaxed);
+                                            break;
                                         }
-                                    }
+                                    },
                                 };
                                 match decrypt_aes128_cbc(&raw_bytes, &key, iv) {
                                     Ok(pt) => raw_bytes = pt,
@@ -598,8 +607,7 @@ where
                                 cancel_flag.store(true, Ordering::Relaxed);
                                 break;
                             }
-                            total_downloaded
-                                .fetch_add(raw_bytes.len() as u64, Ordering::Relaxed);
+                            total_downloaded.fetch_add(raw_bytes.len() as u64, Ordering::Relaxed);
                         }
 
                         paths_map.lock().unwrap()[local_idx] = Some(part_path);
@@ -717,7 +725,10 @@ pub fn parse_dash_mpd(mpd_url: &str, xml_text: &str) -> Result<Vec<DashRepresent
     let doc = roxmltree::Document::parse(xml_text)?;
     let mut reps = Vec::new();
 
-    for adap in doc.descendants().filter(|n| n.has_tag_name("AdaptationSet")) {
+    for adap in doc
+        .descendants()
+        .filter(|n| n.has_tag_name("AdaptationSet"))
+    {
         let adap_mime = adap.attribute("mimeType").unwrap_or("").to_string();
         let adap_template = adap.children().find(|c| c.has_tag_name("SegmentTemplate"));
         for rep in adap.children().filter(|c| c.has_tag_name("Representation")) {
@@ -759,11 +770,13 @@ pub fn parse_dash_mpd(mpd_url: &str, xml_text: &str) -> Result<Vec<DashRepresent
                         .attribute("startNumber")
                         .and_then(|s| s.parse::<u64>().ok())
                         .unwrap_or(1);
-                    if let Some(timeline) = t.children().find(|c| c.has_tag_name("SegmentTimeline")) {
+                    if let Some(timeline) = t.children().find(|c| c.has_tag_name("SegmentTimeline"))
+                    {
                         let mut cur_t = 0u64;
                         let mut cur_num = start_num;
                         for seg in timeline.children().filter(|c| c.has_tag_name("S")) {
-                            if let Some(t_val) = seg.attribute("t").and_then(|s| s.parse::<u64>().ok())
+                            if let Some(t_val) =
+                                seg.attribute("t").and_then(|s| s.parse::<u64>().ok())
                             {
                                 cur_t = t_val;
                             }
@@ -806,10 +819,10 @@ pub fn parse_dash_mpd(mpd_url: &str, xml_text: &str) -> Result<Vec<DashRepresent
                     init_url = resolve_url(&rep_base_url, init).ok();
                 }
                 for su in slist.children().filter(|c| c.has_tag_name("SegmentURL")) {
-                    if let Some(m) = su.attribute("media") {
-                        if let Ok(full) = resolve_url(&rep_base_url, m) {
-                            segment_urls.push(full);
-                        }
+                    if let Some(m) = su.attribute("media")
+                        && let Ok(full) = resolve_url(&rep_base_url, m)
+                    {
+                        segment_urls.push(full);
                     }
                 }
             } else if rep.children().any(|c| c.has_tag_name("BaseURL")) {
@@ -905,8 +918,15 @@ where
 
     record.state = DownloadState::Downloading;
     if let Some(ref vr) = best_video {
-        if let Err(e) =
-            fetch_dash_rep(&client, vr, &video_path, &limiter, &control_rx, &mut total_done).await
+        if let Err(e) = fetch_dash_rep(
+            &client,
+            vr,
+            &video_path,
+            &limiter,
+            &control_rx,
+            &mut total_done,
+        )
+        .await
         {
             record.state = DownloadState::Error;
             record.last_error = Some(e.to_string());
@@ -918,14 +938,16 @@ where
 
     let output_path = record.output_path();
     if let Some(ref ar) = best_audio {
-        if best_video
-            .as_ref()
-            .map(|v| v.id != ar.id)
-            .unwrap_or(true)
-        {
-            if let Err(e) =
-                fetch_dash_rep(&client, ar, &audio_path, &limiter, &control_rx, &mut total_done)
-                    .await
+        if best_video.as_ref().map(|v| v.id != ar.id).unwrap_or(true) {
+            if let Err(e) = fetch_dash_rep(
+                &client,
+                ar,
+                &audio_path,
+                &limiter,
+                &control_rx,
+                &mut total_done,
+            )
+            .await
             {
                 record.state = DownloadState::Error;
                 record.last_error = Some(e.to_string());
@@ -943,10 +965,9 @@ where
                     .arg(&output_path)
                     .status()
                     .await
+                    && !st.success()
                 {
-                    if !st.success() {
-                        let _ = std::fs::rename(&video_path, &output_path);
-                    }
+                    let _ = std::fs::rename(&video_path, &output_path);
                 }
             } else {
                 let _ = std::fs::rename(&video_path, &output_path);
@@ -984,16 +1005,31 @@ async fn fetch_dash_rep(
 ) -> Result<()> {
     let mut f = File::create(out_path)?;
     if let Some(ref init_u) = rep.init_url {
-        let b = client.get(init_u).send().await?.error_for_status()?.bytes().await?;
+        let b = client
+            .get(init_u)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
         limiter.acquire(b.len()).await;
         f.write_all(&b)?;
         *total_done += b.len() as u64;
     }
     for u in &rep.segment_urls {
-        if matches!(*control_rx.borrow(), ControlCommand::Cancel | ControlCommand::Pause) {
+        if matches!(
+            *control_rx.borrow(),
+            ControlCommand::Cancel | ControlCommand::Pause
+        ) {
             bail!("Aborted DASH transfer");
         }
-        let b = client.get(u).send().await?.error_for_status()?.bytes().await?;
+        let b = client
+            .get(u)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
         limiter.acquire(b.len()).await;
         f.write_all(&b)?;
         *total_done += b.len() as u64;
@@ -1136,9 +1172,13 @@ mod tests {
         };
 
         let (_tx, rx) = watch::channel(ControlCommand::Run);
-        let done =
-            download_hls_stream(rec, &cfg, BandwidthLimiter::new(0), rx, |_| {}).await;
-        assert_eq!(done.state, DownloadState::Completed, "err={:?}", done.last_error);
+        let done = download_hls_stream(rec, &cfg, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
 
         let final_bytes = std::fs::read(dir.join("stream.ts")).unwrap();
         let mut expected = seg1_plain;

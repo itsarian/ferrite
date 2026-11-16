@@ -5,7 +5,7 @@ use crate::model::{
 use crate::settings::FdmConfig;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -27,7 +27,8 @@ impl Database {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -175,7 +176,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn next_download_id_and_insert(&self, mut record: DownloadRecord) -> Result<DownloadRecord> {
+    pub fn next_download_id_and_insert(
+        &self,
+        mut record: DownloadRecord,
+    ) -> Result<DownloadRecord> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let max_order: i64 = tx.query_row(
@@ -332,10 +336,13 @@ impl Database {
             let color_hex: String = row.get(2)?;
             let is_builtin: i64 = row.get(3)?;
             let fts_json: String = row.get(4)?;
-            let ext_json: String = row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "[]".into());
+            let ext_json: String = row
+                .get::<_, Option<String>>(5)?
+                .unwrap_or_else(|| "[]".into());
             let folder_opt: Option<String> = row.get(6)?;
             let file_types: Vec<FileType> = serde_json::from_str(&fts_json).unwrap_or_default();
-            let default_extensions: Vec<String> = serde_json::from_str(&ext_json).unwrap_or_default();
+            let default_extensions: Vec<String> =
+                serde_json::from_str(&ext_json).unwrap_or_default();
             Ok(Tag {
                 id,
                 name,
@@ -343,7 +350,9 @@ impl Database {
                 is_builtin: is_builtin != 0,
                 file_types,
                 default_extensions,
-                default_download_folder: folder_opt.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from),
+                default_download_folder: folder_opt
+                    .filter(|s| !s.trim().is_empty())
+                    .map(std::path::PathBuf::from),
             })
         })?;
         let mut out = Vec::new();
@@ -370,7 +379,9 @@ impl Database {
             let color_hex: String = row.get(2)?;
             let is_builtin: i64 = row.get(3)?;
             let fts_json: String = row.get(4)?;
-            let ext_json: String = row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "[]".into());
+            let ext_json: String = row
+                .get::<_, Option<String>>(5)?
+                .unwrap_or_else(|| "[]".into());
             let folder_opt: Option<String> = row.get(6)?;
             Ok(Tag {
                 id,
@@ -379,7 +390,9 @@ impl Database {
                 is_builtin: is_builtin != 0,
                 file_types: serde_json::from_str(&fts_json).unwrap_or_default(),
                 default_extensions: serde_json::from_str(&ext_json).unwrap_or_default(),
-                default_download_folder: folder_opt.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from),
+                default_download_folder: folder_opt
+                    .filter(|s| !s.trim().is_empty())
+                    .map(std::path::PathBuf::from),
             })
         })?;
         Ok(tag)
@@ -414,7 +427,9 @@ impl Database {
             let color_hex: String = row.get(2)?;
             let is_builtin: i64 = row.get(3)?;
             let fts_json: String = row.get(4)?;
-            let ext_json: String = row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "[]".into());
+            let ext_json: String = row
+                .get::<_, Option<String>>(5)?
+                .unwrap_or_else(|| "[]".into());
             let folder_opt: Option<String> = row.get(6)?;
             Ok(Tag {
                 id,
@@ -423,7 +438,9 @@ impl Database {
                 is_builtin: is_builtin != 0,
                 file_types: serde_json::from_str(&fts_json).unwrap_or_default(),
                 default_extensions: serde_json::from_str(&ext_json).unwrap_or_default(),
-                default_download_folder: folder_opt.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from),
+                default_download_folder: folder_opt
+                    .filter(|s| !s.trim().is_empty())
+                    .map(std::path::PathBuf::from),
             })
         })?;
         Ok(tag)
@@ -520,9 +537,8 @@ impl Database {
 
     pub fn get_credential(&self, scope: &str) -> Result<Option<AuthCredential>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT scope, username, password FROM network_passwords WHERE scope = ?1",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT scope, username, password FROM network_passwords WHERE scope = ?1")?;
         let mut rows = stmt.query(params![scope])?;
         if let Some(row) = rows.next()? {
             return Ok(Some(AuthCredential {
@@ -546,7 +562,9 @@ impl Database {
     pub fn list_rc_passwords(&self) -> Result<BTreeMap<String, String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT client_id, password_hash FROM rc_passwords")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         let mut out = BTreeMap::new();
         for r in rows {
             let (k, v) = r?;
@@ -753,10 +771,14 @@ mod tests {
             .unwrap();
         assert_eq!(updated.name, "SDK Packages");
         assert_eq!(updated.default_extensions, vec!["tar.zst", "pkg"]);
-        assert_eq!(updated.default_download_folder, Some(std::path::PathBuf::from("/tmp/sdk")));
+        assert_eq!(
+            updated.default_download_folder,
+            Some(std::path::PathBuf::from("/tmp/sdk"))
+        );
 
         // Legacy partial config JSON deserializes via #[serde(default)]
-        let legacy_cfg: FdmConfig = serde_json::from_str(r#"{"app":{"quit_confirmation":false}}"#).unwrap();
+        let legacy_cfg: FdmConfig =
+            serde_json::from_str(r#"{"app":{"quit_confirmation":false}}"#).unwrap();
         assert!(!legacy_cfg.app.quit_confirmation);
         assert!(legacy_cfg.app.show_save_as_button);
         assert!(!legacy_cfg.app.show_support_button);

@@ -22,7 +22,9 @@ fn switch_anim_store() -> &'static Mutex<SwitchAnimState> {
 pub fn mark_switch_toggled(id: &str) {
     if let Ok(mut guard) = switch_anim_store().lock() {
         let next_epoch = guard.entries.get(id).map(|(e, _)| *e + 1).unwrap_or(1);
-        guard.entries.insert(id.to_string(), (next_epoch, Instant::now()));
+        guard
+            .entries
+            .insert(id.to_string(), (next_epoch, Instant::now()));
     }
 }
 
@@ -124,7 +126,11 @@ pub fn icon_action_btn<T: 'static>(
     let mut el = div()
         .id(ElementId::Name(id.into()))
         .h(p.spx(32.))
-        .px(if label.is_some() { p.spx(12.) } else { p.spx(8.) })
+        .px(if label.is_some() {
+            p.spx(12.)
+        } else {
+            p.spx(8.)
+        })
         .rounded(p.radius(8., 3.))
         .bg(bg)
         .hover(move |s| s.bg(hover_bg))
@@ -248,7 +254,9 @@ pub fn fdm_checkbox(checked: bool, p: &ThemePalette) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .when(checked, |el| el.child(svg_icon("icons/check.svg", 12. * p.ui_scale(), p.on_accent)))
+        .when(checked, |el| {
+            el.child(svg_icon("icons/check.svg", 12. * p.ui_scale(), p.on_accent))
+        })
 }
 
 fn switch_pill_track(id_key: &str, checked: bool, p: &ThemePalette) -> AnyElement {
@@ -279,16 +287,14 @@ fn switch_pill_track(id_key: &str, checked: bool, p: &ThemePalette) -> AnyElemen
                     let track_bg = lerp_hsla(p_copy.bg_elevated, p_copy.accent, t);
                     let border_c = lerp_hsla(p_copy.border, p_copy.accent, t);
                     let thumb_c = lerp_hsla(p_copy.text_muted, p_copy.on_accent, t);
-                    el.bg(track_bg)
-                        .border_color(border_c)
-                        .child(
-                            div()
-                                .ml(px(travel * t))
-                                .w(thumb_sz)
-                                .h(thumb_sz)
-                                .rounded_full()
-                                .bg(thumb_c),
-                        )
+                    el.bg(track_bg).border_color(border_c).child(
+                        div()
+                            .ml(px(travel * t))
+                            .w(thumb_sz)
+                            .h(thumb_sz)
+                            .rounded_full()
+                            .bg(thumb_c),
+                    )
                 },
             )
             .into_any_element()
@@ -345,7 +351,12 @@ pub fn switch_row<T: 'static>(
             mark_switch_toggled(&id_for_click);
             handler(this, ev, w, cx);
         }))
-        .child(div().text_size(p.fpx(12.)).text_color(p.text_primary).child(label.into()))
+        .child(
+            div()
+                .text_size(p.fpx(12.))
+                .text_color(p.text_primary)
+                .child(label.into()),
+        )
         .child(pill)
 }
 
@@ -391,7 +402,9 @@ pub fn fdm_indeterminate_checkbox(checked: bool, indeterminate: bool, p: &ThemeP
         .flex()
         .items_center()
         .justify_center()
-        .when(checked, |el| el.child(svg_icon("icons/check.svg", 12. * p.ui_scale(), p.on_accent)))
+        .when(checked, |el| {
+            el.child(svg_icon("icons/check.svg", 12. * p.ui_scale(), p.on_accent))
+        })
         .when(!checked && indeterminate, |el| {
             el.child(div().w(p.spx(8.)).h(px(2.)).rounded_full().bg(p.on_accent))
         })
@@ -424,7 +437,11 @@ pub fn radio_row<T: 'static>(
         .hover(|s| s.bg(p.bg_row_hover))
         .cursor_pointer()
         .on_click(cx.listener(handler))
-        .child(div().pt(px(1.)).child(svg_icon(icon, 16. * p.ui_scale(), icon_color)))
+        .child(
+            div()
+                .pt(px(1.))
+                .child(svg_icon(icon, 16. * p.ui_scale(), icon_color)),
+        )
         .child(
             div()
                 .flex()
@@ -443,7 +460,12 @@ pub fn radio_row<T: 'static>(
                         .child(label.into()),
                 )
                 .when_some(description, |el, desc| {
-                    el.child(div().text_size(p.fpx(11.)).text_color(p.text_muted).child(desc))
+                    el.child(
+                        div()
+                            .text_size(p.fpx(11.))
+                            .text_color(p.text_muted)
+                            .child(desc),
+                    )
                 }),
         )
 }
@@ -483,9 +505,19 @@ pub fn switch_row_desc<T: 'static>(
                 .gap_0p5()
                 .min_w_0()
                 .flex_1()
-                .child(div().text_size(p.fpx(12.)).text_color(p.text_primary).child(label.into()))
+                .child(
+                    div()
+                        .text_size(p.fpx(12.))
+                        .text_color(p.text_primary)
+                        .child(label.into()),
+                )
                 .when_some(description, |el, desc| {
-                    el.child(div().text_size(p.fpx(11.)).text_color(p.text_muted).child(desc))
+                    el.child(
+                        div()
+                            .text_size(p.fpx(11.))
+                            .text_color(p.text_muted)
+                            .child(desc),
+                    )
                 }),
         )
         .child(pill)
@@ -523,23 +555,26 @@ pub fn snail_switch_btn<T: 'static>(
                 move |el, delta| {
                     let t = if active { delta } else { 1.0 - delta };
                     let track_bg = lerp_hsla(p_copy.snail_off_track, p_copy.snail_on_bg, t);
-                    let track_border = lerp_hsla(p_copy.snail_off_border, p_copy.snail_on_border, t);
+                    let track_border =
+                        lerp_hsla(p_copy.snail_off_border, p_copy.snail_on_border, t);
                     let thumb_bg = lerp_hsla(p_copy.snail_off_thumb, p_copy.amber, t);
                     let thumb_fg = lerp_hsla(p_copy.snail_off_thumb_text, p_copy.snail_on_bg, t);
-                    el.bg(track_bg)
-                        .border_color(track_border)
-                        .child(
-                            div()
-                                .ml(px(travel * t))
-                                .w(thumb_sz)
-                                .h(thumb_sz)
-                                .rounded_full()
-                                .bg(thumb_bg)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(svg_icon("icons/snail.svg", 13. * p_copy.ui_scale(), thumb_fg)),
-                        )
+                    el.bg(track_bg).border_color(track_border).child(
+                        div()
+                            .ml(px(travel * t))
+                            .w(thumb_sz)
+                            .h(thumb_sz)
+                            .rounded_full()
+                            .bg(thumb_bg)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(svg_icon(
+                                "icons/snail.svg",
+                                13. * p_copy.ui_scale(),
+                                thumb_fg,
+                            )),
+                    )
                 },
             )
             .into_any_element()
@@ -608,7 +643,11 @@ pub fn sidebar_nav_item<T: 'static>(
         .flex_row()
         .items_center()
         .gap_2p5()
-        .bg(if active { p.bg_300 } else { gpui::transparent_black() })
+        .bg(if active {
+            p.bg_300
+        } else {
+            gpui::transparent_black()
+        })
         .hover(|s| s.bg(if active { p.bg_300 } else { p.bg_row_hover }))
         .cursor_pointer()
         .on_click(cx.listener(handler))
@@ -625,12 +664,21 @@ pub fn sidebar_nav_item<T: 'static>(
                 } else {
                     FontWeight::NORMAL
                 })
-                .text_color(if active { p.text_primary } else { p.text_secondary })
+                .text_color(if active {
+                    p.text_primary
+                } else {
+                    p.text_secondary
+                })
                 .child(label.into()),
         )
 }
 
-pub fn slim_progress_bar(fraction: f64, height_px: f32, fill_color: Hsla, track_color: Hsla) -> Div {
+pub fn slim_progress_bar(
+    fraction: f64,
+    height_px: f32,
+    fill_color: Hsla,
+    track_color: Hsla,
+) -> Div {
     let clamped = fraction.clamp(0.0, 1.0) as f32;
     div()
         .w_full()
@@ -706,7 +754,11 @@ pub fn tab_pill<T: 'static>(
         .px_2p5()
         .py(p.spx(4.))
         .rounded(p.radius(6., 2.))
-        .bg(if active { p.bg_300 } else { gpui::transparent_black() })
+        .bg(if active {
+            p.bg_300
+        } else {
+            gpui::transparent_black()
+        })
         .hover(|s| s.bg(p.bg_300))
         .cursor_pointer()
         .on_click(cx.listener(handler))
@@ -738,7 +790,11 @@ pub fn password_field_row<T: 'static>(
         .child(div().flex_1().min_w_0().child(input))
         .child(ghost_icon_btn(
             toggle_id,
-            if revealed { "icons/eye_off.svg" } else { "icons/eye.svg" },
+            if revealed {
+                "icons/eye_off.svg"
+            } else {
+                "icons/eye.svg"
+            },
             15.,
             p.text_muted,
             p.bg_elevated,
@@ -848,10 +904,10 @@ impl Element for EllipsisText {
         if self.text.is_empty() || bounds.size.width <= px(2.) {
             return None;
         }
-        if bounds.size.width + px(0.5) >= state.natural_width {
-            if let Some(full) = state.shaped_full.take() {
-                return Some((full, state.line_height));
-            }
+        if bounds.size.width + px(0.5) >= state.natural_width
+            && let Some(full) = state.shaped_full.take()
+        {
+            return Some((full, state.line_height));
         }
         let mut runs = vec![state.text_style.to_run(self.text.len())];
         let display_text = {

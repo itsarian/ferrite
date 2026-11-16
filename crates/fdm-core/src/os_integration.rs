@@ -190,33 +190,30 @@ pub async fn is_default_torrent_client() -> bool {
             .arg(&plist)
             .output()
             .await
+            && let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            && let Some(handlers) = val.get("LSHandlers").and_then(|v| v.as_array())
         {
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                if let Some(handlers) = val.get("LSHandlers").and_then(|v| v.as_array()) {
-                    for entry in handlers {
-                        let scheme = entry
-                            .get("LSHandlerURLScheme")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let tag = entry
-                            .get("LSHandlerContentTag")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let role = entry
-                            .get("LSHandlerRoleAll")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if (scheme.eq_ignore_ascii_case("magnet")
-                            || tag.eq_ignore_ascii_case("torrent"))
-                            && role.to_ascii_lowercase().contains("ferritedm")
-                        {
-                            return true;
-                        }
-                    }
+            for entry in handlers {
+                let scheme = entry
+                    .get("LSHandlerURLScheme")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let tag = entry
+                    .get("LSHandlerContentTag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let role = entry
+                    .get("LSHandlerRoleAll")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if (scheme.eq_ignore_ascii_case("magnet") || tag.eq_ignore_ascii_case("torrent"))
+                    && role.to_ascii_lowercase().contains("ferritedm")
+                {
+                    return true;
                 }
             }
         }
-        return false;
+        false
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -230,10 +227,10 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
     let mutex = CACHE.get_or_init(|| Mutex::new(None));
     {
         let g = mutex.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, cellular, roaming)) = *g {
-            if at.elapsed() < Duration::from_secs(5) {
-                return (cellular, roaming);
-            }
+        if let Some((at, cellular, roaming)) = *g
+            && at.elapsed() < Duration::from_secs(5)
+        {
+            return (cellular, roaming);
         }
     }
 
@@ -259,7 +256,8 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
                         .output()
                         .await
                     {
-                        let svc_txt = String::from_utf8_lossy(&services.stdout).to_ascii_lowercase();
+                        let svc_txt =
+                            String::from_utf8_lossy(&services.stdout).to_ascii_lowercase();
                         if svc_txt.contains(&format!("device: {iface})"))
                             && (svc_txt.contains("cellular")
                                 || svc_txt.contains("iphone")
@@ -272,12 +270,10 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
                 }
             }
         }
-        if cellular {
-            if let Ok(out) = Command::new("scutil").arg("--nwi").output().await {
-                let txt = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
-                if txt.contains("roaming") {
-                    roaming = true;
-                }
+        if cellular && let Ok(out) = Command::new("scutil").arg("--nwi").output().await {
+            let txt = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+            if txt.contains("roaming") {
+                roaming = true;
             }
         }
     }
@@ -292,8 +288,7 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
 fn applescript_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
 }
 
 /// Trigger a non-blocking OS desktop notification.
@@ -379,11 +374,11 @@ pub async fn check_power_status() -> (bool, u8) {
                         pct = v;
                         break;
                     }
-                } else if let Some(num) = tok.strip_suffix('%') {
-                    if let Ok(v) = num.parse::<u8>() {
-                        pct = v;
-                        break;
-                    }
+                } else if let Some(num) = tok.strip_suffix('%')
+                    && let Ok(v) = num.parse::<u8>()
+                {
+                    pct = v;
+                    break;
                 }
             }
             return (on_battery, pct);
@@ -401,10 +396,10 @@ pub struct SleepPreventer {
 impl SleepPreventer {
     pub fn update(&mut self, should_prevent: bool) {
         if should_prevent {
-            if let Some(ref mut c) = self.child {
-                if let Ok(None) = c.try_wait() {
-                    return;
-                }
+            if let Some(ref mut c) = self.child
+                && let Ok(None) = c.try_wait()
+            {
+                return;
             }
             #[cfg(target_os = "macos")]
             {

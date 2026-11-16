@@ -68,18 +68,18 @@ impl ThemePalette {
     pub fn from_mode(mode: ThemeMode) -> Self {
         match mode {
             ThemeMode::Light => {
-                if let Ok(override_theme) = std::env::var("FERRITE_THEME") {
-                    if override_theme.eq_ignore_ascii_case("dark") {
-                        return Self::dark();
-                    }
+                if let Ok(override_theme) = std::env::var("FERRITE_THEME")
+                    && override_theme.eq_ignore_ascii_case("dark")
+                {
+                    return Self::dark();
                 }
                 Self::light()
             }
             ThemeMode::Dark => {
-                if let Ok(override_theme) = std::env::var("FERRITE_THEME") {
-                    if override_theme.eq_ignore_ascii_case("light") {
-                        return Self::light();
-                    }
+                if let Ok(override_theme) = std::env::var("FERRITE_THEME")
+                    && override_theme.eq_ignore_ascii_case("light")
+                {
+                    return Self::light();
                 }
                 Self::dark()
             }
@@ -152,7 +152,11 @@ impl ThemePalette {
     }
 
     pub fn radius(&self, modern_px: f32, classic_px: f32) -> Pixels {
-        let base = if self.is_classic() { classic_px } else { modern_px };
+        let base = if self.is_classic() {
+            classic_px
+        } else {
+            modern_px
+        };
         px((base * self.ui_scale()).round().max(1.0))
     }
 
@@ -176,7 +180,7 @@ impl ThemePalette {
                     return Self::dark();
                 }
             }
-            return Self::light();
+            Self::light()
         }
         #[cfg(not(target_os = "macos"))]
         {

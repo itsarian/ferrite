@@ -80,15 +80,12 @@ pub fn render_plugins_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                     el.child(badge_themed("Developer", p.warning, p.bg_300, &p))
                                 }),
                         )
-                        .child(
-                            div()
-                                .text_size(p.fpx(12.))
-                                .text_color(p.text_muted)
-                                .child(format!(
-                                    "Manage site & media parser add-ons stored locally in {}",
-                                    plugins_dir_str
-                                )),
-                        ),
+                        .child(div().text_size(p.fpx(12.)).text_color(p.text_muted).child(
+                            format!(
+                                "Manage site & media parser add-ons stored locally in {}",
+                                plugins_dir_str
+                            ),
+                        )),
                 )
                 .child(
                     div()
@@ -325,7 +322,11 @@ pub fn render_plugins_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                         .flex_row()
                                         .items_center()
                                         .gap_2()
-                                        .child(svg_icon("icons/plugin.svg", p.spx_f32(16.), p.accent))
+                                        .child(svg_icon(
+                                            "icons/plugin.svg",
+                                            p.spx_f32(16.),
+                                            p.accent,
+                                        ))
                                         .child(
                                             div()
                                                 .text_size(p.fpx(14.))
@@ -369,7 +370,10 @@ pub fn render_plugins_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                             div()
                                                 .text_size(p.fpx(11.))
                                                 .text_color(p.text_muted)
-                                                .child(format!("Author: {} · UID: {}", pl.author, pl.uid)),
+                                                .child(format!(
+                                                    "Author: {} · UID: {}",
+                                                    pl.author, pl.uid
+                                                )),
                                         )
                                         .children(pl.domains.into_iter().take(6).map(|d| {
                                             badge_themed(d, p.text_secondary, p.bg_300, &p)

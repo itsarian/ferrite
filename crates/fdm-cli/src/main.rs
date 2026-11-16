@@ -5,8 +5,7 @@ use fdm_cli::DownloadEngine;
 use fdm_core::{
     DownloadPriority, DownloadState, ExistingFileReaction, FdmConfig, FilterQuery, HashAlgorithm,
     KnownWebBrowser, NetworkProxyMode, NewDownloadRequest, ProxyEndpoint, StateFilter,
-    TrafficUsageMode,
-    hash::compute_file_hash,
+    TrafficUsageMode, hash::compute_file_hash,
 };
 use fdm_ipc::{IpcClient, IpcRequest, IpcResponse, default_socket_path};
 use fdm_media::{convert_to_mp3, convert_to_mp4, ffprobe_inspect};
@@ -150,7 +149,7 @@ enum Commands {
         #[arg(long)]
         wait: bool,
     },
-    /// Expand an FDM wildcard batch pattern (e.g. "https://ex.com/[01-10].zip") or file
+    /// Expand an FDM wildcard batch pattern (e.g. `https://ex.com/[01-10].zip`) or file
     Batch {
         pattern: Option<String>,
         #[arg(long)]
@@ -186,9 +185,15 @@ enum Commands {
         #[arg(long)]
         tag_id: Option<i64>,
     },
-    Pause { id: i64 },
-    Resume { id: i64 },
-    Cancel { id: i64 },
+    Pause {
+        id: i64,
+    },
+    Resume {
+        id: i64,
+    },
+    Cancel {
+        id: i64,
+    },
     Remove {
         id: i64,
         #[arg(long)]
@@ -239,7 +244,9 @@ enum Commands {
         transcode: bool,
     },
     /// Export downloads list to JSON
-    Export { output: PathBuf },
+    Export {
+        output: PathBuf,
+    },
     /// Import downloads list (Ferrite/FDM JSON or URL list)
     Import {
         input: PathBuf,
@@ -247,11 +254,17 @@ enum Commands {
         paused: bool,
     },
     /// Import settings bundle
-    ImportSettings { input: PathBuf },
+    ImportSettings {
+        input: PathBuf,
+    },
     /// Export settings bundle with SHA-256 verification
-    ExportSettings { output: PathBuf },
+    ExportSettings {
+        output: PathBuf,
+    },
     /// Best-effort import from an existing Free Download Manager db.sqlite
-    ImportFdmDb { sqlite_path: PathBuf },
+    ImportFdmDb {
+        sqlite_path: PathBuf,
+    },
     /// Print QR pairing code & start or display Remote Control URL
     RemoteControl {
         #[arg(long, default_value = "127.0.0.1")]
@@ -279,21 +292,33 @@ enum TagCommands {
         #[arg(long, default_value = "#3B82F6")]
         color: String,
     },
-    Delete { tag_id: i64 },
-    Assign { download_id: i64, tag_id: i64 },
-    Unassign { download_id: i64, tag_id: i64 },
+    Delete {
+        tag_id: i64,
+    },
+    Assign {
+        download_id: i64,
+        tag_id: i64,
+    },
+    Unassign {
+        download_id: i64,
+        tag_id: i64,
+    },
 }
 
 #[derive(Subcommand)]
 enum SettingsCommands {
     Show,
-    SetDownloadDir { path: PathBuf },
+    SetDownloadDir {
+        path: PathBuf,
+    },
     SetMaxConcurrent {
         #[arg(value_enum)]
         mode: CliTum,
         count: u32,
     },
-    SetExistingReaction { reaction: String },
+    SetExistingReaction {
+        reaction: String,
+    },
     SetProxy {
         mode: String,
         #[arg(long)]
@@ -339,8 +364,8 @@ fn print_records_table(items: &[fdm_core::DownloadRecord]) {
         return;
     }
     println!(
-        "{:<4} {:<10} {:<15} {:<8} {:<11} {:<10} {}",
-        "ID", "TYPE", "STATE", "PROG", "SIZE", "SPEED", "TITLE"
+        "{:<4} {:<10} {:<15} {:<8} {:<11} {:<10} TITLE",
+        "ID", "TYPE", "STATE", "PROG", "SIZE", "SPEED"
     );
     for d in items {
         let pct = format!("{:.0}%", d.progress_fraction() * 100.0);
@@ -349,7 +374,10 @@ fn print_records_table(items: &[fdm_core::DownloadRecord]) {
             .map(DownloadEngine::format_human_bytes)
             .unwrap_or_else(|| DownloadEngine::format_human_bytes(d.downloaded_bytes));
         let spd = if d.download_speed_bps > 0 {
-            format!("{}/s", DownloadEngine::format_human_bytes(d.download_speed_bps))
+            format!(
+                "{}/s",
+                DownloadEngine::format_human_bytes(d.download_speed_bps)
+            )
         } else {
             "-".into()
         };
@@ -369,7 +397,13 @@ fn print_records_table(items: &[fdm_core::DownloadRecord]) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let raw_args: Vec<String> = std::env::args()
-        .map(|a| if a == "-service" { "--service".into() } else { a })
+        .map(|a| {
+            if a == "-service" {
+                "--service".into()
+            } else {
+                a
+            }
+        })
         .collect();
     let cli = Cli::parse_from(raw_args);
     let data_dir = cli
@@ -381,7 +415,7 @@ async fn main() -> Result<()> {
         let mut req = NewDownloadRequest::from_url(url);
         req.silent = cli.hidden;
         if let Some(IpcResponse::Ok { data }) =
-            try_daemon_ipc(&data_dir, IpcRequest::AddDownload(req.clone())).await
+            try_daemon_ipc(&data_dir, IpcRequest::AddDownload(Box::new(req.clone()))).await
         {
             println!(
                 "Sent to running Ferrite DM daemon: #{} {}",
@@ -456,19 +490,23 @@ async fn main() -> Result<()> {
                 }
             }
 
-            if !wait {
-                if let Some(IpcResponse::Ok { data }) =
-                    try_daemon_ipc(&data_dir, IpcRequest::AddDownload(req.clone())).await
-                {
-                    println!("Queued on daemon: #{} ({})", data["id"], data["file_name"]);
-                    return Ok(());
-                }
+            if !wait
+                && let Some(IpcResponse::Ok { data }) =
+                    try_daemon_ipc(&data_dir, IpcRequest::AddDownload(Box::new(req.clone()))).await
+            {
+                println!("Queued on daemon: #{} ({})", data["id"], data["file_name"]);
+                return Ok(());
             }
 
             let eng = DownloadEngine::open(&data_dir, false)?;
             let _sup = eng.spawn_supervisor();
             let rec = eng.add_download(req).await?;
-            println!("Added download #{}: {} -> {}", rec.id, rec.file_name, rec.target_dir.display());
+            println!(
+                "Added download #{}: {} -> {}",
+                rec.id,
+                rec.file_name,
+                rec.target_dir.display()
+            );
             if wait || !paused {
                 wait_until_terminal(&eng, rec.id).await;
             }
@@ -519,7 +557,10 @@ async fn main() -> Result<()> {
                 let info = bt.inspect_source(&source).await?;
                 println!("Name:      {}", info.name);
                 println!("InfoHash:  {}", info.info_hash);
-                println!("Size:      {}", DownloadEngine::format_human_bytes(info.total_bytes));
+                println!(
+                    "Size:      {}",
+                    DownloadEngine::format_human_bytes(info.total_bytes)
+                );
                 println!("Trackers:  {}", info.trackers.len());
                 for f in &info.files {
                     println!(
@@ -560,15 +601,14 @@ async fn main() -> Result<()> {
                 search_text: search.unwrap_or_default(),
                 ..Default::default()
             };
-            let items: Vec<fdm_core::DownloadRecord> =
-                if let Some(IpcResponse::Ok { data }) =
-                    try_daemon_ipc(&data_dir, IpcRequest::ListDownloads(q.clone())).await
-                {
-                    serde_json::from_value(data).unwrap_or_default()
-                } else {
-                    let eng = DownloadEngine::open(&data_dir, true)?;
-                    eng.list_downloads(&q)
-                };
+            let items: Vec<fdm_core::DownloadRecord> = if let Some(IpcResponse::Ok { data }) =
+                try_daemon_ipc(&data_dir, IpcRequest::ListDownloads(q.clone())).await
+            {
+                serde_json::from_value(data).unwrap_or_default()
+            } else {
+                let eng = DownloadEngine::open(&data_dir, true)?;
+                eng.list_downloads(&q)
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
@@ -698,7 +738,11 @@ async fn main() -> Result<()> {
                         prof.max_concurrent_downloads = count.max(1);
                     }
                     eng.update_config(cfg)?;
-                    println!("Updated max concurrent for {} to {}", m.label(), count.max(1));
+                    println!(
+                        "Updated max concurrent for {} to {}",
+                        m.label(),
+                        count.max(1)
+                    );
                 }
                 SettingsCommands::SetExistingReaction { reaction } => {
                     cfg.core.existing_file_reaction = match reaction.to_ascii_lowercase().as_str() {
@@ -736,7 +780,10 @@ async fn main() -> Result<()> {
                 PluginCommands::List => {
                     let plugs = eng.list_js_plugins();
                     if plugs.is_empty() {
-                        println!("No JS parser plugins installed in {}", eng.plugins_dir().display());
+                        println!(
+                            "No JS parser plugins installed in {}",
+                            eng.plugins_dir().display()
+                        );
                     } else {
                         for p in plugs {
                             println!(
@@ -812,7 +859,10 @@ async fn main() -> Result<()> {
         Commands::ExportSettings { output } => {
             let eng = DownloadEngine::open(&data_dir, true)?;
             eng.export_settings(&output)?;
-            println!("Exported settings with SHA-256 hash to {}", output.display());
+            println!(
+                "Exported settings with SHA-256 hash to {}",
+                output.display()
+            );
         }
         Commands::ImportSettings { input } => {
             let eng = DownloadEngine::open(&data_dir, true)?;
@@ -868,7 +918,10 @@ async fn main() -> Result<()> {
                     .or_else(|| default_native_manifest_dir(b))
                     .with_context(|| format!("No NativeMessagingHosts dir known for {b:?}"))?;
                 let written = install_native_manifest_to_dir(b, &exe, &dir)?;
-                println!("Installed {b:?} native host manifest at {}", written.display());
+                println!(
+                    "Installed {b:?} native host manifest at {}",
+                    written.display()
+                );
             }
         }
         Commands::SelfTest => {
@@ -904,7 +957,10 @@ async fn wait_until_terminal(eng: &Arc<DownloadEngine>, id: i64) {
         if let Some(rec) = eng.get_download(id) {
             if matches!(
                 rec.state,
-                DownloadState::Completed | DownloadState::Error | DownloadState::Stopped | DownloadState::Paused
+                DownloadState::Completed
+                    | DownloadState::Error
+                    | DownloadState::Stopped
+                    | DownloadState::Paused
             ) {
                 println!(
                     "Download #{} finished with state: {:?} ({})",
@@ -1000,7 +1056,9 @@ async fn run_self_test() -> Result<()> {
     let rec = eng.add_download(req).await?;
     wait_until_terminal(&eng, rec.id).await;
 
-    let finished = eng.get_download(rec.id).context("missing finished download")?;
+    let finished = eng
+        .get_download(rec.id)
+        .context("missing finished download")?;
     assert_eq!(finished.state, DownloadState::Completed);
     let actual_bytes = std::fs::read(finished.output_path())?;
     assert_eq!(actual_bytes.len(), payload_arc.len());

@@ -1,5 +1,7 @@
 use fdm_core::FdmConfig;
-use fdm_native_host::{UnixDaemonBridge, dispatch_native_task, read_native_message, write_native_message};
+use fdm_native_host::{
+    UnixDaemonBridge, dispatch_native_task, read_native_message, write_native_message,
+};
 use std::io;
 use std::path::PathBuf;
 

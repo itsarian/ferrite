@@ -437,10 +437,10 @@ impl FdmConfig {
 
     pub fn data_dir(portable: bool) -> PathBuf {
         if portable {
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(parent) = exe.parent() {
-                    return parent.join("ferrite-data");
-                }
+            if let Ok(exe) = std::env::current_exe()
+                && let Some(parent) = exe.parent()
+            {
+                return parent.join("ferrite-data");
             }
             return PathBuf::from("./ferrite-data");
         }

@@ -4,8 +4,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions,
-    div, fill, point, prelude::*, px, relative, rgba, size,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
+    fill, point, prelude::*, px, relative, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -110,7 +110,11 @@ fn visual_byte_to_content_byte(content: &str, visual_byte: usize, masked: bool) 
 }
 
 impl TextInput {
-    pub fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>, initial: &str) -> Self {
+    pub fn new(
+        cx: &mut Context<Self>,
+        placeholder: impl Into<SharedString>,
+        initial: &str,
+    ) -> Self {
         let len = initial.len();
         Self {
             focus_handle: cx.focus_handle(),
@@ -311,7 +315,12 @@ impl TextInput {
         }
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.focus_handle.focus(window);
         self.is_selecting = true;
         if event.modifiers.shift {
@@ -616,7 +625,8 @@ impl Element for InputTextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked) = (!masked).then(|| input.marked_range.as_ref()).flatten() {
+        let runs = if let Some(marked) = (!masked).then_some(input.marked_range.as_ref()).flatten()
+        {
             vec![
                 TextRun {
                     len: marked.start,
@@ -644,7 +654,9 @@ impl Element for InputTextElement {
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window.text_system().shape_line(display_text, font_size, &runs, None);
+        let line = window
+            .text_system()
+            .shape_line(display_text, font_size, &runs, None);
         let visual_cursor = if content.is_empty() {
             0
         } else {
@@ -706,10 +718,10 @@ impl Element for InputTextElement {
         }
         let line = prepaint.line.take().unwrap();
         let _ = line.paint(bounds.origin, window.line_height(), window, cx);
-        if focus_handle.is_focused(window) {
-            if let Some(c) = prepaint.cursor.take() {
-                window.paint_quad(c);
-            }
+        if focus_handle.is_focused(window)
+            && let Some(c) = prepaint.cursor.take()
+        {
+            window.paint_quad(c);
         }
         self.input.update(cx, |inp, _| {
             inp.last_layout = Some(line);
@@ -733,12 +745,15 @@ impl Render for TextInput {
                 .rounded(px(input_r))
                 .bg(self.bg)
                 .border_1()
-                .border_color(if focused { self.border_focus } else { self.border });
+                .border_color(if focused {
+                    self.border_focus
+                } else {
+                    self.border
+                });
         }
         let font_sz = (13.0 * self.font_scale).round();
         let line_h = (font_sz * 1.54).round().max(18.0);
-        root
-            .key_context("FerriteInput")
+        root.key_context("FerriteInput")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))

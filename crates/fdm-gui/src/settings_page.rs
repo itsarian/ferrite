@@ -36,12 +36,24 @@ pub fn render_settings_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) 
         (SettingsTab::Network, "icons/speed.svg", s.nav_network),
         (SettingsTab::Traffic, "icons/trending_up.svg", s.nav_traffic),
         (SettingsTab::Antivirus, "icons/shield.svg", s.nav_antivirus),
-        (SettingsTab::BitTorrent, "icons/type_torrent.svg", s.nav_bittorrent),
+        (
+            SettingsTab::BitTorrent,
+            "icons/type_torrent.svg",
+            s.nav_bittorrent,
+        ),
         (SettingsTab::RemoteAccess, "icons/qr.svg", s.nav_remote),
-        (SettingsTab::Advanced, "icons/folder_open.svg", s.nav_advanced),
+        (
+            SettingsTab::Advanced,
+            "icons/folder_open.svg",
+            s.nav_advanced,
+        ),
     ];
     if app.show_troubleshooting {
-        nav_items.push((SettingsTab::Troubleshooting, "icons/info.svg", s.nav_troubleshooting));
+        nav_items.push((
+            SettingsTab::Troubleshooting,
+            "icons/info.svg",
+            s.nav_troubleshooting,
+        ));
     }
 
     let body: AnyElement = match active_tab {
@@ -208,12 +220,7 @@ pub fn render_settings_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) 
                                     },
                                 ))
                                 .when(dirty, |el| {
-                                    el.child(badge_themed(
-                                        s.unsaved_changes,
-                                        p.amber,
-                                        p.bg_300,
-                                        &p,
-                                    ))
+                                    el.child(badge_themed(s.unsaved_changes, p.amber, p.bg_300, &p))
                                 }),
                         )
                         .child(
@@ -291,17 +298,21 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child(s.color_theme))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_1p5()
-                        .children([
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child(s.color_theme),
+                )
+                .child(
+                    div().flex().flex_row().gap_1p5().children(
+                        [
                             (ThemeMode::System, "System"),
                             (ThemeMode::Dark, "Dark"),
                             (ThemeMode::Light, "Light"),
-                        ].into_iter().map(|(tm, lbl)| {
+                        ]
+                        .into_iter()
+                        .map(|(tm, lbl)| {
                             chip_toggle(
                                 format!("gen-tm-{tm:?}"),
                                 lbl,
@@ -312,7 +323,8 @@ fn render_general_tab(
                                     this.set_theme_mode(tm, w, cx);
                                 },
                             )
-                        })),
+                        }),
+                    ),
                 ),
         )
         .child(
@@ -322,7 +334,12 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child(s.layout_density_style))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child(s.layout_density_style),
+                )
                 .child(
                     div()
                         .flex()
@@ -371,26 +388,27 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child(s.interface_zoom))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .children([85u16, 100, 115, 130].into_iter().map(|z| {
-                            chip_toggle(
-                                format!("gen-zoom-{z}"),
-                                format!("{z}%"),
-                                cfg_app.overall_zoom_pct == z,
-                                p,
-                                cx,
-                                move |this, _, w, cx| {
-                                    this.settings_cfg.app.overall_zoom_pct = z;
-                                    this.preview_appearance(w, cx);
-                                },
-                            )
-                        })),
-                ),
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child(s.interface_zoom),
+                )
+                .child(div().flex().flex_row().gap_1().children(
+                    [85u16, 100, 115, 130].into_iter().map(|z| {
+                        chip_toggle(
+                            format!("gen-zoom-{z}"),
+                            format!("{z}%"),
+                            cfg_app.overall_zoom_pct == z,
+                            p,
+                            cx,
+                            move |this, _, w, cx| {
+                                this.settings_cfg.app.overall_zoom_pct = z;
+                                this.preview_appearance(w, cx);
+                            },
+                        )
+                    }),
+                )),
         )
         .child(
             div()
@@ -399,26 +417,27 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child(s.font_size))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .children([85u16, 100, 115, 130].into_iter().map(|z| {
-                            chip_toggle(
-                                format!("gen-fzoom-{z}"),
-                                format!("{z}%"),
-                                cfg_app.fonts_zoom_pct == z,
-                                p,
-                                cx,
-                                move |this, _, w, cx| {
-                                    this.settings_cfg.app.fonts_zoom_pct = z;
-                                    this.preview_appearance(w, cx);
-                                },
-                            )
-                        })),
-                ),
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child(s.font_size),
+                )
+                .child(div().flex().flex_row().gap_1().children(
+                    [85u16, 100, 115, 130].into_iter().map(|z| {
+                        chip_toggle(
+                            format!("gen-fzoom-{z}"),
+                            format!("{z}%"),
+                            cfg_app.fonts_zoom_pct == z,
+                            p,
+                            cx,
+                            move |this, _, w, cx| {
+                                this.settings_cfg.app.fonts_zoom_pct = z;
+                                this.preview_appearance(w, cx);
+                            },
+                        )
+                    }),
+                )),
         )
         .child(
             div()
@@ -427,38 +446,38 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child(s.interface_language))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap_1()
-                        .children(
-                            [
-                                ("en_US", "English (US)"),
-                                ("en_GB", "English (UK)"),
-                                ("de_DE", "Deutsch"),
-                                ("fr_FR", "Français"),
-                                ("es_ES", "Español"),
-                                ("ja_JP", "日本語"),
-                            ]
-                            .into_iter()
-                            .map(|(code, lbl)| {
-                                chip_toggle(
-                                    format!("gen-lang-{code}"),
-                                    lbl,
-                                    cfg_app.locale_name == code,
-                                    p,
-                                    cx,
-                                    move |this, _, _, cx| {
-                                        this.settings_cfg.app.locale_name = code.into();
-                                        this.apply_theme_and_appearance_to_inputs(cx);
-                                        cx.notify();
-                                    },
-                                )
-                            }),
-                        ),
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child(s.interface_language),
+                )
+                .child(
+                    div().flex().flex_row().flex_wrap().gap_1().children(
+                        [
+                            ("en_US", "English (US)"),
+                            ("en_GB", "English (UK)"),
+                            ("de_DE", "Deutsch"),
+                            ("fr_FR", "Français"),
+                            ("es_ES", "Español"),
+                            ("ja_JP", "日本語"),
+                        ]
+                        .into_iter()
+                        .map(|(code, lbl)| {
+                            chip_toggle(
+                                format!("gen-lang-{code}"),
+                                lbl,
+                                cfg_app.locale_name == code,
+                                p,
+                                cx,
+                                move |this, _, _, cx| {
+                                    this.settings_cfg.app.locale_name = code.into();
+                                    this.apply_theme_and_appearance_to_inputs(cx);
+                                    cx.notify();
+                                },
+                            )
+                        }),
+                    ),
                 ),
         )
         .child(switch_row_desc(
@@ -521,8 +540,12 @@ fn render_general_tab(
             p,
             cx,
             |this, _, _, cx| {
-                this.settings_cfg.app.enable_standalone_create_downloads_windows =
-                    !this.settings_cfg.app.enable_standalone_create_downloads_windows;
+                this.settings_cfg
+                    .app
+                    .enable_standalone_create_downloads_windows = !this
+                    .settings_cfg
+                    .app
+                    .enable_standalone_create_downloads_windows;
                 cx.notify();
             },
         ))
@@ -572,8 +595,7 @@ fn render_general_tab(
             p,
             cx,
             |this, _, _, cx| {
-                this.settings_cfg.app.quit_confirmation =
-                    !this.settings_cfg.app.quit_confirmation;
+                this.settings_cfg.app.quit_confirmation = !this.settings_cfg.app.quit_confirmation;
                 cx.notify();
             },
         ))
@@ -626,21 +648,19 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(
-                    div().flex_1().child(switch_row_desc(
-                        "gen-def-bt",
-                        "Check if Ferrite DM is the default BitTorrent client",
-                        None,
-                        cfg_app.check_if_default_torrent_client,
-                        p,
-                        cx,
-                        |this, _, _, cx| {
-                            this.settings_cfg.app.check_if_default_torrent_client =
-                                !this.settings_cfg.app.check_if_default_torrent_client;
-                            cx.notify();
-                        },
-                    )),
-                )
+                .child(div().flex_1().child(switch_row_desc(
+                    "gen-def-bt",
+                    "Check if Ferrite DM is the default BitTorrent client",
+                    None,
+                    cfg_app.check_if_default_torrent_client,
+                    p,
+                    cx,
+                    |this, _, _, cx| {
+                        this.settings_cfg.app.check_if_default_torrent_client =
+                            !this.settings_cfg.app.check_if_default_torrent_client;
+                        cx.notify();
+                    },
+                )))
                 .child(action_btn(
                     "gen-chk-def-bt-btn",
                     s.check_now,
@@ -659,21 +679,19 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(
-                    div().flex_1().child(switch_row_desc(
-                        "gen-auto-chk-upd",
-                        "Check for application updates automatically",
-                        None,
-                        cfg_app.auto_check_updates,
-                        p,
-                        cx,
-                        |this, _, _, cx| {
-                            this.settings_cfg.app.auto_check_updates =
-                                !this.settings_cfg.app.auto_check_updates;
-                            cx.notify();
-                        },
-                    )),
-                )
+                .child(div().flex_1().child(switch_row_desc(
+                    "gen-auto-chk-upd",
+                    "Check for application updates automatically",
+                    None,
+                    cfg_app.auto_check_updates,
+                    p,
+                    cx,
+                    |this, _, _, cx| {
+                        this.settings_cfg.app.auto_check_updates =
+                            !this.settings_cfg.app.auto_check_updates;
+                        cx.notify();
+                    },
+                )))
                 .child(action_btn(
                     "gen-chk-app-upd-btn",
                     s.check_now,
@@ -717,17 +735,21 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child("Delete action default"))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .children([
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child("Delete action default"),
+                )
+                .child(
+                    div().flex().flex_row().gap_1().children(
+                        [
                             (DeleteButtonAction::AlwaysAsk, "Always Ask"),
                             (DeleteButtonAction::RemoveOnly, "List Only"),
                             (DeleteButtonAction::DeleteFiles, "List + Files"),
-                        ].into_iter().map(|(da, lbl)| {
+                        ]
+                        .into_iter()
+                        .map(|(da, lbl)| {
                             chip_toggle(
                                 format!("gen-delact-{da:?}"),
                                 lbl,
@@ -739,7 +761,8 @@ fn render_general_tab(
                                     cx.notify();
                                 },
                             )
-                        })),
+                        }),
+                    ),
                 ),
         )
         .child(section_heading(s.sec_folders_routing, p))
@@ -776,24 +799,33 @@ fn render_general_tab(
                 .flex_wrap()
                 .items_center()
                 .gap_1()
-                .child(div().text_size(p.fpx(11.)).text_color(p.text_muted).child("Insert macro:"))
-                .children(["%date%", "%host%", "%type%", "%ext%"].into_iter().map(|m| {
-                    chip_toggle(
-                        format!("gen-macro-{m}"),
-                        m,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            let cur = this.set_default_dir.read(cx).text();
-                            let sep = if cur.ends_with('/') { "" } else { "/" };
-                            this.set_default_dir.update(cx, |i, cx| {
-                                i.set_text(&format!("{cur}{sep}{m}"), cx);
-                            });
-                            cx.notify();
-                        },
-                    )
-                })),
+                .child(
+                    div()
+                        .text_size(p.fpx(11.))
+                        .text_color(p.text_muted)
+                        .child("Insert macro:"),
+                )
+                .children(
+                    ["%date%", "%host%", "%type%", "%ext%"]
+                        .into_iter()
+                        .map(|m| {
+                            chip_toggle(
+                                format!("gen-macro-{m}"),
+                                m,
+                                false,
+                                p,
+                                cx,
+                                move |this, _, _, cx| {
+                                    let cur = this.set_default_dir.read(cx).text();
+                                    let sep = if cur.ends_with('/') { "" } else { "/" };
+                                    this.set_default_dir.update(cx, |i, cx| {
+                                        i.set_text(&format!("{cur}{sep}{m}"), cx);
+                                    });
+                                    cx.notify();
+                                },
+                            )
+                        }),
+                ),
         )
         .child(
             div()
@@ -865,18 +897,22 @@ fn render_general_tab(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child("If destination file already exists"))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .children([
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child("If destination file already exists"),
+                )
+                .child(
+                    div().flex().flex_row().gap_1().children(
+                        [
                             ExistingFileReaction::Ask,
                             ExistingFileReaction::Rename,
                             ExistingFileReaction::Overwrite,
                             ExistingFileReaction::Skip,
-                        ].into_iter().map(|r| {
+                        ]
+                        .into_iter()
+                        .map(|r| {
                             chip_toggle(
                                 format!("gen-react-{r:?}"),
                                 reaction_label(r),
@@ -888,7 +924,8 @@ fn render_general_tab(
                                     cx.notify();
                                 },
                             )
-                        })),
+                        }),
+                    ),
                 ),
         )
         .child(switch_row_desc(
@@ -1053,7 +1090,8 @@ fn render_browser_tab(
                         if this.settings_cfg.core.wb_small_size_unit_mb {
                             let cur = this.set_wb_small_kb.read(cx).text();
                             let conv = convert_wb_threshold_input(&cur, false);
-                            this.set_wb_small_kb.update(cx, |i, cx| i.set_text(&conv, cx));
+                            this.set_wb_small_kb
+                                .update(cx, |i, cx| i.set_text(&conv, cx));
                             this.settings_cfg.core.wb_small_size_unit_mb = false;
                             cx.notify();
                         }
@@ -1069,7 +1107,8 @@ fn render_browser_tab(
                         if !this.settings_cfg.core.wb_small_size_unit_mb {
                             let cur = this.set_wb_small_kb.read(cx).text();
                             let conv = convert_wb_threshold_input(&cur, true);
-                            this.set_wb_small_kb.update(cx, |i, cx| i.set_text(&conv, cx));
+                            this.set_wb_small_kb
+                                .update(cx, |i, cx| i.set_text(&conv, cx));
                             this.settings_cfg.core.wb_small_size_unit_mb = true;
                             cx.notify();
                         }
@@ -1162,7 +1201,12 @@ fn render_browser_tab(
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .child(div().text_xs().text_color(p.text_muted).child("Bypass key:"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_muted)
+                        .child("Bypass key:"),
+                )
                 .children(["Alt", "Ctrl", "Shift"].into_iter().map(|k| {
                     chip_toggle(
                         format!("wb-key-{k}"),
@@ -1209,7 +1253,11 @@ fn render_browser_tab(
                                         .child(browser_display_name(b)),
                                 )
                                 .child(badge_themed(
-                                    if installed { "Installed" } else { "Not Installed" },
+                                    if installed {
+                                        "Installed"
+                                    } else {
+                                        "Not Installed"
+                                    },
                                     if installed { p.success } else { p.text_muted },
                                     p.bg_300,
                                     p,
@@ -1217,7 +1265,11 @@ fn render_browser_tab(
                         )
                         .child(action_btn(
                             format!("wb-inst-{b:?}"),
-                            if installed { "Reinstall Host" } else { "Install Host" },
+                            if installed {
+                                "Reinstall Host"
+                            } else {
+                                "Install Host"
+                            },
                             p,
                             !installed,
                             cx,
@@ -1227,18 +1279,16 @@ fn render_browser_tab(
                         ))
                 })),
         )
-        .child(
-            div().flex().justify_end().child(action_btn(
-                "wb-inst-all",
-                "Install All Native Hosts",
-                p,
-                true,
-                cx,
-                |this, _, _, cx| {
-                    this.install_native_host(None, cx);
-                },
-            )),
-        )
+        .child(div().flex().justify_end().child(action_btn(
+            "wb-inst-all",
+            "Install All Native Hosts",
+            p,
+            true,
+            cx,
+            |this, _, _, cx| {
+                this.install_native_host(None, cx);
+            },
+        )))
         .into_any_element()
 }
 
@@ -1550,16 +1600,15 @@ fn render_traffic_tab(
         )
         .child(section_heading(s.sec_tum_profiles, p))
         .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_1p5()
-                .children([
+            div().flex().flex_row().gap_1p5().children(
+                [
                     (TrafficUsageMode::Snail, "Snail Mode"),
                     (TrafficUsageMode::Low, "Low Speed"),
                     (TrafficUsageMode::Medium, "Medium Speed"),
                     (TrafficUsageMode::High, "High Speed"),
-                ].into_iter().map(|(m, lbl)| {
+                ]
+                .into_iter()
+                .map(|(m, lbl)| {
                     chip_toggle(
                         format!("tum-tab-{m:?}"),
                         lbl,
@@ -1570,7 +1619,8 @@ fn render_traffic_tab(
                             this.switch_settings_tum(m, cx);
                         },
                     )
-                })),
+                }),
+            ),
         )
         .child(
             div()
@@ -2547,28 +2597,23 @@ fn render_advanced_tab(
                     p,
                 )),
         )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_1p5()
-                .children(day_names.into_iter().enumerate().map(|(i, dn)| {
-                    let bit = 1u8 << i;
-                    let on = (cfg_core.default_schedule.days_mask & bit) != 0;
-                    chip_toggle(
-                        format!("adv-day-{i}"),
-                        dn,
-                        on,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.settings_cfg.core.default_schedule.days_mask ^= bit;
-                            cx.notify();
-                        },
-                    )
-                })),
-        )
+        .child(div().flex().flex_row().flex_wrap().gap_1p5().children(
+            day_names.into_iter().enumerate().map(|(i, dn)| {
+                let bit = 1u8 << i;
+                let on = (cfg_core.default_schedule.days_mask & bit) != 0;
+                chip_toggle(
+                    format!("adv-day-{i}"),
+                    dn,
+                    on,
+                    p,
+                    cx,
+                    move |this, _, _, cx| {
+                        this.settings_cfg.core.default_schedule.days_mask ^= bit;
+                        cx.notify();
+                    },
+                )
+            }),
+        ))
         .child(
             div()
                 .flex()
@@ -2576,19 +2621,23 @@ fn render_advanced_tab(
                 .items_center()
                 .justify_between()
                 .gap_2()
-                .child(div().text_xs().text_color(p.text_primary).child("Auto shutdown when queue completes"))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .children([
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child("Auto shutdown when queue completes"),
+                )
+                .child(
+                    div().flex().flex_row().gap_1().children(
+                        [
                             (ShutdownType::None, "Off"),
                             (ShutdownType::Sleep, "Sleep"),
                             (ShutdownType::Hibernate, "Hibernate"),
                             (ShutdownType::Shutdown, "Shutdown"),
                             (ShutdownType::QuitApp, "Quit"),
-                        ].into_iter().map(|(st, lbl)| {
+                        ]
+                        .into_iter()
+                        .map(|(st, lbl)| {
                             chip_toggle(
                                 format!("adv-sd-{st:?}"),
                                 lbl,
@@ -2600,7 +2649,8 @@ fn render_advanced_tab(
                                     cx.notify();
                                 },
                             )
-                        })),
+                        }),
+                    ),
                 ),
         )
         .child(section_heading(s.sec_post_tools, p))
@@ -2720,43 +2770,44 @@ fn render_advanced_tab(
                 )),
         )
         .child(section_heading(s.sec_tag_visibility, p))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_1p5()
-                .children(builtin_tags.into_iter().map(|t| {
-                    let tid = t.id;
-                    let visible = !hidden_tags.contains(&tid);
-                    let dot = parse_hex_color(&t.color_hex);
-                    div()
-                        .id(SharedString::from(format!("adv-htag-{tid}")))
-                        .px_2p5()
-                        .py(p.spx(4.))
-                        .rounded(p.radius(6., 2.))
-                        .bg(if visible { p.accent_soft } else { p.bg_200 })
-                        .border_1()
-                        .border_color(if visible { p.accent } else { p.border })
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1p5()
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let list = &mut this.settings_cfg.app.hidden_builtin_tags;
-                            if let Some(pos) = list.iter().position(|&x| x == tid) {
-                                list.remove(pos);
-                            } else {
-                                list.push(tid);
-                            }
-                            cx.notify();
-                        }))
-                        .child(fdm_checkbox(visible, p))
-                        .child(div().w(p.spx(7.)).h(p.spx(7.)).rounded(p.radius(2., 1.)).bg(dot))
-                        .child(div().text_xs().text_color(p.text_primary).child(t.name))
-                })),
-        )
+        .child(div().flex().flex_row().flex_wrap().gap_1p5().children(
+            builtin_tags.into_iter().map(|t| {
+                let tid = t.id;
+                let visible = !hidden_tags.contains(&tid);
+                let dot = parse_hex_color(&t.color_hex);
+                div()
+                    .id(SharedString::from(format!("adv-htag-{tid}")))
+                    .px_2p5()
+                    .py(p.spx(4.))
+                    .rounded(p.radius(6., 2.))
+                    .bg(if visible { p.accent_soft } else { p.bg_200 })
+                    .border_1()
+                    .border_color(if visible { p.accent } else { p.border })
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let list = &mut this.settings_cfg.app.hidden_builtin_tags;
+                        if let Some(pos) = list.iter().position(|&x| x == tid) {
+                            list.remove(pos);
+                        } else {
+                            list.push(tid);
+                        }
+                        cx.notify();
+                    }))
+                    .child(fdm_checkbox(visible, p))
+                    .child(
+                        div()
+                            .w(p.spx(7.))
+                            .h(p.spx(7.))
+                            .rounded(p.radius(2., 1.))
+                            .bg(dot),
+                    )
+                    .child(div().text_xs().text_color(p.text_primary).child(t.name))
+            }),
+        ))
         .child(section_heading(s.sec_backup_migration, p))
         .child(labeled_field(
             "Import / Export path (.json, .txt, .csv, or legacy db.sqlite)",
@@ -2837,7 +2888,12 @@ fn render_troubleshooting_tab(
                         .text_color(p.text_primary)
                         .child(s.troubleshooting_title),
                 )
-                .child(badge_themed("Local Only · Zero Upload", p.success, p.bg_200, p)),
+                .child(badge_themed(
+                    "Local Only · Zero Upload",
+                    p.success,
+                    p.bg_200,
+                    p,
+                )),
         )
         .child(section_heading(s.sec_diag_logging, p))
         .child(switch_row_desc(
@@ -2872,8 +2928,7 @@ fn render_troubleshooting_tab(
             p,
             cx,
             |this, _, _, cx| {
-                this.settings_cfg.app.lt_alerts_logging =
-                    !this.settings_cfg.app.lt_alerts_logging;
+                this.settings_cfg.app.lt_alerts_logging = !this.settings_cfg.app.lt_alerts_logging;
                 cx.notify();
             },
         ))

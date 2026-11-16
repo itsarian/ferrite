@@ -5,7 +5,7 @@ use crate::model::{
 };
 use crate::routing::{classify_file_type, infer_filename_from_url};
 use crate::settings::FdmConfig;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -67,7 +67,8 @@ fn csv_escape(s: &str) -> String {
 }
 
 pub fn export_downloads_csv(downloads: &[DownloadRecord], path: &Path) -> Result<()> {
-    let mut out = String::from("id,title,url,state,downloaded_bytes,total_bytes,output_path,created_at\n");
+    let mut out =
+        String::from("id,title,url,state,downloaded_bytes,total_bytes,output_path,created_at\n");
     for d in downloads {
         let row = [
             d.id.to_string(),
@@ -220,11 +221,12 @@ fn record_from_imported_url(url: &str, config: &FdmConfig) -> DownloadRecord {
 
 /// Best-effort reader for an existing Free Download Manager SQLite database (`db.sqlite`),
 /// scanning tables dynamically via `PRAGMA table_info` so user migration works safely without hardcoding internal schema versions.
-pub fn inspect_legacy_fdm_sqlite(db_path: &Path, config: &FdmConfig) -> Result<Vec<DownloadRecord>> {
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+pub fn inspect_legacy_fdm_sqlite(
+    db_path: &Path,
+    config: &FdmConfig,
+) -> Result<Vec<DownloadRecord>> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut tbl_stmt = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )?;
@@ -245,38 +247,38 @@ pub fn inspect_legacy_fdm_sqlite(db_path: &Path, config: &FdmConfig) -> Result<V
             .iter()
             .find(|c| c.eq_ignore_ascii_case("url") || c.eq_ignore_ascii_case("sourceUrl"));
         if let Some(ucol) = url_col {
-            let file_col = cols
-                .iter()
-                .find(|c| c.eq_ignore_ascii_case("fileName") || c.eq_ignore_ascii_case("outputPath"));
+            let file_col = cols.iter().find(|c| {
+                c.eq_ignore_ascii_case("fileName") || c.eq_ignore_ascii_case("outputPath")
+            });
             let sql = if let Some(fcol) = file_col {
                 format!("SELECT \"{}\", \"{}\" FROM \"{}\"", ucol, fcol, table)
             } else {
                 format!("SELECT \"{}\", '' FROM \"{}\"", ucol, table)
             };
-            if let Ok(mut stmt) = conn.prepare(&sql) {
-                if let Ok(rows) = stmt.query_map([], |r| {
+            if let Ok(mut stmt) = conn.prepare(&sql)
+                && let Ok(rows) = stmt.query_map([], |r| {
                     Ok((
                         r.get::<_, Option<String>>(0)?.unwrap_or_default(),
                         r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                     ))
-                }) {
-                    for row in rows.flatten() {
-                        if !row.0.is_empty() {
-                            let mut rec = record_from_imported_url(&row.0, config);
-                            if !row.1.is_empty() {
-                                let p = Path::new(&row.1);
-                                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                                    rec.file_name = name.to_string();
-                                    rec.title = name.to_string();
-                                }
-                                if let Some(dir) = p.parent() {
-                                    if !dir.as_os_str().is_empty() {
-                                        rec.target_dir = dir.to_path_buf();
-                                    }
-                                }
+                })
+            {
+                for row in rows.flatten() {
+                    if !row.0.is_empty() {
+                        let mut rec = record_from_imported_url(&row.0, config);
+                        if !row.1.is_empty() {
+                            let p = Path::new(&row.1);
+                            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                                rec.file_name = name.to_string();
+                                rec.title = name.to_string();
                             }
-                            imported.push(rec);
+                            if let Some(dir) = p.parent()
+                                && !dir.as_os_str().is_empty()
+                            {
+                                rec.target_dir = dir.to_path_buf();
+                            }
                         }
+                        imported.push(rec);
                     }
                 }
             }
@@ -305,10 +307,18 @@ mod tests {
         let rec = record_from_imported_url("https://example.org/test.iso", &cfg);
         let txt_p = dir.join("urls.txt");
         let csv_p = dir.join("downloads.csv");
-        export_downloads_urls_txt(&[rec.clone()], &txt_p).unwrap();
+        export_downloads_urls_txt(std::slice::from_ref(&rec), &txt_p).unwrap();
         export_downloads_csv(&[rec], &csv_p).unwrap();
-        assert!(std::fs::read_to_string(&txt_p).unwrap().contains("test.iso"));
-        assert!(std::fs::read_to_string(&csv_p).unwrap().contains("id,title,url"));
+        assert!(
+            std::fs::read_to_string(&txt_p)
+                .unwrap()
+                .contains("test.iso")
+        );
+        assert!(
+            std::fs::read_to_string(&csv_p)
+                .unwrap()
+                .contains("id,title,url")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

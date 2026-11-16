@@ -2,11 +2,10 @@ use crate::bottom_panel::render_bottom_panel;
 use crate::helpers::{
     LaunchOptions, UiAsyncMsg, UiMsgQueue, browser_display_name, detect_lan_ip,
     download_icon_and_color, extract_domain_label, extract_first_download_url,
-    format_added_timestamp, format_bytes, format_compact_dock_badge, format_eta,
-    format_kb_limit, format_minute_hhmm, format_speed, install_native_host_for_browser,
-    macos_bring_all_to_front, macos_hide_all_windows, macos_restore_windows_and_activate,
-    macos_unhide_all_applications, open_path_os, parse_kb_limit, parse_list_tokens,
-    parse_minute_hhmm, parse_wb_threshold_bytes,
+    format_added_timestamp, format_bytes, format_compact_dock_badge, format_eta, format_kb_limit,
+    format_minute_hhmm, format_speed, install_native_host_for_browser, macos_bring_all_to_front,
+    macos_hide_all_windows, macos_restore_windows_and_activate, macos_unhide_all_applications,
+    open_path_os, parse_kb_limit, parse_list_tokens, parse_minute_hhmm, parse_wb_threshold_bytes,
     preventer_label, reveal_path_os, set_macos_hide_dock_icon, sort_field_short_label,
     state_badge_info, state_filter_short_label, sync_portable_marker, update_macos_dock_badge,
     zoom_rem_size_px,
@@ -17,7 +16,9 @@ use crate::modals::render_active_modal;
 use crate::plugins_page::render_plugins_page;
 use crate::settings_page::render_settings_page;
 use crate::standalone::{open_standalone_add_window, open_standalone_download_window};
-use crate::text_input::{InputCopy, InputCut, InputPaste, InputRedo, InputSelectAll, InputUndo, TextInput};
+use crate::text_input::{
+    InputCopy, InputCut, InputPaste, InputRedo, InputSelectAll, InputUndo, TextInput,
+};
 use crate::theme::{ThemePalette, parse_hex_color};
 use crate::ui_widgets::{
     action_btn, badge_themed, danger_btn, ellipsis_text, fdm_checkbox, fdm_indeterminate_checkbox,
@@ -38,8 +39,8 @@ use fdm_media::{JsPluginInfo, Mp3QualityOption, convert_to_mp3_with_options, con
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Entity, FocusHandle, Focusable,
     FontWeight, Global, KeyBinding, Menu, MenuItem, MouseButton, OsAction, PathPromptOptions,
-    Render, SharedString, SystemMenuType, Window, WindowControlArea, actions, div,
-    ease_out_quint, prelude::*, px, rgb,
+    Render, SharedString, SystemMenuType, Window, WindowControlArea, actions, div, ease_out_quint,
+    prelude::*, px, rgb,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -166,6 +167,7 @@ pub fn ftp_mirrors_http(proxy: &ProxySettings) -> bool {
             && proxy.ftp.password == proxy.http.password)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_proxy_inputs_to_settings(
     proxy: &mut ProxySettings,
     p_host: String,
@@ -213,7 +215,11 @@ pub fn bind_app_keys_and_menus(cx: &mut App) {
         KeyBinding::new("cmd-n", AddUrlAction, None),
         KeyBinding::new("cmd-b", BatchAddAction, None),
         KeyBinding::new("cmd-shift-v", PasteUrlAction, None),
-        KeyBinding::new("cmd-v", PasteUrlAction, Some("FerriteList && !FerriteInput")),
+        KeyBinding::new(
+            "cmd-v",
+            PasteUrlAction,
+            Some("FerriteList && !FerriteInput"),
+        ),
         KeyBinding::new("cmd-,", OpenSettingsAction, None),
         KeyBinding::new("cmd-f", FocusSearchAction, None),
         KeyBinding::new("cmd-=", ZoomInAction, None),
@@ -225,7 +231,11 @@ pub fn bind_app_keys_and_menus(cx: &mut App) {
         KeyBinding::new("cmd-m", MinimizeWindowAction, None),
         KeyBinding::new("cmd-shift-a", SelectAllDownloadsAction, None),
         KeyBinding::new("escape", EscapeModalAction, None),
-        KeyBinding::new("space", ToggleSelectedAction, Some("FerriteList && !FerriteInput")),
+        KeyBinding::new(
+            "space",
+            ToggleSelectedAction,
+            Some("FerriteList && !FerriteInput"),
+        ),
         KeyBinding::new(
             "backspace",
             DeleteSelectedAction,
@@ -1015,41 +1025,44 @@ impl FerriteApp {
 
         // Event-driven GPUI UI refresh loop (skips notify when completely idle -> ~0% CPU)
         let dirty_timer = Arc::clone(&engine_dirty);
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| loop {
-            cx.background_executor().timer(Duration::from_millis(200)).await;
-            let keep = this
-                .update(cx, |app, cx| {
-                    let had_msgs = app.msgs.has_pending();
-                    if had_msgs {
-                        app.drain_async_messages(cx);
-                    }
-                    let ev_dirty = dirty_timer.swap(false, Ordering::AcqRel);
-                    let has_active = app.summary.active_count > 0
-                        || app
-                            .all_downloads
-                            .iter()
-                            .any(|d| d.state.is_running_or_seeding() || d.state == DownloadState::Queued);
-                    let toast_expired = app
-                        .toast
-                        .as_ref()
-                        .is_some_and(|(_, _, when)| when.elapsed() > Duration::from_secs(5));
-                    let closing_done = app
-                        .inspector_closing_since
-                        .as_ref()
-                        .is_some_and(|t| t.elapsed() >= Duration::from_millis(200));
-                    if had_msgs || ev_dirty || has_active || toast_expired || closing_done {
-                        if closing_done {
-                            app.inspector_closing_since = None;
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                let keep = this
+                    .update(cx, |app, cx| {
+                        let had_msgs = app.msgs.has_pending();
+                        if had_msgs {
+                            app.drain_async_messages(cx);
                         }
-                        app.refresh_snapshot(cx);
-                        cx.notify();
-                    }
-                })
-                .is_ok();
-            if !keep {
-                break;
-            }
-        })
+                        let ev_dirty = dirty_timer.swap(false, Ordering::AcqRel);
+                        let has_active = app.summary.active_count > 0
+                            || app.all_downloads.iter().any(|d| {
+                                d.state.is_running_or_seeding() || d.state == DownloadState::Queued
+                            });
+                        let toast_expired = app
+                            .toast
+                            .as_ref()
+                            .is_some_and(|(_, _, when)| when.elapsed() > Duration::from_secs(5));
+                        let closing_done = app
+                            .inspector_closing_since
+                            .as_ref()
+                            .is_some_and(|t| t.elapsed() >= Duration::from_millis(200));
+                        if had_msgs || ev_dirty || has_active || toast_expired || closing_done {
+                            if closing_done {
+                                app.inspector_closing_since = None;
+                            }
+                            app.refresh_snapshot(cx);
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !keep {
+                    break;
+                }
+            },
+        )
         .detach();
 
         let mk_input = |cx: &mut Context<Self>, ph: &str, init: &str| -> Entity<TextInput> {
@@ -1085,7 +1098,11 @@ impl FerriteApp {
             })
         };
 
-        let def_dir_s = cfg.core.default_download_path.to_string_lossy().into_owned();
+        let def_dir_s = cfg
+            .core
+            .default_download_path
+            .to_string_lossy()
+            .into_owned();
         let init_tum = cfg.core.current_tum;
         let init_prof = cfg.active_profile();
         let loc = i18n::l(&cfg.app.locale_name);
@@ -1098,7 +1115,11 @@ impl FerriteApp {
             ActiveModal::None
         };
 
-        let add_url_input = mk_input(cx, "https://..., magnet:?xt=..., or .torrent path", &initial_url);
+        let add_url_input = mk_input(
+            cx,
+            "https://..., magnet:?xt=..., or .torrent path",
+            &initial_url,
+        );
 
         let search_input = cx.new(|cx| {
             let mut t = TextInput::new(cx, loc.search_placeholder, "");
@@ -1160,7 +1181,11 @@ impl FerriteApp {
             delete_remember_choice: false,
             toast: None,
 
-            modal_anim_epoch: if initial_modal == ActiveModal::None { 0 } else { 1 },
+            modal_anim_epoch: if initial_modal == ActiveModal::None {
+                0
+            } else {
+                1
+            },
             popover_anim_epoch: 0,
             plugins_gear_anim_epoch: 0,
             inspector_anim_epoch: 0,
@@ -1243,16 +1268,21 @@ impl FerriteApp {
             portable_dir_input: mk_input(
                 cx,
                 "Target portable directory",
-                &engine
-                    .data_dir()
-                    .join("ferrite-portable")
-                    .to_string_lossy(),
+                &engine.data_dir().join("ferrite-portable").to_string_lossy(),
             ),
 
             sched_enabled: cfg.core.default_schedule.enabled,
             sched_days_mask: cfg.core.default_schedule.days_mask,
-            sched_start_input: mk_input(cx, "HH:MM", &format_minute_hhmm(cfg.core.default_schedule.start_minute)),
-            sched_end_input: mk_input(cx, "HH:MM", &format_minute_hhmm(cfg.core.default_schedule.end_minute)),
+            sched_start_input: mk_input(
+                cx,
+                "HH:MM",
+                &format_minute_hhmm(cfg.core.default_schedule.start_minute),
+            ),
+            sched_end_input: mk_input(
+                cx,
+                "HH:MM",
+                &format_minute_hhmm(cfg.core.default_schedule.end_minute),
+            ),
 
             bt_add_tracker_input: mk_input(cx, "udp://tracker.example.org:6969/announce", ""),
 
@@ -1271,7 +1301,11 @@ impl FerriteApp {
 
             set_default_dir: mk_input(cx, "Default folder", &def_dir_s),
             set_partial_suffix: mk_input(cx, ".fdmdownload", &cfg.core.partial_download_suffix),
-            set_keep_days: mk_input(cx, "Days", &cfg.core.auto_remove_finished_keep_days.to_string()),
+            set_keep_days: mk_input(
+                cx,
+                "Days",
+                &cfg.core.auto_remove_finished_keep_days.to_string(),
+            ),
             set_max_retries: mk_input(cx, "Retries", &cfg.core.max_auto_retries.to_string()),
             set_slow_speed_kb: mk_input(
                 cx,
@@ -1298,12 +1332,32 @@ impl FerriteApp {
                 "2",
                 &cfg.core.max_additional_downloads_if_slow.to_string(),
             ),
-            set_tum_dl_kb: mk_input(cx, "0 = unlimited", &format_kb_limit(init_prof.max_download_speed_bps)),
-            set_tum_ul_kb: mk_input(cx, "0 = unlimited", &format_kb_limit(init_prof.max_upload_speed_bps)),
+            set_tum_dl_kb: mk_input(
+                cx,
+                "0 = unlimited",
+                &format_kb_limit(init_prof.max_download_speed_bps),
+            ),
+            set_tum_ul_kb: mk_input(
+                cx,
+                "0 = unlimited",
+                &format_kb_limit(init_prof.max_upload_speed_bps),
+            ),
             set_tum_conns: mk_input(cx, "Connections", &init_prof.max_connections.to_string()),
-            set_tum_per_srv: mk_input(cx, "Per server", &init_prof.max_connections_per_server.to_string()),
-            set_tum_concurrent: mk_input(cx, "Concurrent", &init_prof.max_concurrent_downloads.to_string()),
-            set_tum_ratio: mk_input(cx, "0.0 = unlimited", &format!("{:.1}", init_prof.max_upload_ratio)),
+            set_tum_per_srv: mk_input(
+                cx,
+                "Per server",
+                &init_prof.max_connections_per_server.to_string(),
+            ),
+            set_tum_concurrent: mk_input(
+                cx,
+                "Concurrent",
+                &init_prof.max_concurrent_downloads.to_string(),
+            ),
+            set_tum_ratio: mk_input(
+                cx,
+                "0.0 = unlimited",
+                &format!("{:.1}", init_prof.max_upload_ratio),
+            ),
             set_proxy_host: mk_input(cx, "127.0.0.1", &cfg.app.proxy.http.host),
             set_proxy_port: mk_input(cx, "8080", &cfg.app.proxy.http.port.to_string()),
             set_socks5_host: mk_input(cx, "127.0.0.1", &cfg.app.proxy.socks5.host),
@@ -1325,13 +1379,29 @@ impl FerriteApp {
                 "Comma-separated default tracker URLs",
                 &cfg.core.bt_tracker_list.join(", "),
             ),
-            set_sched_start: mk_input(cx, "00:00", &format_minute_hhmm(cfg.core.default_schedule.start_minute)),
-            set_sched_end: mk_input(cx, "06:00", &format_minute_hhmm(cfg.core.default_schedule.end_minute)),
+            set_sched_start: mk_input(
+                cx,
+                "00:00",
+                &format_minute_hhmm(cfg.core.default_schedule.start_minute),
+            ),
+            set_sched_end: mk_input(
+                cx,
+                "06:00",
+                &format_minute_hhmm(cfg.core.default_schedule.end_minute),
+            ),
             set_battery_min: mk_input(cx, "15", &cfg.core.battery_min_level_percent.to_string()),
             set_wb_small_kb: mk_input(cx, "100", &wb_small_val.to_string()),
             set_wb_skip_ext: mk_input(cx, "pls m3u", &cfg.app.wb_unwanted_extensions.join(" ")),
-            set_wb_only_ext: mk_input(cx, "zip iso mp4", &cfg.app.wb_intercept_extensions.join(" ")),
-            set_wb_skip_hosts: mk_input(cx, "mega.nz rapidgator.net", &cfg.app.wb_unwanted_hosts.join(", ")),
+            set_wb_only_ext: mk_input(
+                cx,
+                "zip iso mp4",
+                &cfg.app.wb_intercept_extensions.join(" "),
+            ),
+            set_wb_skip_hosts: mk_input(
+                cx,
+                "mega.nz rapidgator.net",
+                &cfg.app.wb_unwanted_hosts.join(", "),
+            ),
             set_ffmpeg_path: mk_input(
                 cx,
                 "/opt/homebrew/bin/ffmpeg",
@@ -1478,10 +1548,10 @@ impl FerriteApp {
         self.summary = self.engine.summary();
         self.all_downloads = self.engine.list_downloads(&FilterQuery::default());
         self.tags = self.engine.list_tags().unwrap_or_default();
-        if let Some(pid) = self.parent_folder_id {
-            if !self.all_downloads.iter().any(|d| d.id == pid) {
-                self.parent_folder_id = None;
-            }
+        if let Some(pid) = self.parent_folder_id
+            && !self.all_downloads.iter().any(|d| d.id == pid)
+        {
+            self.parent_folder_id = None;
         }
         let query = FilterQuery {
             state_filter: self.active_filter,
@@ -1504,10 +1574,10 @@ impl FerriteApp {
             self.selected_id = self.visible_downloads.first().map(|d| d.id);
         }
 
-        if let Some((_, _, when)) = self.toast {
-            if when.elapsed() > Duration::from_secs(5) {
-                self.toast = None;
-            }
+        if let Some((_, _, when)) = self.toast
+            && when.elapsed() > Duration::from_secs(5)
+        {
+            self.toast = None;
         }
 
         self.refresh_dock_badge();
@@ -1566,7 +1636,10 @@ impl FerriteApp {
                     self.set_toast(format!("Probe failed: {error}"), true);
                 }
                 UiAsyncMsg::EnqueueFinished { count, label } => {
-                    if matches!(self.active_modal, ActiveModal::AddDownload | ActiveModal::BatchAdd) {
+                    if matches!(
+                        self.active_modal,
+                        ActiveModal::AddDownload | ActiveModal::BatchAdd
+                    ) {
                         self.active_modal = ActiveModal::None;
                     }
                     self.set_toast(format!("Enqueued {count} download(s): {label}"), false);
@@ -1581,7 +1654,8 @@ impl FerriteApp {
                     digest,
                     matched,
                 } => {
-                    if matches!(self.active_modal, ActiveModal::HashVerify { id } if id == download_id) {
+                    if matches!(self.active_modal, ActiveModal::HashVerify { id } if id == download_id)
+                    {
                         self.hash_computed = Some(digest);
                         self.hash_matched = matched;
                     }
@@ -1604,14 +1678,18 @@ impl FerriteApp {
                 }
                 UiAsyncMsg::RemotePasswordRegenerated { password } => {
                     self.settings_cfg.app.remote_access_password = password.clone();
-                    self.set_remote_pass.update(cx, |i, cx| i.set_text(&password, cx));
+                    self.set_remote_pass
+                        .update(cx, |i, cx| i.set_text(&password, cx));
                     self.set_toast("Regenerated Remote Access password", false);
                 }
                 UiAsyncMsg::PortableCreated { dir } => {
                     if self.active_modal == ActiveModal::CreatePortable {
                         self.active_modal = ActiveModal::None;
                     }
-                    self.set_toast(format!("Portable version created at {}", dir.display()), false);
+                    self.set_toast(
+                        format!("Portable version created at {}", dir.display()),
+                        false,
+                    );
                 }
                 UiAsyncMsg::DiagnosticsArchived { zip_path } => {
                     self.set_toast(
@@ -1631,7 +1709,11 @@ impl FerriteApp {
                             .map(|u| format!("{} v{}", u.name, u.new_version))
                             .collect();
                         self.set_toast(
-                            format!("Updated {} add-on(s): {}", updated.len(), summary.join(", ")),
+                            format!(
+                                "Updated {} add-on(s): {}",
+                                updated.len(),
+                                summary.join(", ")
+                            ),
                             false,
                         );
                     } else if manual {
@@ -1655,7 +1737,11 @@ impl FerriteApp {
                     changed,
                     message,
                 } => {
-                    let state = if changed { "update available" } else { "up to date" };
+                    let state = if changed {
+                        "update available"
+                    } else {
+                        "up to date"
+                    };
                     self.set_toast(format!("#{download_id} ({state}): {message}"), false);
                 }
                 UiAsyncMsg::DownloadAddedNotification { id } => {
@@ -1768,10 +1854,9 @@ impl FerriteApp {
             }
             if let (ActivePage::Settings(old_tab), ActivePage::Settings(new_tab)) =
                 (self.active_page, page)
+                && old_tab != new_tab
             {
-                if old_tab != new_tab {
-                    self.settings_tab_anim_epoch = self.settings_tab_anim_epoch.wrapping_add(1);
-                }
+                self.settings_tab_anim_epoch = self.settings_tab_anim_epoch.wrapping_add(1);
             }
             self.active_page = page;
             cx.notify();
@@ -2021,17 +2106,19 @@ impl FerriteApp {
             multiple: false,
             prompt: Some(prompt.into()),
         });
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(chosen) = paths.into_iter().next() {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(Ok(Some(paths))) = rx.await
+                    && let Some(chosen) = paths.into_iter().next()
+                {
                     let s = chosen.to_string_lossy().into_owned();
                     let _ = this.update(cx, |_, cx| {
                         input.update(cx, |inp, cx| inp.set_text(&s, cx));
                         cx.notify();
                     });
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 
@@ -2047,17 +2134,19 @@ impl FerriteApp {
             multiple: false,
             prompt: Some(prompt.into()),
         });
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(chosen) = paths.into_iter().next() {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(Ok(Some(paths))) = rx.await
+                    && let Some(chosen) = paths.into_iter().next()
+                {
                     let s = chosen.to_string_lossy().into_owned();
                     let _ = this.update(cx, |_, cx| {
                         input.update(cx, |inp, cx| inp.set_text(&s, cx));
                         cx.notify();
                     });
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 
@@ -2271,7 +2360,11 @@ impl FerriteApp {
             .unwrap_or_default();
         self.active_popover = ActivePopover::None;
         if let Some(url) = extract_first_download_url(&clip) {
-            let standalone = self.engine.get_config().app.enable_standalone_create_downloads_windows;
+            let standalone = self
+                .engine
+                .get_config()
+                .app
+                .enable_standalone_create_downloads_windows;
             self.open_add_modal(&url, window, cx);
             if !standalone {
                 self.trigger_probe(cx);
@@ -2289,17 +2382,22 @@ impl FerriteApp {
             self.sort_ascending = !self.sort_ascending;
         } else {
             self.sort_by = field;
-            self.sort_ascending = match field {
-                SortField::CreationTime | SortField::Size | SortField::Progress => false,
-                _ => true,
-            };
+            self.sort_ascending = !matches!(
+                field,
+                SortField::CreationTime | SortField::Size | SortField::Progress
+            );
         }
         self.persist_sort(cx);
         self.refresh_snapshot(cx);
         cx.notify();
     }
 
-    pub(crate) fn open_add_modal(&mut self, prefill_url: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_add_modal(
+        &mut self,
+        prefill_url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let cfg = self.engine.get_config();
         if cfg.app.enable_standalone_create_downloads_windows {
             self.active_popover = ActivePopover::None;
@@ -2312,7 +2410,11 @@ impl FerriteApp {
             cx.notify();
             return;
         }
-        let def_dir = cfg.core.default_download_path.to_string_lossy().into_owned();
+        let def_dir = cfg
+            .core
+            .default_download_path
+            .to_string_lossy()
+            .into_owned();
         self.add_probe_outcome = None;
         self.add_probe_busy = false;
         self.add_selected_files.clear();
@@ -2322,11 +2424,16 @@ impl FerriteApp {
         self.add_play_asap = false;
         self.add_show_pass = false;
         self.add_apply_schedule = cfg.core.enable_scheduler_for_new_downloads;
-        self.add_url_input.update(cx, |inp, cx| inp.set_text(prefill_url, cx));
-        self.add_dir_input.update(cx, |inp, cx| inp.set_text(&def_dir, cx));
-        self.add_name_input.update(cx, |inp, cx| inp.set_text("", cx));
-        self.add_ref_input.update(cx, |inp, cx| inp.set_text("", cx));
-        self.add_user_input.update(cx, |inp, cx| inp.set_text("", cx));
+        self.add_url_input
+            .update(cx, |inp, cx| inp.set_text(prefill_url, cx));
+        self.add_dir_input
+            .update(cx, |inp, cx| inp.set_text(&def_dir, cx));
+        self.add_name_input
+            .update(cx, |inp, cx| inp.set_text("", cx));
+        self.add_ref_input
+            .update(cx, |inp, cx| inp.set_text("", cx));
+        self.add_user_input
+            .update(cx, |inp, cx| inp.set_text("", cx));
         self.add_pass_input.update(cx, |inp, cx| {
             inp.set_masked(true, cx);
             inp.set_text("", cx);
@@ -2339,9 +2446,17 @@ impl FerriteApp {
     }
 
     pub(crate) fn open_batch_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let def_dir = self.engine.get_config().core.default_download_path.to_string_lossy().into_owned();
-        self.batch_dir_input.update(cx, |inp, cx| inp.set_text(&def_dir, cx));
-        self.batch_group_title_input.update(cx, |inp, cx| inp.set_text("", cx));
+        let def_dir = self
+            .engine
+            .get_config()
+            .core
+            .default_download_path
+            .to_string_lossy()
+            .into_owned();
+        self.batch_dir_input
+            .update(cx, |inp, cx| inp.set_text(&def_dir, cx));
+        self.batch_group_title_input
+            .update(cx, |inp, cx| inp.set_text("", cx));
         self.batch_start_paused = false;
         self.active_modal = ActiveModal::BatchAdd;
         self.sync_modal_anim_epoch();
@@ -2365,7 +2480,9 @@ impl FerriteApp {
                 Ok(outcome) => q.push(UiAsyncMsg::ProbeCompleted {
                     outcome: Box::new(outcome),
                 }),
-                Err(e) => q.push(UiAsyncMsg::ProbeFailed { error: e.to_string() }),
+                Err(e) => q.push(UiAsyncMsg::ProbeFailed {
+                    error: e.to_string(),
+                }),
             }
         });
         cx.notify();
@@ -2384,12 +2501,11 @@ impl FerriteApp {
         let user = self.add_user_input.read(cx).text().trim().to_string();
         let pass = self.add_pass_input.read(cx).text().to_string();
 
-        if !user.is_empty() || !pass.is_empty() {
-            if let Ok(parsed) = url::Url::parse(&source_url) {
-                if let Some(host) = parsed.host_str() {
-                    let _ = self.engine.save_credential(host, &user, &pass);
-                }
-            }
+        if (!user.is_empty() || !pass.is_empty())
+            && let Ok(parsed) = url::Url::parse(&source_url)
+            && let Some(host) = parsed.host_str()
+        {
+            let _ = self.engine.save_credential(host, &user, &pass);
         }
 
         let mut req = NewDownloadRequest::from_url(source_url.clone());
@@ -2397,19 +2513,19 @@ impl FerriteApp {
 
         if let Some(ref outcome) = self.add_probe_outcome {
             if outcome.download_type == DownloadType::MediaParser {
-                if let Some(ref media) = outcome.media {
-                    if let Some(var) = media.variants.get(self.add_selected_variant) {
-                        if var.audio_url.is_none() {
-                            source_url = var.url.clone();
-                            req = NewDownloadRequest::from_url(source_url.clone());
-                            chosen_type = if source_url.to_ascii_lowercase().contains(".m3u8") {
-                                Some(DownloadType::HlsM3u8)
-                            } else {
-                                Some(DownloadType::Www)
-                            };
+                if let Some(ref media) = outcome.media
+                    && let Some(var) = media.variants.get(self.add_selected_variant)
+                {
+                    if var.audio_url.is_none() {
+                        source_url = var.url.clone();
+                        req = NewDownloadRequest::from_url(source_url.clone());
+                        chosen_type = if source_url.to_ascii_lowercase().contains(".m3u8") {
+                            Some(DownloadType::HlsM3u8)
                         } else {
-                            chosen_type = Some(DownloadType::MediaParser);
-                        }
+                            Some(DownloadType::Www)
+                        };
+                    } else {
+                        chosen_type = Some(DownloadType::MediaParser);
                     }
                 }
             } else {
@@ -2661,18 +2777,18 @@ impl FerriteApp {
     }
 
     pub(crate) fn open_download_file(&mut self, id: DownloadId) {
-        if let Some(rec) = self.engine.get_download(id) {
-            if let Err(e) = open_path_os(&rec.output_path()) {
-                self.set_toast(format!("Open failed: {e}"), true);
-            }
+        if let Some(rec) = self.engine.get_download(id)
+            && let Err(e) = open_path_os(&rec.output_path())
+        {
+            self.set_toast(format!("Open failed: {e}"), true);
         }
     }
 
     pub(crate) fn reveal_download_file(&mut self, id: DownloadId) {
-        if let Some(rec) = self.engine.get_download(id) {
-            if let Err(e) = reveal_path_os(&rec.output_path()) {
-                self.set_toast(format!("Reveal failed: {e}"), true);
-            }
+        if let Some(rec) = self.engine.get_download(id)
+            && let Err(e) = reveal_path_os(&rec.output_path())
+        {
+            self.set_toast(format!("Reveal failed: {e}"), true);
         }
     }
 
@@ -2684,7 +2800,10 @@ impl FerriteApp {
             self.set_toast(format!("Failed to set speed mode: {e}"), true);
         } else {
             self.refresh_snapshot(cx);
-            self.set_toast(format!("Traffic profile switched to {}", mode.label()), false);
+            self.set_toast(
+                format!("Traffic profile switched to {}", mode.label()),
+                false,
+            );
         }
         cx.notify();
     }
@@ -2720,7 +2839,12 @@ impl FerriteApp {
         cx.notify();
     }
 
-    pub(crate) fn bump_priority_action(&mut self, id: DownloadId, up: bool, cx: &mut Context<Self>) {
+    pub(crate) fn bump_priority_action(
+        &mut self,
+        id: DownloadId,
+        up: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(rec) = self.engine.get_download(id) else {
             return;
         };
@@ -2798,7 +2922,10 @@ impl FerriteApp {
     pub(crate) fn check_virus_action(&mut self, id: DownloadId, cx: &mut Context<Self>) {
         let eng = Arc::clone(&self.engine);
         let q = self.msgs.clone();
-        self.set_toast(format!("Scanning download #{id} with configured antivirus..."), false);
+        self.set_toast(
+            format!("Scanning download #{id} with configured antivirus..."),
+            false,
+        );
         self.rt.spawn(async move {
             match eng.check_download_virus(id).await {
                 Ok(summary) => q.push(UiAsyncMsg::VirusCheckFinished {
@@ -2936,7 +3063,8 @@ impl FerriteApp {
             self.set_toast("Enter a tracker announce URL first", true);
             return;
         }
-        self.bt_add_tracker_input.update(cx, |i, cx| i.set_text("", cx));
+        self.bt_add_tracker_input
+            .update(cx, |i, cx| i.set_text("", cx));
         let eng = Arc::clone(&self.engine);
         let q = self.msgs.clone();
         self.rt.spawn(async move {
@@ -2954,10 +3082,16 @@ impl FerriteApp {
         cx.notify();
     }
 
-    pub(crate) fn open_hash_modal(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_hash_modal(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.hash_computed = None;
         self.hash_matched = None;
-        self.hash_expected_input.update(cx, |i, cx| i.set_text("", cx));
+        self.hash_expected_input
+            .update(cx, |i, cx| i.set_text("", cx));
         self.active_modal = ActiveModal::HashVerify { id };
         let fh = self.hash_expected_input.read(cx).focus_handle.clone();
         window.focus(&fh);
@@ -2990,7 +3124,12 @@ impl FerriteApp {
         });
     }
 
-    pub(crate) fn open_convert_modal(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_convert_modal(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.convert_mode_mp3 = true;
         self.convert_mp3_bitrate = 320;
         self.convert_use_vbr = false;
@@ -3009,7 +3148,12 @@ impl FerriteApp {
         cx.notify();
     }
 
-    pub(crate) fn set_convert_target_ext(&mut self, mp3: bool, id: DownloadId, cx: &mut Context<Self>) {
+    pub(crate) fn set_convert_target_ext(
+        &mut self,
+        mp3: bool,
+        id: DownloadId,
+        cx: &mut Context<Self>,
+    ) {
         self.convert_mode_mp3 = mp3;
         if let Some(rec) = self.engine.get_download(id) {
             let ext = if mp3 { "mp3" } else { "mp4" };
@@ -3087,7 +3231,8 @@ impl FerriteApp {
     pub(crate) fn regenerate_remote_password_action(&mut self, cx: &mut Context<Self>) {
         match self.engine.regenerate_remote_password() {
             Ok(pw) => {
-                self.msgs.push(UiAsyncMsg::RemotePasswordRegenerated { password: pw });
+                self.msgs
+                    .push(UiAsyncMsg::RemotePasswordRegenerated { password: pw });
             }
             Err(e) => self.set_toast(format!("Failed regenerating password: {e}"), true),
         }
@@ -3118,7 +3263,8 @@ impl FerriteApp {
                 });
             }
         } else {
-            self.new_tag_name_input.update(cx, |i, cx| i.set_text("", cx));
+            self.new_tag_name_input
+                .update(cx, |i, cx| i.set_text("", cx));
             self.new_tag_color_hex = "#3b82f6".into();
             self.tag_exts_input.update(cx, |i, cx| i.set_text("", cx));
             self.tag_dir_input.update(cx, |i, cx| i.set_text("", cx));
@@ -3145,8 +3291,13 @@ impl FerriteApp {
                 let exts = parse_list_tokens(&self.tag_exts_input.read(cx).text());
                 let dir_s = self.tag_dir_input.read(cx).text().trim().to_string();
                 let dir_pb = (!dir_s.is_empty()).then(|| PathBuf::from(dir_s));
-                self.engine
-                    .edit_tag(tid, &name, &self.new_tag_color_hex, &exts, dir_pb.as_deref())
+                self.engine.edit_tag(
+                    tid,
+                    &name,
+                    &self.new_tag_color_hex,
+                    &exts,
+                    dir_pb.as_deref(),
+                )
             }
             None => self.engine.create_tag(&name, &self.new_tag_color_hex),
         };
@@ -3174,7 +3325,8 @@ impl FerriteApp {
         cx: &mut Context<Self>,
     ) {
         if let Some(rec) = self.engine.get_download(id) {
-            self.source_url_input.update(cx, |i, cx| i.set_text(&rec.url, cx));
+            self.source_url_input
+                .update(cx, |i, cx| i.set_text(&rec.url, cx));
             self.source_mirrors_input
                 .update(cx, |i, cx| i.set_text(&rec.http.mirrors.join(", "), cx));
             self.active_modal = ActiveModal::ChangeSource { id };
@@ -3184,7 +3336,12 @@ impl FerriteApp {
         }
     }
 
-    pub(crate) fn submit_change_source(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit_change_source(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let new_url = self.source_url_input.read(cx).text().trim().to_string();
         let mirrors: Vec<String> = self
             .source_mirrors_input
@@ -3214,10 +3371,16 @@ impl FerriteApp {
         self.close_modal(window, cx);
     }
 
-    pub(crate) fn open_move_dir_modal(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_move_dir_modal(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(rec) = self.engine.get_download(id) {
-            self.move_dir_input
-                .update(cx, |i, cx| i.set_text(&rec.target_dir.to_string_lossy(), cx));
+            self.move_dir_input.update(cx, |i, cx| {
+                i.set_text(&rec.target_dir.to_string_lossy(), cx)
+            });
             self.active_modal = ActiveModal::MoveDir { id };
             let fh = self.move_dir_input.read(cx).focus_handle.clone();
             window.focus(&fh);
@@ -3225,7 +3388,12 @@ impl FerriteApp {
         }
     }
 
-    pub(crate) fn submit_move_dir(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit_move_dir(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let dest = PathBuf::from(self.move_dir_input.read(cx).text().trim());
         let eng = Arc::clone(&self.engine);
         let q = self.msgs.clone();
@@ -3244,7 +3412,12 @@ impl FerriteApp {
         self.close_modal(window, cx);
     }
 
-    pub(crate) fn open_rename_modal(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_rename_modal(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(rec) = self.engine.get_download(id) {
             self.rename_file_input
                 .update(cx, |i, cx| i.set_text(&rec.file_name, cx));
@@ -3283,17 +3456,24 @@ impl FerriteApp {
         self.close_modal(window, cx);
     }
 
-    pub(crate) fn open_schedule_modal(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_schedule_modal(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(rec) = self.engine.get_download(id) {
             let r = rec
                 .schedule
                 .unwrap_or_else(|| self.engine.get_config().core.default_schedule);
             self.sched_enabled = r.enabled;
             self.sched_days_mask = r.days_mask;
-            self.sched_start_input
-                .update(cx, |i, cx| i.set_text(&format_minute_hhmm(r.start_minute), cx));
-            self.sched_end_input
-                .update(cx, |i, cx| i.set_text(&format_minute_hhmm(r.end_minute), cx));
+            self.sched_start_input.update(cx, |i, cx| {
+                i.set_text(&format_minute_hhmm(r.start_minute), cx)
+            });
+            self.sched_end_input.update(cx, |i, cx| {
+                i.set_text(&format_minute_hhmm(r.end_minute), cx)
+            });
             self.active_modal = ActiveModal::DownloadSchedule { id };
             let fh = self.sched_start_input.read(cx).focus_handle.clone();
             window.focus(&fh);
@@ -3301,7 +3481,12 @@ impl FerriteApp {
         }
     }
 
-    pub(crate) fn submit_download_schedule(&mut self, id: DownloadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit_download_schedule(
+        &mut self,
+        id: DownloadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let rule = if self.sched_enabled {
             Some(ScheduleRule {
                 enabled: true,
@@ -3335,9 +3520,13 @@ impl FerriteApp {
             self.set_toast("Enter a path to a JS plugin file or folder first", true);
             return;
         }
-        match self.engine.install_js_plugin_from_path(std::path::Path::new(&raw)) {
+        match self
+            .engine
+            .install_js_plugin_from_path(std::path::Path::new(&raw))
+        {
             Ok(info) => {
-                self.plugin_install_input.update(cx, |i, cx| i.set_text("", cx));
+                self.plugin_install_input
+                    .update(cx, |i, cx| i.set_text("", cx));
                 self.msgs.push(UiAsyncMsg::PluginActionFinished {
                     message: format!("Installed add-on '{}' (v{})", info.name, info.version),
                     is_error: false,
@@ -3348,7 +3537,12 @@ impl FerriteApp {
         cx.notify();
     }
 
-    pub(crate) fn toggle_plugin_enabled(&mut self, uid: String, enabled: bool, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_plugin_enabled(
+        &mut self,
+        uid: String,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
         match self.engine.set_js_plugin_enabled(&uid, enabled) {
             Ok(()) => {
                 self.settings_plugins = self.engine.list_js_plugins();
@@ -3422,8 +3616,9 @@ impl FerriteApp {
         self.set_keep_days.update(cx, |i, cx| {
             i.set_text(&c.core.auto_remove_finished_keep_days.to_string(), cx)
         });
-        self.set_max_retries
-            .update(cx, |i, cx| i.set_text(&c.core.max_auto_retries.to_string(), cx));
+        self.set_max_retries.update(cx, |i, cx| {
+            i.set_text(&c.core.max_auto_retries.to_string(), cx)
+        });
         self.set_slow_speed_kb.update(cx, |i, cx| {
             i.set_text(&format_kb_limit(c.core.unacceptably_slow_speed_bps), cx)
         });
@@ -3441,20 +3636,23 @@ impl FerriteApp {
         });
         self.set_proxy_host
             .update(cx, |i, cx| i.set_text(&c.app.proxy.http.host, cx));
-        self.set_proxy_port
-            .update(cx, |i, cx| i.set_text(&c.app.proxy.http.port.to_string(), cx));
+        self.set_proxy_port.update(cx, |i, cx| {
+            i.set_text(&c.app.proxy.http.port.to_string(), cx)
+        });
         self.set_socks5_host
             .update(cx, |i, cx| i.set_text(&c.app.proxy.socks5.host, cx));
-        self.set_socks5_port
-            .update(cx, |i, cx| i.set_text(&c.app.proxy.socks5.port.to_string(), cx));
+        self.set_socks5_port.update(cx, |i, cx| {
+            i.set_text(&c.app.proxy.socks5.port.to_string(), cx)
+        });
         self.set_proxy_user
             .update(cx, |i, cx| i.set_text(&c.app.proxy.http.username, cx));
         self.set_proxy_pass.update(cx, |i, cx| {
             i.set_masked(true, cx);
             i.set_text(&c.app.proxy.http.password, cx);
         });
-        self.set_bt_port
-            .update(cx, |i, cx| i.set_text(&c.core.bt_session_port.to_string(), cx));
+        self.set_bt_port.update(cx, |i, cx| {
+            i.set_text(&c.core.bt_session_port.to_string(), cx)
+        });
         self.set_bt_watch_dir.update(cx, |i, cx| {
             i.set_text(
                 &c.app
@@ -3465,10 +3663,14 @@ impl FerriteApp {
                 cx,
             )
         });
-        self.set_bt_trackers
-            .update(cx, |i, cx| i.set_text(&c.core.bt_tracker_list.join(", "), cx));
+        self.set_bt_trackers.update(cx, |i, cx| {
+            i.set_text(&c.core.bt_tracker_list.join(", "), cx)
+        });
         self.set_sched_start.update(cx, |i, cx| {
-            i.set_text(&format_minute_hhmm(c.core.default_schedule.start_minute), cx)
+            i.set_text(
+                &format_minute_hhmm(c.core.default_schedule.start_minute),
+                cx,
+            )
         });
         self.set_sched_end.update(cx, |i, cx| {
             i.set_text(&format_minute_hhmm(c.core.default_schedule.end_minute), cx)
@@ -3529,12 +3731,14 @@ impl FerriteApp {
                 cx,
             )
         });
-        self.set_ext_args
-            .update(cx, |i, cx| i.set_text(&c.core.external_app_args_template, cx));
+        self.set_ext_args.update(cx, |i, cx| {
+            i.set_text(&c.core.external_app_args_template, cx)
+        });
         self.set_remote_bind
             .update(cx, |i, cx| i.set_text(&c.app.remote_access_bind, cx));
-        self.set_remote_port
-            .update(cx, |i, cx| i.set_text(&c.app.remote_access_port.to_string(), cx));
+        self.set_remote_port.update(cx, |i, cx| {
+            i.set_text(&c.app.remote_access_port.to_string(), cx)
+        });
         self.set_remote_pass.update(cx, |i, cx| {
             i.set_masked(true, cx);
             i.set_text(&remote_pw, cx);
@@ -3542,7 +3746,10 @@ impl FerriteApp {
         self.set_notify_sound_path
             .update(cx, |i, cx| i.set_text(&sound_s, cx));
         self.set_low_disk_mb.update(cx, |i, cx| {
-            i.set_text(&(c.core.low_disk_space_min_bytes / (1024 * 1024)).to_string(), cx)
+            i.set_text(
+                &(c.core.low_disk_space_min_bytes / (1024 * 1024)).to_string(),
+                cx,
+            )
         });
         self.set_low_disk_pct.update(cx, |i, cx| {
             i.set_text(&format!("{:.1}", c.core.low_disk_space_min_percent), cx)
@@ -3558,7 +3765,14 @@ impl FerriteApp {
     pub(crate) fn flush_tum_inputs_into_draft(&mut self, cx: &App) {
         let dl = parse_kb_limit(&self.set_tum_dl_kb.read(cx).text());
         let ul = parse_kb_limit(&self.set_tum_ul_kb.read(cx).text());
-        let conns = self.set_tum_conns.read(cx).text().trim().parse().unwrap_or(16).max(1);
+        let conns = self
+            .set_tum_conns
+            .read(cx)
+            .text()
+            .trim()
+            .parse()
+            .unwrap_or(16)
+            .max(1);
         let per_srv = self
             .set_tum_per_srv
             .read(cx)
@@ -3584,7 +3798,12 @@ impl FerriteApp {
             .unwrap_or(0.0)
             .max(0.0);
 
-        if let Some(p) = self.settings_cfg.core.tum_profiles.get_mut(&self.settings_tum_tab) {
+        if let Some(p) = self
+            .settings_cfg
+            .core
+            .tum_profiles
+            .get_mut(&self.settings_tum_tab)
+        {
             p.max_download_speed_bps = dl;
             p.max_upload_speed_bps = ul;
             p.max_connections = conns;
@@ -3595,19 +3814,30 @@ impl FerriteApp {
     }
 
     pub(crate) fn load_tum_inputs_from_draft(&mut self, cx: &mut Context<Self>) {
-        if let Some(p) = self.settings_cfg.core.tum_profiles.get(&self.settings_tum_tab).cloned() {
-            self.set_tum_dl_kb
-                .update(cx, |i, cx| i.set_text(&format_kb_limit(p.max_download_speed_bps), cx));
-            self.set_tum_ul_kb
-                .update(cx, |i, cx| i.set_text(&format_kb_limit(p.max_upload_speed_bps), cx));
+        if let Some(p) = self
+            .settings_cfg
+            .core
+            .tum_profiles
+            .get(&self.settings_tum_tab)
+            .cloned()
+        {
+            self.set_tum_dl_kb.update(cx, |i, cx| {
+                i.set_text(&format_kb_limit(p.max_download_speed_bps), cx)
+            });
+            self.set_tum_ul_kb.update(cx, |i, cx| {
+                i.set_text(&format_kb_limit(p.max_upload_speed_bps), cx)
+            });
             self.set_tum_conns
                 .update(cx, |i, cx| i.set_text(&p.max_connections.to_string(), cx));
-            self.set_tum_per_srv
-                .update(cx, |i, cx| i.set_text(&p.max_connections_per_server.to_string(), cx));
-            self.set_tum_concurrent
-                .update(cx, |i, cx| i.set_text(&p.max_concurrent_downloads.to_string(), cx));
-            self.set_tum_ratio
-                .update(cx, |i, cx| i.set_text(&format!("{:.1}", p.max_upload_ratio), cx));
+            self.set_tum_per_srv.update(cx, |i, cx| {
+                i.set_text(&p.max_connections_per_server.to_string(), cx)
+            });
+            self.set_tum_concurrent.update(cx, |i, cx| {
+                i.set_text(&p.max_concurrent_downloads.to_string(), cx)
+            });
+            self.set_tum_ratio.update(cx, |i, cx| {
+                i.set_text(&format!("{:.1}", p.max_upload_ratio), cx)
+            });
         }
     }
 
@@ -3623,7 +3853,14 @@ impl FerriteApp {
 
         let dl = parse_kb_limit(&self.set_tum_dl_kb.read(cx).text());
         let ul = parse_kb_limit(&self.set_tum_ul_kb.read(cx).text());
-        let conns = self.set_tum_conns.read(cx).text().trim().parse().unwrap_or(16).max(1);
+        let conns = self
+            .set_tum_conns
+            .read(cx)
+            .text()
+            .trim()
+            .parse()
+            .unwrap_or(16)
+            .max(1);
         let per_srv = self
             .set_tum_per_srv
             .read(cx)
@@ -3661,7 +3898,8 @@ impl FerriteApp {
         if !def_dir.is_empty() {
             next.core.default_download_path = PathBuf::from(def_dir);
         }
-        next.core.partial_download_suffix = self.set_partial_suffix.read(cx).text().trim().to_string();
+        next.core.partial_download_suffix =
+            self.set_partial_suffix.read(cx).text().trim().to_string();
         next.core.auto_remove_finished_keep_days = self
             .set_keep_days
             .read(cx)
@@ -3786,10 +4024,8 @@ impl FerriteApp {
             &self.set_wb_small_kb.read(cx).text(),
             next.core.wb_small_size_unit_mb,
         );
-        next.app.wb_unwanted_extensions =
-            parse_list_tokens(&self.set_wb_skip_ext.read(cx).text());
-        next.app.wb_intercept_extensions =
-            parse_list_tokens(&self.set_wb_only_ext.read(cx).text());
+        next.app.wb_unwanted_extensions = parse_list_tokens(&self.set_wb_skip_ext.read(cx).text());
+        next.app.wb_intercept_extensions = parse_list_tokens(&self.set_wb_only_ext.read(cx).text());
         next.app.wb_unwanted_hosts = self
             .set_wb_skip_hosts
             .read(cx)
@@ -3801,15 +4037,31 @@ impl FerriteApp {
             .collect();
 
         let ff = self.set_ffmpeg_path.read(cx).text().trim().to_string();
-        next.core.ffmpeg_path = if ff.is_empty() { None } else { Some(PathBuf::from(ff)) };
+        next.core.ffmpeg_path = if ff.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(ff))
+        };
         let ytdlp = self.set_ytdlp_path.read(cx).text().trim().to_string();
-        next.core.yt_dlp_path = if ytdlp.is_empty() { None } else { Some(PathBuf::from(ytdlp)) };
+        next.core.yt_dlp_path = if ytdlp.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(ytdlp))
+        };
 
         let av = self.set_av_path.read(cx).text().trim().to_string();
-        next.core.antivirus_path = if av.is_empty() { None } else { Some(PathBuf::from(av)) };
+        next.core.antivirus_path = if av.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(av))
+        };
         next.core.antivirus_args = self.set_av_args.read(cx).text();
         let ext = self.set_ext_path.read(cx).text().trim().to_string();
-        next.core.external_app_path = if ext.is_empty() { None } else { Some(PathBuf::from(ext)) };
+        next.core.external_app_path = if ext.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(ext))
+        };
         next.core.external_app_args_template = self.set_ext_args.read(cx).text();
 
         let rbind = self.set_remote_bind.read(cx).text().trim().to_string();
@@ -3828,15 +4080,21 @@ impl FerriteApp {
             next.app.remote_access_password = rpass;
         }
 
-        let sound_raw = self.set_notify_sound_path.read(cx).text().trim().to_string();
+        let sound_raw = self
+            .set_notify_sound_path
+            .read(cx)
+            .text()
+            .trim()
+            .to_string();
         if sound_raw.is_empty() {
             next.app
                 .notification_sounds
                 .remove(&NotificationEvent::DownloadComplete);
         } else {
-            next.app
-                .notification_sounds
-                .insert(NotificationEvent::DownloadComplete, PathBuf::from(sound_raw));
+            next.app.notification_sounds.insert(
+                NotificationEvent::DownloadComplete,
+                PathBuf::from(sound_raw),
+            );
         }
 
         let low_disk_mb = self
@@ -3886,7 +4144,12 @@ impl FerriteApp {
         serde_json::to_value(&draft).ok() != serde_json::to_value(&saved).ok()
     }
 
-    pub(crate) fn apply_settings(&mut self, close_page: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn apply_settings(
+        &mut self,
+        close_page: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.settings_cfg = self.build_draft_config_with_inputs(cx);
 
         match self.engine.update_config(self.settings_cfg.clone()) {
@@ -3970,10 +4233,7 @@ impl FerriteApp {
                 self.settings_cfg = cfg.clone();
                 self.settings_tum_tab = cfg.core.current_tum;
                 self.proxy_use_http_for_ftp = ftp_mirrors_http(&cfg.app.proxy);
-                let _ = sync_autorun_on_login(
-                    cfg.app.autorun_on_login,
-                    cfg.app.launch_minimized,
-                );
+                let _ = sync_autorun_on_login(cfg.app.autorun_on_login, cfg.app.launch_minimized);
                 let _ = sync_portable_marker(cfg.app.portable_mode);
                 set_macos_hide_dock_icon(cfg.app.hide_dock_icon);
                 self.preview_appearance(window, cx);
@@ -3987,7 +4247,11 @@ impl FerriteApp {
         cx.notify();
     }
 
-    pub(crate) fn install_native_host(&mut self, browser: Option<KnownWebBrowser>, cx: &mut Context<Self>) {
+    pub(crate) fn install_native_host(
+        &mut self,
+        browser: Option<KnownWebBrowser>,
+        cx: &mut Context<Self>,
+    ) {
         let targets = match browser {
             Some(b) => vec![b],
             None => vec![
@@ -4029,7 +4293,10 @@ impl FerriteApp {
             .engine
             .export_downloads_formatted(&path, &fmt, None, false)
         {
-            Ok(n) => self.set_toast(format!("Exported {n} downloads to {}", path.display()), false),
+            Ok(n) => self.set_toast(
+                format!("Exported {n} downloads to {}", path.display()),
+                false,
+            ),
             Err(e) => self.set_toast(format!("Export failed: {e}"), true),
         }
         cx.notify();
@@ -4086,15 +4353,15 @@ impl FerriteApp {
         };
         let eng = Arc::clone(&self.engine);
         let q = self.msgs.clone();
-        self.rt.spawn_blocking(move || {
-            match eng.archive_diagnostics_bundle(&dest, logs_only) {
+        self.rt.spawn_blocking(
+            move || match eng.archive_diagnostics_bundle(&dest, logs_only) {
                 Ok(zip_path) => q.push(UiAsyncMsg::DiagnosticsArchived { zip_path }),
                 Err(e) => q.push(UiAsyncMsg::Toast {
                     text: format!("Diagnostics failed: {e}"),
                     is_error: true,
                 }),
-            }
-        });
+            },
+        );
         cx.notify();
     }
 
@@ -4107,15 +4374,14 @@ impl FerriteApp {
         };
         let eng = Arc::clone(&self.engine);
         let q = self.msgs.clone();
-        self.rt.spawn_blocking(move || {
-            match eng.create_portable_bundle(&target) {
+        self.rt
+            .spawn_blocking(move || match eng.create_portable_bundle(&target) {
                 Ok(dir) => q.push(UiAsyncMsg::PortableCreated { dir }),
                 Err(e) => q.push(UiAsyncMsg::Toast {
                     text: format!("Portable creation failed: {e}"),
                     is_error: true,
                 }),
-            }
-        });
+            });
         cx.notify();
     }
 
@@ -4240,7 +4506,11 @@ impl FerriteApp {
                         .gap_2()
                         .child(ghost_icon_btn(
                             "btn-theme",
-                            if p.is_dark { "icons/sun.svg" } else { "icons/moon.svg" },
+                            if p.is_dark {
+                                "icons/sun.svg"
+                            } else {
+                                "icons/moon.svg"
+                            },
                             p.spx_f32(16.),
                             p.text_secondary,
                             p.bg_elevated,
@@ -4255,7 +4525,11 @@ impl FerriteApp {
                                 .w(p.spx(32.))
                                 .h(p.spx(32.))
                                 .rounded(p.radius(8., 3.))
-                                .bg(if menu_open { p.bg_elevated } else { gpui::transparent_black() })
+                                .bg(if menu_open {
+                                    p.bg_elevated
+                                } else {
+                                    gpui::transparent_black()
+                                })
                                 .hover(move |s| s.bg(p.bg_elevated))
                                 .flex()
                                 .items_center()
@@ -4265,7 +4539,11 @@ impl FerriteApp {
                                     cx.stop_propagation();
                                     this.toggle_popover(ActivePopover::MainMenu, cx);
                                 }))
-                                .child(svg_icon("icons/main_menu_btn.svg", p.spx_f32(17.), p.text_primary)),
+                                .child(svg_icon(
+                                    "icons/main_menu_btn.svg",
+                                    p.spx_f32(17.),
+                                    p.text_primary,
+                                )),
                         ),
                 )
                 .into_any_element();
@@ -4374,7 +4652,11 @@ impl FerriteApp {
                         .h(p.spx(32.))
                         .px_2p5()
                         .rounded(p.radius(8., 3.))
-                        .bg(if sort_open { p.bg_elevated } else { p.bg_surface })
+                        .bg(if sort_open {
+                            p.bg_elevated
+                        } else {
+                            p.bg_surface
+                        })
                         .hover(move |s| s.bg(p.bg_elevated))
                         .border_1()
                         .border_color(if sort_open { p.accent } else { p.border })
@@ -4387,8 +4669,17 @@ impl FerriteApp {
                             cx.stop_propagation();
                             this.toggle_popover(ActivePopover::SortMenu, cx);
                         }))
-                        .child(svg_icon("icons/sort_icon.svg", p.spx_f32(14.), p.text_secondary))
-                        .child(div().text_size(p.fpx(12.)).text_color(p.text_muted).child(s.sort_prefix))
+                        .child(svg_icon(
+                            "icons/sort_icon.svg",
+                            p.spx_f32(14.),
+                            p.text_secondary,
+                        ))
+                        .child(
+                            div()
+                                .text_size(p.fpx(12.))
+                                .text_color(p.text_muted)
+                                .child(s.sort_prefix),
+                        )
                         .child(
                             div()
                                 .text_size(p.fpx(12.))
@@ -4405,7 +4696,11 @@ impl FerriteApp {
                             p.spx_f32(11.),
                             p.accent,
                         ))
-                        .child(svg_icon("icons/chevron_down.svg", p.spx_f32(12.), p.text_muted)),
+                        .child(svg_icon(
+                            "icons/chevron_down.svg",
+                            p.spx_f32(12.),
+                            p.text_muted,
+                        )),
                 )
                 .child(
                     div()
@@ -4439,7 +4734,11 @@ impl FerriteApp {
                         .child(svg_icon(
                             "icons/filter.svg",
                             p.spx_f32(14.),
-                            if is_filtered { p.accent } else { p.text_secondary },
+                            if is_filtered {
+                                p.accent
+                            } else {
+                                p.text_secondary
+                            },
                         ))
                         .when_some(active_tag.clone(), |el, tag| {
                             el.child(
@@ -4476,7 +4775,11 @@ impl FerriteApp {
                                 .text_color(p.text_muted)
                                 .child(visible_count.to_string()),
                         )
-                        .child(svg_icon("icons/chevron_down.svg", p.spx_f32(12.), p.text_muted)),
+                        .child(svg_icon(
+                            "icons/chevron_down.svg",
+                            p.spx_f32(12.),
+                            p.text_muted,
+                        )),
                 )
                 .when(is_filtered, |el| {
                     el.child(ghost_icon_btn(
@@ -4576,8 +4879,18 @@ impl FerriteApp {
                             .flex_row()
                             .items_center()
                             .gap_1p5()
-                            .child(svg_icon("icons/search_icon.svg", p.spx_f32(14.), p.text_muted))
-                            .child(div().flex_1().min_w_0().h_full().child(self.search_input.clone()))
+                            .child(svg_icon(
+                                "icons/search_icon.svg",
+                                p.spx_f32(14.),
+                                p.text_muted,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .child(self.search_input.clone()),
+                            )
                             .when(search_non_empty, |el| {
                                 el.child(ghost_icon_btn(
                                     "search-clear",
@@ -4596,7 +4909,11 @@ impl FerriteApp {
                     )
                     .child(ghost_icon_btn(
                         "btn-theme",
-                        if p.is_dark { "icons/sun.svg" } else { "icons/moon.svg" },
+                        if p.is_dark {
+                            "icons/sun.svg"
+                        } else {
+                            "icons/moon.svg"
+                        },
                         p.spx_f32(16.),
                         p.text_secondary,
                         p.bg_elevated,
@@ -4611,7 +4928,11 @@ impl FerriteApp {
                             .w(p.spx(32.))
                             .h(p.spx(32.))
                             .rounded(p.radius(8., 3.))
-                            .bg(if menu_open { p.bg_elevated } else { gpui::transparent_black() })
+                            .bg(if menu_open {
+                                p.bg_elevated
+                            } else {
+                                gpui::transparent_black()
+                            })
                             .hover(move |s| s.bg(p.bg_elevated))
                             .flex()
                             .items_center()
@@ -4621,7 +4942,11 @@ impl FerriteApp {
                                 cx.stop_propagation();
                                 this.toggle_popover(ActivePopover::MainMenu, cx);
                             }))
-                            .child(svg_icon("icons/main_menu_btn.svg", p.spx_f32(17.), p.text_primary)),
+                            .child(svg_icon(
+                                "icons/main_menu_btn.svg",
+                                p.spx_f32(17.),
+                                p.text_primary,
+                            )),
                     ),
             )
             .into_any_element()
@@ -4656,7 +4981,9 @@ impl FerriteApp {
                 this.set_sort_column(field, cx);
             }))
             .child(label.into())
-            .when(active, |el| el.child(svg_icon(arrow, p.spx_f32(11.), p.accent)))
+            .when(active, |el| {
+                el.child(svg_icon(arrow, p.spx_f32(11.), p.accent))
+            })
     }
 
     fn render_downloads_table(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -4987,7 +5314,11 @@ impl FerriteApp {
                         .flex_row()
                         .items_center()
                         .gap_1p5()
-                        .child(svg_icon("icons/checkmark_v2.svg", p.spx_f32(13.), p.success))
+                        .child(svg_icon(
+                            "icons/checkmark_v2.svg",
+                            p.spx_f32(13.),
+                            p.success,
+                        ))
                         .child(
                             div()
                                 .text_size(p.fpx(12.))
@@ -5004,7 +5335,11 @@ impl FerriteApp {
                         .flex_row()
                         .items_center()
                         .gap_1p5()
-                        .child(svg_icon("icons/triangle_alert.svg", p.spx_f32(12.), p.warning))
+                        .child(svg_icon(
+                            "icons/triangle_alert.svg",
+                            p.spx_f32(12.),
+                            p.warning,
+                        ))
                         .child(
                             div()
                                 .text_size(p.fpx(12.))
@@ -5021,7 +5356,11 @@ impl FerriteApp {
                         .flex_row()
                         .items_center()
                         .gap_1p5()
-                        .child(svg_icon("icons/single_download_error.svg", p.spx_f32(13.), p.danger))
+                        .child(svg_icon(
+                            "icons/single_download_error.svg",
+                            p.spx_f32(13.),
+                            p.danger,
+                        ))
                         .child(
                             div()
                                 .text_size(p.fpx(12.))
@@ -5038,7 +5377,11 @@ impl FerriteApp {
                         .flex_row()
                         .items_center()
                         .gap_1p5()
-                        .child(svg_icon("icons/single_download_scheduler.svg", p.spx_f32(13.), p.warning))
+                        .child(svg_icon(
+                            "icons/single_download_scheduler.svg",
+                            p.spx_f32(13.),
+                            p.warning,
+                        ))
                         .child(
                             div()
                                 .text_size(p.fpx(12.))
@@ -5060,16 +5403,14 @@ impl FerriteApp {
                                 .flex_row()
                                 .items_center()
                                 .gap_2()
-                                .child(
-                                    div().flex_1().child(slim_progress_bar_active(
-                                        format!("row-prog-{id}"),
-                                        frac,
-                                        p.spx_f32(4.0),
-                                        progress_fill_color,
-                                        p.bg_400,
-                                        rec.state == DownloadState::Downloading,
-                                    )),
-                                )
+                                .child(div().flex_1().child(slim_progress_bar_active(
+                                    format!("row-prog-{id}"),
+                                    frac,
+                                    p.spx_f32(4.0),
+                                    progress_fill_color,
+                                    p.bg_400,
+                                    rec.state == DownloadState::Downloading,
+                                )))
                                 .child(
                                     div()
                                         .w(p.spx(34.))
@@ -5098,7 +5439,11 @@ impl FerriteApp {
                         .w(p.spx(100.))
                         .flex_shrink_0()
                         .text_size(p.fpx(12.))
-                        .text_color(if is_snail { p.warning } else { p.text_secondary })
+                        .text_color(if is_snail {
+                            p.warning
+                        } else {
+                            p.text_secondary
+                        })
                         .truncate()
                         .child(format!("{} {}", s.lbl_remaining, format_eta(rec.eta_secs)))
                         .into_any_element()
@@ -5172,8 +5517,7 @@ impl FerriteApp {
                                 cx.stop_propagation();
                                 this.selected_id = Some(id);
                                 this.active_popover = ActivePopover::RowContextMenu(id);
-                                this.popover_anim_epoch =
-                                    this.popover_anim_epoch.wrapping_add(1);
+                                this.popover_anim_epoch = this.popover_anim_epoch.wrapping_add(1);
                                 cx.notify();
                             }),
                         )
@@ -5297,7 +5641,12 @@ impl FerriteApp {
                                             ))
                                         })
                                         .when(is_hi_prio, |el| {
-                                            el.child(badge_themed("High", p.amber, p.bg_surface, &p))
+                                            el.child(badge_themed(
+                                                "High",
+                                                p.amber,
+                                                p.bg_surface,
+                                                &p,
+                                            ))
                                         })
                                         .when(is_lo_prio, |el| {
                                             el.child(badge_themed(
@@ -5355,13 +5704,17 @@ impl FerriteApp {
                                 .gap_1()
                                 .text_size(p.fpx(12.))
                                 .when(rec.download_speed_bps > 0, |el| {
-                                    el.child(svg_icon("icons/arrow_down.svg", p.spx_f32(11.), p.accent))
-                                        .child(
-                                            div()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(p.text_primary)
-                                                .child(format_speed(rec.download_speed_bps)),
-                                        )
+                                    el.child(svg_icon(
+                                        "icons/arrow_down.svg",
+                                        p.spx_f32(11.),
+                                        p.accent,
+                                    ))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(p.text_primary)
+                                            .child(format_speed(rec.download_speed_bps)),
+                                    )
                                 })
                                 .when(rec.download_speed_bps == 0, |el| {
                                     el.child(div().text_color(p.text_subtle).child("--"))
@@ -5377,12 +5730,16 @@ impl FerriteApp {
                                 .gap_1()
                                 .text_size(p.fpx(12.))
                                 .when(rec.upload_speed_bps > 0, |el| {
-                                    el.child(svg_icon("icons/arrow_up.svg", p.spx_f32(11.), p.success))
-                                        .child(
-                                            div()
-                                                .text_color(p.text_primary)
-                                                .child(format_speed(rec.upload_speed_bps)),
-                                        )
+                                    el.child(svg_icon(
+                                        "icons/arrow_up.svg",
+                                        p.spx_f32(11.),
+                                        p.success,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_color(p.text_primary)
+                                            .child(format_speed(rec.upload_speed_bps)),
+                                    )
                                 })
                                 .when(rec.upload_speed_bps == 0, |el| {
                                     el.child(div().text_color(p.text_subtle).child("--"))
@@ -5508,8 +5865,16 @@ impl FerriteApp {
         let current_tum = self.summary.tum;
         let is_snail = current_tum == TrafficUsageMode::Snail;
         let bar_bg = if is_snail { p.snail_bg } else { p.bg_200 };
-        let bar_fg = if is_snail { p.snail_text } else { p.text_secondary };
-        let bar_border = if is_snail { p.snail_border } else { p.separator };
+        let bar_fg = if is_snail {
+            p.snail_text
+        } else {
+            p.text_secondary
+        };
+        let bar_border = if is_snail {
+            p.snail_border
+        } else {
+            p.separator
+        };
         let tum_badge_color = match current_tum {
             TrafficUsageMode::High => p.accent,
             TrafficUsageMode::Medium => p.success,
@@ -5565,9 +5930,15 @@ impl FerriteApp {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .child(snail_switch_btn("sb-snail-btn", is_snail, &p, cx, |this, _, _, cx| {
-                        this.toggle_snail_mode(cx);
-                    }))
+                    .child(snail_switch_btn(
+                        "sb-snail-btn",
+                        is_snail,
+                        &p,
+                        cx,
+                        |this, _, _, cx| {
+                            this.toggle_snail_mode(cx);
+                        },
+                    ))
                     .when(is_snail, |el| {
                         el.child(
                             div()
@@ -5660,7 +6031,11 @@ impl FerriteApp {
                                             .text_color(bar_fg)
                                             .child(current_tum.label().to_uppercase()),
                                     )
-                                    .child(svg_icon("icons/arrow_drop_up.svg", p.spx_f32(10.), bar_fg)),
+                                    .child(svg_icon(
+                                        "icons/arrow_drop_up.svg",
+                                        p.spx_f32(10.),
+                                        bar_fg,
+                                    )),
                             ),
                     )
                     .when_some(prev, |el, lbl| {
@@ -5674,7 +6049,11 @@ impl FerriteApp {
                                 .flex_row()
                                 .items_center()
                                 .gap_1()
-                                .child(svg_icon("icons/triangle_alert.svg", p.spx_f32(11.), p.warning))
+                                .child(svg_icon(
+                                    "icons/triangle_alert.svg",
+                                    p.spx_f32(11.),
+                                    p.warning,
+                                ))
                                 .child(
                                     div()
                                         .text_size(p.fpx(12.))
@@ -5742,16 +6121,13 @@ impl FerriteApp {
                     .when_some(shutdown_badge_lbl, |el, s_lbl| {
                         el.child(badge_themed(s_lbl, p.amber, pill_bg, &p))
                     })
-                    .child(
-                        div()
-                            .text_size(p.fpx(12.))
-                            .text_color(bar_fg)
-                            .child(if active_cnt > 0 {
-                                format!("{total_cnt} downloads · {active_cnt} active")
-                            } else {
-                                format!("{total_cnt} downloads")
-                            }),
-                    )
+                    .child(div().text_size(p.fpx(12.)).text_color(bar_fg).child(
+                        if active_cnt > 0 {
+                            format!("{total_cnt} downloads · {active_cnt} active")
+                        } else {
+                            format!("{total_cnt} downloads")
+                        },
+                    ))
                     .when(
                         self.active_page == ActivePage::Downloads && self.selected_id.is_some(),
                         |el| {
@@ -5987,12 +6363,10 @@ impl Render for FerriteApp {
                 if this.active_page == ActivePage::Downloads
                     && this.active_modal == ActiveModal::None
                     && this.active_popover == ActivePopover::None
+                    && let Some(id) = this.selected_id
+                    && let Some(rec) = this.all_downloads.iter().find(|d| d.id == id).cloned()
                 {
-                    if let Some(id) = this.selected_id {
-                        if let Some(rec) = this.all_downloads.iter().find(|d| d.id == id).cloned() {
-                            this.copy_to_clipboard(rec.url, "Copied download URL", cx);
-                        }
-                    }
+                    this.copy_to_clipboard(rec.url, "Copied download URL", cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &InputPaste, w, cx| {
@@ -6066,7 +6440,10 @@ impl Render for FerriteApp {
                     .with_animation(
                         SharedString::from(format!("page-enter-{page_epoch}")),
                         Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
-                        |el, d| el.opacity((0.35 + 0.65 * d).min(1.0)).pt(px(8.0 * (1.0 - d))),
+                        |el, d| {
+                            el.opacity((0.35 + 0.65 * d).min(1.0))
+                                .pt(px(8.0 * (1.0 - d)))
+                        },
                     ),
             )
             .child(status_bar)
@@ -6082,9 +6459,12 @@ impl Render for FerriteApp {
                         .items_center()
                         .justify_center()
                         .p_6()
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, w, cx| {
-                            this.close_modal(w, cx);
-                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, w, cx| {
+                                this.close_modal(w, cx);
+                            }),
+                        )
                         .child(modal_card)
                         .with_animation(
                             SharedString::from(format!("modal-backdrop-fade-{modal_epoch}")),

@@ -145,7 +145,8 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                 None => format_bytes(rec.downloaded_bytes),
             };
             let ratio_str = format_ratio(rec.downloaded_bytes, rec.uploaded_bytes);
-            let ul_ratio_str = format!("{} (ratio {})", format_bytes(rec.uploaded_bytes), ratio_str);
+            let ul_ratio_str =
+                format!("{} (ratio {})", format_bytes(rec.uploaded_bytes), ratio_str);
             let out_path_str = rec.output_path().to_string_lossy().into_owned();
             let out_copy = out_path_str.clone();
             let url_copy = rec.url.clone();
@@ -190,7 +191,11 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                         } else {
                             FontWeight::NORMAL
                         })
-                        .text_color(if has { p.text_primary } else { p.text_secondary })
+                        .text_color(if has {
+                            p.text_primary
+                        } else {
+                            p.text_secondary
+                        })
                         .whitespace_nowrap()
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -248,7 +253,11 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                     cx.notify();
                                 }))
                                 .when(is_folder_item, |el| {
-                                    el.child(svg_icon("icons/folder_mac.svg", p.spx_f32(52.), p.accent))
+                                    el.child(svg_icon(
+                                        "icons/folder_mac.svg",
+                                        p.spx_f32(52.),
+                                        p.accent,
+                                    ))
                                 })
                                 .when(!is_folder_item, |el| {
                                     el.child(
@@ -267,16 +276,13 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                             )),
                                     )
                                 })
-                                .child(
-                                    div()
-                                        .text_size(p.fpx(10.))
-                                        .text_color(p.text_muted)
-                                        .child(if is_completed {
-                                            "Click to open"
-                                        } else {
-                                            "Show in Finder"
-                                        }),
-                                ),
+                                .child(div().text_size(p.fpx(10.)).text_color(p.text_muted).child(
+                                    if is_completed {
+                                        "Click to open"
+                                    } else {
+                                        "Show in Finder"
+                                    },
+                                )),
                         )
                         .child(
                             div()
@@ -438,11 +444,7 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                 .border_1()
                                 .border_color(p.separator)
                                 .child(meta_cell(s.lbl_downloaded, dl_str, &p))
-                                .child(meta_cell(
-                                    s.lbl_uploaded_ratio,
-                                    ul_ratio_str,
-                                    &p,
-                                ))
+                                .child(meta_cell(s.lbl_uploaded_ratio, ul_ratio_str, &p))
                                 .child(meta_cell(
                                     s.lbl_added_at,
                                     format_datetime_full(rec.created_at),
@@ -709,66 +711,61 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                     )
                 })
                 .when(!rec.segments.is_empty(), |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .gap_2()
-                            .children(rec.segments.iter().map(|seg| {
-                                let len = seg.end.saturating_sub(seg.start).max(1);
-                                let frac = (seg.downloaded as f64 / len as f64).clamp(0.0, 1.0);
-                                let col = match seg.state {
-                                    SegmentState::Completed => p.success,
-                                    SegmentState::Active => p.accent,
-                                    SegmentState::Failed => p.danger,
-                                    SegmentState::Pending => p.text_muted,
-                                };
-                                div()
-                                    .w(px(190.))
-                                    .p_2()
-                                    .rounded(px(8.))
-                                    .bg(p.bg_200)
-                                    .border_1()
-                                    .border_color(p.border)
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .justify_between()
-                                            .text_xs()
-                                            .child(
-                                                div()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(p.text_primary)
-                                                    .child(format!("Segment #{}", seg.id + 1)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_color(col)
-                                                    .child(format!("{:.0}%", frac * 100.0)),
-                                            ),
-                                    )
-                                    .child(slim_progress_bar(frac, 5.0, col, p.bg_300))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .justify_between()
-                                            .text_size(px(10.))
-                                            .text_color(p.text_muted)
-                                            .child(format!(
-                                                "{} / {}",
-                                                format_bytes(seg.downloaded),
-                                                format_bytes(len)
-                                            ))
-                                            .child(format_speed(seg.speed_bps)),
-                                    )
-                            })),
-                    )
+                    el.child(div().flex().flex_row().flex_wrap().gap_2().children(
+                        rec.segments.iter().map(|seg| {
+                            let len = seg.end.saturating_sub(seg.start).max(1);
+                            let frac = (seg.downloaded as f64 / len as f64).clamp(0.0, 1.0);
+                            let col = match seg.state {
+                                SegmentState::Completed => p.success,
+                                SegmentState::Active => p.accent,
+                                SegmentState::Failed => p.danger,
+                                SegmentState::Pending => p.text_muted,
+                            };
+                            div()
+                                .w(px(190.))
+                                .p_2()
+                                .rounded(px(8.))
+                                .bg(p.bg_200)
+                                .border_1()
+                                .border_color(p.border)
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .justify_between()
+                                        .text_xs()
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(p.text_primary)
+                                                .child(format!("Segment #{}", seg.id + 1)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_color(col)
+                                                .child(format!("{:.0}%", frac * 100.0)),
+                                        ),
+                                )
+                                .child(slim_progress_bar(frac, 5.0, col, p.bg_300))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .justify_between()
+                                        .text_size(px(10.))
+                                        .text_color(p.text_muted)
+                                        .child(format!(
+                                            "{} / {}",
+                                            format_bytes(seg.downloaded),
+                                            format_bytes(len)
+                                        ))
+                                        .child(format_speed(seg.speed_bps)),
+                                )
+                        }),
+                    ))
                 })
                 .into_any_element()
         }
@@ -778,7 +775,10 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                     .p_4()
                     .text_xs()
                     .text_color(p.text_muted)
-                    .child(format!("Single output file: {}", rec.output_path().display()))
+                    .child(format!(
+                        "Single output file: {}",
+                        rec.output_path().display()
+                    ))
                     .into_any_element()
             } else {
                 let cur_selected: HashSet<usize> = rec
@@ -825,7 +825,9 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                             .border_color(p.separator)
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("insp-file-toggle-{id}-{f_idx}")))
+                                    .id(SharedString::from(format!(
+                                        "insp-file-toggle-{id}-{f_idx}"
+                                    )))
                                     .flex()
                                     .flex_row()
                                     .items_center()
@@ -837,7 +839,8 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                         let eng = Arc::clone(&this.engine);
                                         let sel = next_set.clone();
                                         this.rt.spawn(async move {
-                                            let _ = eng.update_torrent_file_selection(id, sel).await;
+                                            let _ =
+                                                eng.update_torrent_file_selection(id, sel).await;
                                         });
                                         cx.notify();
                                     }))
@@ -866,9 +869,9 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                     .gap_3()
                                     .flex_shrink_0()
                                     .child(
-                                        div()
-                                            .w(px(76.))
-                                            .child(slim_progress_bar(f_frac, 4.0, p.accent, p.bg_300)),
+                                        div().w(px(76.)).child(slim_progress_bar(
+                                            f_frac, 4.0, p.accent, p.bg_300,
+                                        )),
                                     )
                                     .child(
                                         div()
@@ -888,31 +891,35 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                             .flex_row()
                                             .items_center()
                                             .gap(px(3.))
-                                            .children([
-                                                (DownloadPriority::DontDownload, "Skip"),
-                                                (DownloadPriority::Low, "Low"),
-                                                (DownloadPriority::Normal, "Norm"),
-                                                (DownloadPriority::High, "High"),
-                                            ].into_iter().map(|(pr, lbl)| {
-                                                chip_toggle(
-                                                    format!("insp-fp-{id}-{f_idx}-{pr:?}"),
-                                                    lbl,
-                                                    f.priority == pr,
-                                                    &p,
-                                                    cx,
-                                                    move |this, _, _, cx| {
-                                                        let eng = Arc::clone(&this.engine);
-                                                        this.rt.spawn(async move {
-                                                            let _ = eng
-                                                                .update_torrent_file_priority(
-                                                                    id, f_idx, pr,
-                                                                )
-                                                                .await;
-                                                        });
-                                                        cx.notify();
-                                                    },
-                                                )
-                                            })),
+                                            .children(
+                                                [
+                                                    (DownloadPriority::DontDownload, "Skip"),
+                                                    (DownloadPriority::Low, "Low"),
+                                                    (DownloadPriority::Normal, "Norm"),
+                                                    (DownloadPriority::High, "High"),
+                                                ]
+                                                .into_iter()
+                                                .map(|(pr, lbl)| {
+                                                    chip_toggle(
+                                                        format!("insp-fp-{id}-{f_idx}-{pr:?}"),
+                                                        lbl,
+                                                        f.priority == pr,
+                                                        &p,
+                                                        cx,
+                                                        move |this, _, _, cx| {
+                                                            let eng = Arc::clone(&this.engine);
+                                                            this.rt.spawn(async move {
+                                                                let _ = eng
+                                                                    .update_torrent_file_priority(
+                                                                        id, f_idx, pr,
+                                                                    )
+                                                                    .await;
+                                                            });
+                                                            cx.notify();
+                                                        },
+                                                    )
+                                                }),
+                                            ),
                                     ),
                             )
                     }))
@@ -1057,7 +1064,10 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                             ))
                             .child(meta_cell(
                                 "User-Agent",
-                                rec.http.user_agent.clone().unwrap_or_else(|| "Default".into()),
+                                rec.http
+                                    .user_agent
+                                    .clone()
+                                    .unwrap_or_else(|| "Default".into()),
                                 &p,
                             )),
                     )
@@ -1141,16 +1151,13 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                             .truncate()
                                             .child(format!("{} ({})", peer.address, peer.client)),
                                     )
-                                    .child(
-                                        div()
-                                            .flex_shrink_0()
-                                            .text_color(p.accent)
-                                            .child(format!(
-                                                "↓{} ↑{}",
-                                                format_speed(peer.download_bps),
-                                                format_speed(peer.upload_bps)
-                                            )),
-                                    )
+                                    .child(div().flex_shrink_0().text_color(p.accent).child(
+                                        format!(
+                                            "↓{} ↑{}",
+                                            format_speed(peer.download_bps),
+                                            format_speed(peer.upload_bps)
+                                        ),
+                                    ))
                             })),
                     )
                     .child(
@@ -1322,19 +1329,14 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                 .min_h_0()
                 .id("insp-scroll")
                 .overflow_y_scroll()
-                .child(
-                    div()
-                        .id("insp-tab-body")
-                        .child(content)
-                        .with_animation(
-                            SharedString::from(format!("insp-tab-enter-{insp_tab_epoch}")),
-                            Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
-                            |el, delta| {
-                                el.opacity((0.4 + 0.6 * delta).min(1.0))
-                                    .mt(px(5.0 * (1.0 - delta)))
-                            },
-                        ),
-                ),
+                .child(div().id("insp-tab-body").child(content).with_animation(
+                    SharedString::from(format!("insp-tab-enter-{insp_tab_epoch}")),
+                    Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
+                    |el, delta| {
+                        el.opacity((0.4 + 0.6 * delta).min(1.0))
+                            .mt(px(5.0 * (1.0 - delta)))
+                    },
+                )),
         );
 
     if expanding {
@@ -1342,7 +1344,10 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
             .with_animation(
                 SharedString::from(format!("insp-expand-{insp_epoch}")),
                 Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
-                move |el, delta| el.h(px(panel_h * delta)).opacity((0.4 + 0.6 * delta).min(1.0)),
+                move |el, delta| {
+                    el.h(px(panel_h * delta))
+                        .opacity((0.4 + 0.6 * delta).min(1.0))
+                },
             )
             .into_any_element()
     } else {

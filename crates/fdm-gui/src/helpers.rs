@@ -35,10 +35,8 @@ pub fn parse_launch_args(args: &[String]) -> LaunchOptions {
                     i += 1;
                 }
             }
-            val if !val.starts_with('-') => {
-                if opts.initial_url.is_none() {
-                    opts.initial_url = Some(val.to_string());
-                }
+            val if !val.starts_with('-') && opts.initial_url.is_none() => {
+                opts.initial_url = Some(val.to_string());
             }
             _ => {}
         }
@@ -94,10 +92,10 @@ pub fn format_minute_hhmm(mins: u16) -> String {
 
 pub fn parse_minute_hhmm(s: &str, fallback: u16) -> u16 {
     let trimmed = s.trim();
-    if let Some((h, m)) = trimmed.split_once(':') {
-        if let (Ok(hh), Ok(mm)) = (h.trim().parse::<u16>(), m.trim().parse::<u16>()) {
-            return (hh.min(24) * 60 + mm.min(59)).min(1440);
-        }
+    if let Some((h, m)) = trimmed.split_once(':')
+        && let (Ok(hh), Ok(mm)) = (h.trim().parse::<u16>(), m.trim().parse::<u16>())
+    {
+        return (hh.min(24) * 60 + mm.min(59)).min(1440);
     }
     if let Ok(hh) = trimmed.parse::<u16>() {
         return (hh.min(24) * 60).min(1440);
@@ -119,7 +117,10 @@ pub fn state_badge_info(rec: &DownloadRecord, p: &ThemePalette) -> (&'static str
     }
     let color = match rec.state {
         DownloadState::Downloading => p.accent,
-        DownloadState::Starting | DownloadState::Checking | DownloadState::PostProcessing | DownloadState::Moving => p.info,
+        DownloadState::Starting
+        | DownloadState::Checking
+        | DownloadState::PostProcessing
+        | DownloadState::Moving => p.info,
         DownloadState::Seeding => p.success,
         DownloadState::Completed => p.success,
         DownloadState::Queued | DownloadState::WaitingForNetwork => p.info,
@@ -525,7 +526,9 @@ pub fn count_by_state_filter(all: &[DownloadRecord], filter: StateFilter) -> usi
     all.iter()
         .filter(|d| match filter {
             StateFilter::All => true,
-            StateFilter::Running => d.state.is_running_or_seeding() || d.state == DownloadState::Queued,
+            StateFilter::Running => {
+                d.state.is_running_or_seeding() || d.state == DownloadState::Queued
+            }
             StateFilter::Downloading => matches!(
                 d.state,
                 DownloadState::Starting
@@ -547,14 +550,13 @@ pub fn count_by_state_filter(all: &[DownloadRecord], filter: StateFilter) -> usi
 }
 
 pub fn detect_lan_ip() -> String {
-    if let Ok(sock) = UdpSocket::bind("0.0.0.0:0") {
-        if sock.connect("8.8.8.8:80").is_ok() {
-            if let Ok(local) = sock.local_addr() {
-                let ip = local.ip();
-                if !ip.is_loopback() && !ip.is_unspecified() {
-                    return ip.to_string();
-                }
-            }
+    if let Ok(sock) = UdpSocket::bind("0.0.0.0:0")
+        && sock.connect("8.8.8.8:80").is_ok()
+        && let Ok(local) = sock.local_addr()
+    {
+        let ip = local.ip();
+        if !ip.is_loopback() && !ip.is_unspecified() {
+            return ip.to_string();
         }
     }
     "127.0.0.1".into()
@@ -598,7 +600,7 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
         if !status.success() {
             anyhow::bail!("Failed to reveal {}", path.display());
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -626,7 +628,10 @@ pub fn install_native_host_for_browser(browser: KnownWebBrowser) -> anyhow::Resu
 
 pub fn is_native_host_installed(browser: KnownWebBrowser) -> bool {
     default_native_manifest_dir(browser)
-        .map(|d| d.join(format!("{}.json", fdm_native_host::NATIVE_HOST_NAME)).is_file())
+        .map(|d| {
+            d.join(format!("{}.json", fdm_native_host::NATIVE_HOST_NAME))
+                .is_file()
+        })
         .unwrap_or(false)
 }
 
@@ -747,10 +752,7 @@ pub fn available_disk_space_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let data_line = stdout
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())?;
+    let data_line = stdout.lines().rev().find(|l| !l.trim().is_empty())?;
     let tokens: Vec<&str> = data_line.split_whitespace().collect();
     let pct_idx = tokens.iter().position(|t| t.ends_with('%'))?;
     if pct_idx == 0 {
@@ -778,12 +780,33 @@ pub fn expand_path_preview(template: &str, url: &str, filename: &str) -> String 
     fdm_core::routing::expand_path_macros(template, u, f)
 }
 
-pub fn detect_antivirus_presets() -> Vec<(&'static str, &'static str, &'static str, &'static str, bool)> {
+pub fn detect_antivirus_presets()
+-> Vec<(&'static str, &'static str, &'static str, &'static str, bool)> {
     let candidates = [
-        ("clamav_brew", "ClamAV (clamscan)", "/opt/homebrew/bin/clamscan", "\"{file}\""),
-        ("clamav_local", "ClamAV (clamscan /usr/local)", "/usr/local/bin/clamscan", "\"{file}\""),
-        ("clamav_usr", "ClamAV (/usr/bin/clamscan)", "/usr/bin/clamscan", "\"{file}\""),
-        ("clamd_brew", "ClamAV Daemon (clamdscan)", "/opt/homebrew/bin/clamdscan", "\"{file}\""),
+        (
+            "clamav_brew",
+            "ClamAV (clamscan)",
+            "/opt/homebrew/bin/clamscan",
+            "\"{file}\"",
+        ),
+        (
+            "clamav_local",
+            "ClamAV (clamscan /usr/local)",
+            "/usr/local/bin/clamscan",
+            "\"{file}\"",
+        ),
+        (
+            "clamav_usr",
+            "ClamAV (/usr/bin/clamscan)",
+            "/usr/bin/clamscan",
+            "\"{file}\"",
+        ),
+        (
+            "clamd_brew",
+            "ClamAV Daemon (clamdscan)",
+            "/opt/homebrew/bin/clamdscan",
+            "\"{file}\"",
+        ),
     ];
     candidates
         .into_iter()
@@ -980,10 +1003,7 @@ mod tests {
             format_compact_dock_badge(2 * 1024 * 1024, 512 * 1024, 1, false, true).as_deref(),
             Some("↓2.0M")
         );
-        assert_eq!(
-            format_compact_dock_badge(0, 0, 0, true, true),
-            None
-        );
+        assert_eq!(format_compact_dock_badge(0, 0, 0, true, true), None);
 
         assert_eq!(
             extract_first_download_url("hello\n  https://example.com/file.zip  \n"),

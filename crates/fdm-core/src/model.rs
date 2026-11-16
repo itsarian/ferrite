@@ -55,7 +55,11 @@ impl DownloadState {
     pub fn is_active(&self) -> bool {
         matches!(
             self,
-            Self::Starting | Self::Downloading | Self::Checking | Self::PostProcessing | Self::Moving
+            Self::Starting
+                | Self::Downloading
+                | Self::Checking
+                | Self::PostProcessing
+                | Self::Moving
         )
     }
 
@@ -64,7 +68,10 @@ impl DownloadState {
     }
 
     pub fn is_stopped_or_paused(&self) -> bool {
-        matches!(self, Self::Stopped | Self::Paused | Self::Error | Self::Scheduled)
+        matches!(
+            self,
+            Self::Stopped | Self::Paused | Self::Error | Self::Scheduled
+        )
     }
 
     pub fn display_name(&self) -> &'static str {
@@ -88,36 +95,29 @@ impl DownloadState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DownloadPriority {
     DontDownload = 0,
     Low = 1,
+    #[default]
     Normal = 2,
     High = 3,
     Unknown = 4,
 }
 
-impl Default for DownloadPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ResumeSupport {
+    #[default]
     Unknown,
     Present,
     Absent,
 }
 
-impl Default for ResumeSupport {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum FileType {
     Audio,
     Video,
@@ -127,13 +127,8 @@ pub enum FileType {
     Image,
     Torrent,
     Other,
+    #[default]
     Unknown,
-}
-
-impl Default for FileType {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -158,17 +153,13 @@ impl HashAlgorithm {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExistingFileReaction {
     Ask,
     Overwrite,
+    #[default]
     Rename,
     Skip,
-}
-
-impl Default for ExistingFileReaction {
-    fn default() -> Self {
-        Self::Rename
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -182,21 +173,19 @@ pub enum FileExistsAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BtEncryptionPolicy {
     NoEncryptionAllowed,
+    #[default]
     PreferEncryption,
     RequireEncryption,
 }
 
-impl Default for BtEncryptionPolicy {
-    fn default() -> Self {
-        Self::PreferEncryption
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DownloadAbortReason {
+    #[default]
     None,
     AbortedByUser,
     AlreadyExists,
@@ -211,15 +200,11 @@ pub enum DownloadAbortReason {
     Shutdown,
 }
 
-impl Default for DownloadAbortReason {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AutoStartPreventer {
+    #[default]
     None,
     NotOnline,
     LowBattery,
@@ -228,29 +213,21 @@ pub enum AutoStartPreventer {
     LowDiskSpace,
 }
 
-impl Default for AutoStartPreventer {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MissingFilesFilter {
+    #[default]
     Off,
     AcceptNormal,
     AcceptMissingFiles,
 }
 
-impl Default for MissingFilesFilter {
-    fn default() -> Self {
-        Self::Off
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SortField {
+    #[default]
     CreationTime,
     Order,
     Size,
@@ -260,25 +237,15 @@ pub enum SortField {
     Priority,
 }
 
-impl Default for SortField {
-    fn default() -> Self {
-        Self::CreationTime
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TrafficUsageMode {
     Snail,
     Low,
     Medium,
+    #[default]
     High,
-}
-
-impl Default for TrafficUsageMode {
-    fn default() -> Self {
-        Self::High
-    }
 }
 
 impl TrafficUsageMode {
@@ -294,16 +261,12 @@ impl TrafficUsageMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NetworkProxyMode {
     NoProxy,
+    #[default]
     SystemProxy,
     ManualProxy,
-}
-
-impl Default for NetworkProxyMode {
-    fn default() -> Self {
-        Self::SystemProxy
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -320,18 +283,14 @@ pub enum KnownWebBrowser {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ShutdownType {
+    #[default]
     None,
     Sleep,
     Hibernate,
     Shutdown,
     QuitApp,
-}
-
-impl Default for ShutdownType {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -347,7 +306,9 @@ pub enum NotificationEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StateFilter {
+    #[default]
     All,
     Running,
     Downloading,
@@ -356,12 +317,6 @@ pub enum StateFilter {
     Stopped,
     Scheduled,
     Missing,
-}
-
-impl Default for StateFilter {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -530,7 +485,9 @@ impl DownloadRecord {
 
     pub fn progress_fraction(&self) -> f64 {
         match self.total_bytes {
-            Some(total) if total > 0 => (self.downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0),
+            Some(total) if total > 0 => {
+                (self.downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0)
+            }
             _ => {
                 if self.state == DownloadState::Completed {
                     1.0
@@ -678,13 +635,29 @@ impl NewDownloadRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EngineEvent {
-    Added { id: DownloadId },
-    Updated { id: DownloadId },
-    Removed { id: DownloadId },
-    Completed { id: DownloadId },
-    Failed { id: DownloadId, error: String },
-    FileConflict { id: DownloadId, path: PathBuf },
-    TrafficModeChanged { mode: TrafficUsageMode },
+    Added {
+        id: DownloadId,
+    },
+    Updated {
+        id: DownloadId,
+    },
+    Removed {
+        id: DownloadId,
+    },
+    Completed {
+        id: DownloadId,
+    },
+    Failed {
+        id: DownloadId,
+        error: String,
+    },
+    FileConflict {
+        id: DownloadId,
+        path: PathBuf,
+    },
+    TrafficModeChanged {
+        mode: TrafficUsageMode,
+    },
     SettingsUpdated,
     QuitRequested,
     QueueStats {

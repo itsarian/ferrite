@@ -10,8 +10,8 @@ use fdm_core::{
     AuthCredential, AutoStartPreventer, BandwidthLimiter, DownloadAbortReason, DownloadFileEntry,
     DownloadFlags, DownloadId, DownloadPriority, DownloadRecord, DownloadState, DownloadType,
     ExistingFileReaction, FdmConfig, FileExistsAction, FileType, FilterQuery, HashAlgorithm,
-    NewDownloadRequest, ResumeSupport, ScheduleRule, ShutdownType,
-    SslException, Tag, TrackerInfo, TrafficUsageMode,
+    NewDownloadRequest, ResumeSupport, ScheduleRule, ShutdownType, SslException, Tag, TrackerInfo,
+    TrafficUsageMode,
     db::{Database, filter_and_sort_downloads},
     export_import::{
         export_downloads_csv, export_downloads_json, export_downloads_urls_txt,
@@ -32,16 +32,16 @@ use fdm_core::{
     scheduler::is_schedule_active,
 };
 use fdm_hls::{download_dash_stream, download_hls_stream};
-use fdm_http::{ControlCommand, download_http_or_ftp, probe_http_resource, build_http_client};
+use fdm_http::{ControlCommand, build_http_client, download_http_or_ftp, probe_http_resource};
 use fdm_ipc::{
     IpcRequest, IpcResponse, RemotePairingInfo, apply_browser_settings_patch,
     build_browser_settings_payload, default_socket_path, generate_pairing_info_with_secret,
     start_ipc_server, start_remote_control_server,
 };
 use fdm_media::{
-    JsPluginInfo, MediaParseResult, PluginUpdateOutcome, check_and_update_plugins,
-    compare_semver, install_plugin_from_path_with_options, list_plugins, merge_av_files,
-    probe_media_url, set_plugin_enabled, uninstall_plugin,
+    JsPluginInfo, MediaParseResult, PluginUpdateOutcome, check_and_update_plugins, compare_semver,
+    install_plugin_from_path_with_options, list_plugins, merge_av_files, probe_media_url,
+    set_plugin_enabled, uninstall_plugin,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -118,7 +118,6 @@ pub struct DownloadEngine {
 
 pub type EngineEventAlias = fdm_core::EngineEvent;
 
-
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -139,7 +138,7 @@ fn move_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     if src == dst || !src.exists() {
         return Ok(());
     }
-    if let Err(_) = std::fs::rename(src, dst) {
+    if std::fs::rename(src, dst).is_err() {
         if src.is_dir() {
             copy_dir_all(src, dst)?;
             std::fs::remove_dir_all(src)?;
@@ -254,12 +253,9 @@ impl DownloadEngine {
             *sig_g = new_bt_sig;
             changed
         };
-        let bt_busy = self
-            .downloads
-            .read()
-            .unwrap()
-            .iter()
-            .any(|d| d.download_type == DownloadType::BitTorrent && d.state.is_running_or_seeding());
+        let bt_busy = self.downloads.read().unwrap().iter().any(|d| {
+            d.download_type == DownloadType::BitTorrent && d.state.is_running_or_seeding()
+        });
 
         let bind_ip: std::net::IpAddr = new_cfg
             .app
@@ -267,10 +263,15 @@ impl DownloadEngine {
             .parse()
             .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
         let desired_remote = SocketAddr::new(bind_ip, new_cfg.app.remote_access_port);
-        let remote_changed =
-            *self.remote_target_addr.lock().unwrap() != Some(desired_remote);
+        let remote_changed = *self.remote_target_addr.lock().unwrap() != Some(desired_remote);
 
-        let prev_remote_pw = self.config.read().unwrap().app.remote_access_password.clone();
+        let prev_remote_pw = self
+            .config
+            .read()
+            .unwrap()
+            .app
+            .remote_access_password
+            .clone();
         let existing_remote_host = self
             .remote_pairing
             .lock()
@@ -288,22 +289,22 @@ impl DownloadEngine {
                 "default-pair",
                 &sha256_str(&new_cfg.app.remote_access_password),
             )?;
-            if let Some(ref mut pair) = *self.remote_pairing.lock().unwrap() {
-                if let Ok(updated) = generate_pairing_info_with_secret(
+            if let Some(ref mut pair) = *self.remote_pairing.lock().unwrap()
+                && let Ok(updated) = generate_pairing_info_with_secret(
                     &new_cfg.app.remote_control_server_id,
                     &existing_remote_host,
                     new_cfg.app.remote_access_port,
                     &new_cfg.app.remote_access_password,
-                ) {
-                    *pair = updated;
-                }
+                )
+            {
+                *pair = updated;
             }
         }
         *self.config.write().unwrap() = new_cfg.clone();
 
-        if !new_cfg.app.enable_remote_access {
-            self.stop_remote_control();
-        } else if remote_changed && self.remote_handle.lock().unwrap().is_some() {
+        if !new_cfg.app.enable_remote_access
+            || (remote_changed && self.remote_handle.lock().unwrap().is_some())
+        {
             self.stop_remote_control();
         }
 
@@ -442,7 +443,10 @@ impl DownloadEngine {
                 active_count += 1;
             } else if d.state == DownloadState::Queued {
                 queued_count += 1;
-            } else if matches!(d.state, DownloadState::Paused | DownloadState::Stopped | DownloadState::Scheduled) {
+            } else if matches!(
+                d.state,
+                DownloadState::Paused | DownloadState::Stopped | DownloadState::Scheduled
+            ) {
                 paused_count += 1;
             } else if d.state == DownloadState::Completed {
                 completed_count += 1;
@@ -505,12 +509,8 @@ impl DownloadEngine {
             BtSessionManager::new_ephemeral(cfg.core.default_download_path.clone()).await?
         } else {
             let persist = self.data_dir.join("bt_state");
-            BtSessionManager::new(
-                cfg.core.default_download_path.clone(),
-                &cfg,
-                Some(persist),
-            )
-            .await?
+            BtSessionManager::new(cfg.core.default_download_path.clone(), &cfg, Some(persist))
+                .await?
         };
         let arc = Arc::new(mgr);
         *guard = Some(Arc::clone(&arc));
@@ -636,31 +636,31 @@ impl DownloadEngine {
         let mut dummy = self.draft_record(&NewDownloadRequest::from_url(trimmed), &cfg);
         let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
         let cred = self.lookup_credential(trimmed);
-        if let Ok(client) = build_http_client(&cfg, &ssl, None) {
-            if let Ok(probe) = probe_http_resource(&client, &dummy, &ssl, cred.as_ref()).await {
-                if let Some(ref s) = probe.suggested_filename {
-                    dummy.file_name = s.clone();
-                    dummy.title = s.clone();
-                }
-                let resolved_dir = resolve_target_dir(
-                    &cfg,
-                    None,
-                    &probe.final_url,
-                    &dummy.file_name,
-                    probe.content_type.as_deref(),
-                );
-                return Ok(AddProbeOutcome {
-                    title: dummy.title,
-                    download_type: DownloadType::Www,
-                    total_bytes: probe.total_bytes,
-                    resume_support: probe.resume_support,
-                    files: vec![],
-                    media: None,
-                    torrent: None,
-                    resolved_dir,
-                    resolved_file_name: dummy.file_name,
-                });
+        if let Ok(client) = build_http_client(&cfg, &ssl, None)
+            && let Ok(probe) = probe_http_resource(&client, &dummy, &ssl, cred.as_ref()).await
+        {
+            if let Some(ref s) = probe.suggested_filename {
+                dummy.file_name = s.clone();
+                dummy.title = s.clone();
             }
+            let resolved_dir = resolve_target_dir(
+                &cfg,
+                None,
+                &probe.final_url,
+                &dummy.file_name,
+                probe.content_type.as_deref(),
+            );
+            return Ok(AddProbeOutcome {
+                title: dummy.title,
+                download_type: DownloadType::Www,
+                total_bytes: probe.total_bytes,
+                resume_support: probe.resume_support,
+                files: vec![],
+                media: None,
+                torrent: None,
+                resolved_dir,
+                resolved_file_name: dummy.file_name,
+            });
         }
 
         Ok(AddProbeOutcome {
@@ -680,12 +680,11 @@ impl DownloadEngine {
         if let Ok(Some(exact)) = self.db.get_credential(url_str) {
             return Some(exact);
         }
-        if let Ok(u) = Url::parse(url_str) {
-            if let Some(host) = u.host_str() {
-                if let Ok(Some(c)) = self.db.get_credential(host) {
-                    return Some(c);
-                }
-            }
+        if let Ok(u) = Url::parse(url_str)
+            && let Some(host) = u.host_str()
+            && let Ok(Some(c)) = self.db.get_credential(host)
+        {
+            return Some(c);
         }
         None
     }
@@ -730,13 +729,8 @@ impl DownloadEngine {
             );
         }
 
-        let mut target_dir = resolve_target_dir(
-            cfg,
-            req.target_dir.as_ref(),
-            &req.url,
-            &file_name,
-            None,
-        );
+        let mut target_dir =
+            resolve_target_dir(cfg, req.target_dir.as_ref(), &req.url, &file_name, None);
         let file_type = if dl_type == DownloadType::BitTorrent {
             FileType::Torrent
         } else {
@@ -759,15 +753,16 @@ impl DownloadEngine {
                 if (builtin_match || ext_match) && !tags.contains(&t.id) {
                     tags.push(t.id);
                 }
-                if req.target_dir.is_none() && (ext_match || tags.contains(&t.id)) {
-                    if let Some(ref tag_folder) = t.default_download_folder {
-                        let expanded = expand_path_macros(
-                            &tag_folder.to_string_lossy(),
-                            Some(&req.url),
-                            Some(&file_name),
-                        );
-                        target_dir = PathBuf::from(expanded);
-                    }
+                if req.target_dir.is_none()
+                    && (ext_match || tags.contains(&t.id))
+                    && let Some(ref tag_folder) = t.default_download_folder
+                {
+                    let expanded = expand_path_macros(
+                        &tag_folder.to_string_lossy(),
+                        Some(&req.url),
+                        Some(&file_name),
+                    );
+                    target_dir = PathBuf::from(expanded);
                 }
             }
         }
@@ -801,30 +796,27 @@ impl DownloadEngine {
         if dl_type == DownloadType::BitTorrent
             && torrent_source.is_none()
             && Path::new(&req.url).is_file()
+            && let Ok(raw) = std::fs::read(&req.url)
         {
-            if let Ok(raw) = std::fs::read(&req.url) {
-                torrent_source = Some(base64::engine::general_purpose::STANDARD.encode(raw));
-            }
+            torrent_source = Some(base64::engine::general_purpose::STANDARD.encode(raw));
         }
 
         let mut files = Vec::new();
-        if let Some(ref sel) = req.selected_file_indices {
-            if let Some(ref b64) = torrent_source {
-                if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                    if let Ok(parsed) = inspect_torrent_bytes(&raw) {
-                        files = parsed
-                            .files
-                            .into_iter()
-                            .map(|mut f| {
-                                if !sel.contains(&f.index) {
-                                    f.priority = DownloadPriority::DontDownload;
-                                }
-                                f
-                            })
-                            .collect();
+        if let Some(ref sel) = req.selected_file_indices
+            && let Some(ref b64) = torrent_source
+            && let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(b64)
+            && let Ok(parsed) = inspect_torrent_bytes(&raw)
+        {
+            files = parsed
+                .files
+                .into_iter()
+                .map(|mut f| {
+                    if !sel.contains(&f.index) {
+                        f.priority = DownloadPriority::DontDownload;
                     }
-                }
-            }
+                    f
+                })
+                .collect();
         }
 
         let title = req
@@ -907,8 +899,13 @@ impl DownloadEngine {
         {
             self.downloads.write().unwrap().push(saved.clone());
         }
-        self.log_dl_mgmt(&format!("Added download #{} ({}) -> {}", saved.id, saved.file_name, saved.url));
-        let _ = self.events_tx.send(EngineEventAlias::Added { id: saved.id });
+        self.log_dl_mgmt(&format!(
+            "Added download #{} ({}) -> {}",
+            saved.id, saved.file_name, saved.url
+        ));
+        let _ = self
+            .events_tx
+            .send(EngineEventAlias::Added { id: saved.id });
         if saved.state == DownloadState::Queued {
             self.schedule_queue().await;
         }
@@ -941,7 +938,9 @@ impl DownloadEngine {
             rec.flags.created_by_batch = true;
             let saved = self.db.next_download_id_and_insert(rec)?;
             self.downloads.write().unwrap().push(saved.clone());
-            let _ = self.events_tx.send(EngineEventAlias::Added { id: saved.id });
+            let _ = self
+                .events_tx
+                .send(EngineEventAlias::Added { id: saved.id });
             out.push(saved);
         }
         self.log_dl_mgmt(&format!("Added batch of {} downloads", out.len()));
@@ -1036,12 +1035,16 @@ impl DownloadEngine {
             let saved = self.db.next_download_id_and_insert(rec)?;
             parent.children_ids.push(saved.id);
             self.downloads.write().unwrap().push(saved.clone());
-            let _ = self.events_tx.send(EngineEventAlias::Added { id: saved.id });
+            let _ = self
+                .events_tx
+                .send(EngineEventAlias::Added { id: saved.id });
             children.push(saved);
         }
         let _ = self.db.upsert_download(&parent);
         self.downloads.write().unwrap().push(parent.clone());
-        let _ = self.events_tx.send(EngineEventAlias::Added { id: parent.id });
+        let _ = self
+            .events_tx
+            .send(EngineEventAlias::Added { id: parent.id });
         if !start_paused && !children.is_empty() {
             self.schedule_queue().await;
         }
@@ -1055,14 +1058,14 @@ impl DownloadEngine {
         {
             let mut list = self.downloads.write().unwrap();
             if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
-                if !matches!(rec.state, DownloadState::Completed | DownloadState::Stopped) {
-                    if !rec.state.is_active() {
-                        rec.state = DownloadState::Paused;
-                        rec.download_speed_bps = 0;
-                        rec.connections_active = 0;
-                        rec.updated_at = Utc::now();
-                        let _ = self.db.upsert_download(rec);
-                    }
+                if !matches!(rec.state, DownloadState::Completed | DownloadState::Stopped)
+                    && !rec.state.is_active()
+                {
+                    rec.state = DownloadState::Paused;
+                    rec.download_speed_bps = 0;
+                    rec.connections_active = 0;
+                    rec.updated_at = Utc::now();
+                    let _ = self.db.upsert_download(rec);
                 }
             } else {
                 bail!("Download {id} not found");
@@ -1102,16 +1105,16 @@ impl DownloadEngine {
         }
         {
             let mut list = self.downloads.write().unwrap();
-            if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
-                if !rec.state.is_active() {
-                    rec.state = DownloadState::Stopped;
-                    rec.abort_reason = DownloadAbortReason::AbortedByUser;
-                    rec.download_speed_bps = 0;
-                    rec.upload_speed_bps = 0;
-                    rec.connections_active = 0;
-                    rec.updated_at = Utc::now();
-                    let _ = self.db.upsert_download(rec);
-                }
+            if let Some(rec) = list.iter_mut().find(|d| d.id == id)
+                && !rec.state.is_active()
+            {
+                rec.state = DownloadState::Stopped;
+                rec.abort_reason = DownloadAbortReason::AbortedByUser;
+                rec.download_speed_bps = 0;
+                rec.upload_speed_bps = 0;
+                rec.connections_active = 0;
+                rec.updated_at = Utc::now();
+                let _ = self.db.upsert_download(rec);
             }
         }
         let _ = self.events_tx.send(EngineEventAlias::Updated { id });
@@ -1119,15 +1122,17 @@ impl DownloadEngine {
         Ok(())
     }
 
-    pub async fn remove_download(self: &Arc<Self>, id: DownloadId, delete_files: bool) -> Result<()> {
+    pub async fn remove_download(
+        self: &Arc<Self>,
+        id: DownloadId,
+        delete_files: bool,
+    ) -> Result<()> {
         let _ = self.cancel_download(id).await;
         let removed = {
             let mut list = self.downloads.write().unwrap();
-            if let Some(pos) = list.iter().position(|d| d.id == id) {
-                Some(list.remove(pos))
-            } else {
-                None
-            }
+            list.iter()
+                .position(|d| d.id == id)
+                .map(|pos| list.remove(pos))
         };
         if let Some(rec) = removed {
             if delete_files {
@@ -1157,7 +1162,10 @@ impl DownloadEngine {
                 .filter(|d| {
                     matches!(
                         d.state,
-                        DownloadState::Paused | DownloadState::Stopped | DownloadState::Error | DownloadState::Scheduled
+                        DownloadState::Paused
+                            | DownloadState::Stopped
+                            | DownloadState::Error
+                            | DownloadState::Scheduled
                     )
                 })
                 .map(|d| d.id)
@@ -1216,7 +1224,11 @@ impl DownloadEngine {
         Ok(())
     }
 
-    pub async fn update_mirrors(self: &Arc<Self>, id: DownloadId, mirrors: Vec<String>) -> Result<()> {
+    pub async fn update_mirrors(
+        self: &Arc<Self>,
+        id: DownloadId,
+        mirrors: Vec<String>,
+    ) -> Result<()> {
         {
             let mut list = self.downloads.write().unwrap();
             let rec = list
@@ -1272,10 +1284,10 @@ impl DownloadEngine {
             self.db.upsert_download(rec)?;
             rec.torrent_info_hash.clone()
         };
-        if let Some(ih) = info_hash {
-            if let Some(ref bt) = *self.bt_manager.lock().await {
-                let _ = bt.update_file_selection(&ih, selected_indices).await;
-            }
+        if let Some(ih) = info_hash
+            && let Some(ref bt) = *self.bt_manager.lock().await
+        {
+            let _ = bt.update_file_selection(&ih, selected_indices).await;
         }
         let _ = self.events_tx.send(EngineEventAlias::Updated { id });
         Ok(())
@@ -1380,10 +1392,10 @@ impl DownloadEngine {
             }
             if let Some(first) = rec.files.first_mut() {
                 first.computed_hash = Some((algo, actual.clone()));
-                if let Some(exp) = expected {
-                    if !exp.trim().is_empty() {
-                        first.expected_hash = Some((algo, exp.trim().to_string()));
-                    }
+                if let Some(exp) = expected
+                    && !exp.trim().is_empty()
+                {
+                    first.expected_hash = Some((algo, exp.trim().to_string()));
                 }
             }
             rec.updated_at = Utc::now();
@@ -1392,7 +1404,6 @@ impl DownloadEngine {
         let _ = self.events_tx.send(EngineEventAlias::Updated { id });
         Ok((actual, matches))
     }
-
 
     pub async fn move_download_files(&self, id: DownloadId, dest_dir: &Path) -> Result<PathBuf> {
         let (src, file_name, partial_suffix, is_active) = {
@@ -1416,11 +1427,17 @@ impl DownloadEngine {
 
         let mut part_moves = Vec::new();
         if !partial_suffix.is_empty() {
-            let p_src = src.parent().unwrap_or(dest_dir).join(format!("{}{}", file_name, partial_suffix));
+            let p_src = src
+                .parent()
+                .unwrap_or(dest_dir)
+                .join(format!("{}{}", file_name, partial_suffix));
             let p_dst = dest_dir.join(format!("{}{}", file_name, partial_suffix));
             part_moves.push((p_src, p_dst));
         }
-        let dot_part_src = src.parent().unwrap_or(dest_dir).join(format!("{}.part", file_name));
+        let dot_part_src = src
+            .parent()
+            .unwrap_or(dest_dir)
+            .join(format!("{}.part", file_name));
         let dot_part_dst = dest_dir.join(format!("{}.part", file_name));
         if dot_part_src != src {
             part_moves.push((dot_part_src, dot_part_dst));
@@ -1436,7 +1453,10 @@ impl DownloadEngine {
         }
 
         let is_present = dst.exists()
-            || (!partial_suffix.is_empty() && dest_dir.join(format!("{}{}", file_name, partial_suffix)).exists())
+            || (!partial_suffix.is_empty()
+                && dest_dir
+                    .join(format!("{}{}", file_name, partial_suffix))
+                    .exists())
             || dest_dir.join(format!("{}.part", file_name)).exists();
 
         {
@@ -1549,7 +1569,9 @@ impl DownloadEngine {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .context("Update manifest missing 'version' or 'tag_name'")?;
-        let latest_version = latest_version_raw.trim_start_matches(['v', 'V']).to_string();
+        let latest_version = latest_version_raw
+            .trim_start_matches(['v', 'V'])
+            .to_string();
 
         let release_notes = val
             .get("notes")
@@ -1574,7 +1596,9 @@ impl DownloadEngine {
                     .and_then(|a| a.as_array())
                     .and_then(|arr| {
                         arr.iter()
-                            .filter_map(|item| item.get("browser_download_url").and_then(|u| u.as_str()))
+                            .filter_map(|item| {
+                                item.get("browser_download_url").and_then(|u| u.as_str())
+                            })
                             .next()
                     })
                     .map(str::to_string)
@@ -1589,51 +1613,52 @@ impl DownloadEngine {
             compare_semver(&latest_version, &current_version) == std::cmp::Ordering::Greater;
 
         let mut staged_path: Option<PathBuf> = None;
-        if update_available && cfg.app.auto_install_updates {
-            if let Some(ref dl_url) = download_url {
-                let updates_dir = self.data_dir.join("updates");
-                std::fs::create_dir_all(&updates_dir)?;
-                let file_name = Url::parse(dl_url)
-                    .ok()
-                    .and_then(|u| {
-                        u.path_segments()
-                            .and_then(|mut segs| segs.next_back().map(str::to_string))
-                    })
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| format!("ferrite-dm-{latest_version}.pkg"));
-                let dest = updates_dir.join(sanitize_filename(&file_name));
+        if update_available
+            && cfg.app.auto_install_updates
+            && let Some(ref dl_url) = download_url
+        {
+            let updates_dir = self.data_dir.join("updates");
+            std::fs::create_dir_all(&updates_dir)?;
+            let file_name = Url::parse(dl_url)
+                .ok()
+                .and_then(|u| {
+                    u.path_segments()
+                        .and_then(|mut segs| segs.next_back().map(str::to_string))
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("ferrite-dm-{latest_version}.pkg"));
+            let dest = updates_dir.join(sanitize_filename(&file_name));
 
-                if dl_url.starts_with("http://") || dl_url.starts_with("https://") {
-                    let bytes = client
-                        .get(dl_url)
-                        .send()
-                        .await?
-                        .error_for_status()?
-                        .bytes()
-                        .await?;
-                    std::fs::write(&dest, &bytes)?;
-                } else {
-                    let src_path = dl_url.strip_prefix("file://").unwrap_or(dl_url.as_str());
-                    std::fs::copy(src_path, &dest)
-                        .with_context(|| format!("Failed staging update payload from {src_path}"))?;
-                }
-
-                if let Some(ref sha) = expected_sha256 {
-                    if !verify_file_hash(&dest, HashAlgorithm::Sha256, sha)? {
-                        let _ = std::fs::remove_file(&dest);
-                        bail!(
-                            "Staged update payload for v{} failed SHA-256 verification",
-                            latest_version
-                        );
-                    }
-                }
-                self.log_dl_mgmt(&format!(
-                    "Downloaded and staged Ferrite DM v{} update to {}",
-                    latest_version,
-                    dest.display()
-                ));
-                staged_path = Some(dest);
+            if dl_url.starts_with("http://") || dl_url.starts_with("https://") {
+                let bytes = client
+                    .get(dl_url)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .bytes()
+                    .await?;
+                std::fs::write(&dest, &bytes)?;
+            } else {
+                let src_path = dl_url.strip_prefix("file://").unwrap_or(dl_url.as_str());
+                std::fs::copy(src_path, &dest)
+                    .with_context(|| format!("Failed staging update payload from {src_path}"))?;
             }
+
+            if let Some(ref sha) = expected_sha256
+                && !verify_file_hash(&dest, HashAlgorithm::Sha256, sha)?
+            {
+                let _ = std::fs::remove_file(&dest);
+                bail!(
+                    "Staged update payload for v{} failed SHA-256 verification",
+                    latest_version
+                );
+            }
+            self.log_dl_mgmt(&format!(
+                "Downloaded and staged Ferrite DM v{} update to {}",
+                latest_version,
+                dest.display()
+            ));
+            staged_path = Some(dest);
         }
 
         let message = if !update_available {
@@ -1645,7 +1670,10 @@ impl DownloadEngine {
                 path.display()
             )
         } else {
-            format!("Ferrite DM v{} is available (current: v{}).", latest_version, current_version)
+            format!(
+                "Ferrite DM v{} is available (current: v{}).",
+                latest_version, current_version
+            )
         };
 
         Ok(AppUpdateCheckResult {
@@ -1774,7 +1802,10 @@ impl DownloadEngine {
         }
 
         let is_present = new_out.exists()
-            || (!partial_suffix.is_empty() && target_dir.join(format!("{}{}", cleaned, partial_suffix)).exists())
+            || (!partial_suffix.is_empty()
+                && target_dir
+                    .join(format!("{}{}", cleaned, partial_suffix))
+                    .exists())
             || target_dir.join(format!("{}.part", cleaned)).exists();
 
         {
@@ -1791,7 +1822,11 @@ impl DownloadEngine {
         Ok(new_out)
     }
 
-    pub async fn add_bt_trackers(self: &Arc<Self>, id: DownloadId, trackers: Vec<String>) -> Result<()> {
+    pub async fn add_bt_trackers(
+        self: &Arc<Self>,
+        id: DownloadId,
+        trackers: Vec<String>,
+    ) -> Result<()> {
         let was_active;
         {
             let mut list = self.downloads.write().unwrap();
@@ -1896,11 +1931,7 @@ impl DownloadEngine {
             .read()
             .unwrap()
             .iter()
-            .filter(|d| {
-                selected_ids
-                    .map(|set| set.contains(&d.id))
-                    .unwrap_or(true)
-            })
+            .filter(|d| selected_ids.map(|set| set.contains(&d.id)).unwrap_or(true))
             .filter(|d| !only_completed || d.state == DownloadState::Completed)
             .cloned()
             .collect();
@@ -1918,10 +1949,10 @@ impl DownloadEngine {
         let data_dst = target_dir.join("ferrite-data");
         std::fs::create_dir_all(&data_dst)?;
         self.db.backup_to(&data_dst.join("ferrite.sqlite"))?;
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(name) = exe.file_name() {
-                let _ = std::fs::copy(&exe, target_dir.join(name));
-            }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(name) = exe.file_name()
+        {
+            let _ = std::fs::copy(&exe, target_dir.join(name));
         }
         let readme = target_dir.join("PORTABLE.txt");
         let _ = std::fs::write(
@@ -1939,15 +1970,17 @@ impl DownloadEngine {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(dest_zip)
         };
-        if let Some(parent) = abs_dest.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = abs_dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         if abs_dest.exists() {
             let _ = std::fs::remove_file(&abs_dest);
         }
-        let stage = self.data_dir.join(format!(".diag-stage-{}", std::process::id()));
+        let stage = self
+            .data_dir
+            .join(format!(".diag-stage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&stage);
         std::fs::create_dir_all(&stage)?;
         let log_file = self.data_dir.join("logs").join("ferrite.log");
@@ -1956,7 +1989,10 @@ impl DownloadEngine {
         } else {
             let _ = std::fs::write(
                 stage.join("ferrite.log"),
-                format!("No log entries recorded yet (generated {}).\n", Utc::now().to_rfc3339()),
+                format!(
+                    "No log entries recorded yet (generated {}).\n",
+                    Utc::now().to_rfc3339()
+                ),
             );
         }
         if !logs_only {
@@ -2063,7 +2099,11 @@ impl DownloadEngine {
         Ok(n)
     }
 
-    pub async fn import_downloads(self: &Arc<Self>, path: &Path, start_paused: bool) -> Result<usize> {
+    pub async fn import_downloads(
+        self: &Arc<Self>,
+        path: &Path,
+        start_paused: bool,
+    ) -> Result<usize> {
         let cfg = self.get_config();
         let items = import_downloads_file(path, &cfg)?;
         let count = items.len();
@@ -2077,7 +2117,9 @@ impl DownloadEngine {
             };
             let saved = self.db.next_download_id_and_insert(rec)?;
             self.downloads.write().unwrap().push(saved.clone());
-            let _ = self.events_tx.send(EngineEventAlias::Added { id: saved.id });
+            let _ = self
+                .events_tx
+                .send(EngineEventAlias::Added { id: saved.id });
         }
         if !start_paused && count > 0 {
             self.schedule_queue().await;
@@ -2095,7 +2137,9 @@ impl DownloadEngine {
             rec.state = DownloadState::Paused;
             let saved = self.db.next_download_id_and_insert(rec)?;
             self.downloads.write().unwrap().push(saved.clone());
-            let _ = self.events_tx.send(EngineEventAlias::Added { id: saved.id });
+            let _ = self
+                .events_tx
+                .send(EngineEventAlias::Added { id: saved.id });
         }
         Ok(count)
     }
@@ -2114,7 +2158,10 @@ impl DownloadEngine {
         // Check low battery, network restrictions, and low disk space guards
         let cfg = self.get_config();
         let (on_battery, pct) = check_power_status().await;
-        if on_battery && pct < cfg.core.battery_min_level_percent && cfg.core.battery_min_level_percent > 0 {
+        if on_battery
+            && pct < cfg.core.battery_min_level_percent
+            && cfg.core.battery_min_level_percent > 0
+        {
             *self.last_preventer.lock().unwrap() = AutoStartPreventer::LowBattery;
             return;
         }
@@ -2152,7 +2199,11 @@ impl DownloadEngine {
                     total_dl_speed = total_dl_speed.saturating_add(d.download_speed_bps);
                     if matches!(d.state, DownloadState::Starting | DownloadState::Checking) {
                         running_probe += 1;
-                    } else if d.total_bytes.map(|sz| sz <= 10 * 1024 * 1024).unwrap_or(false) {
+                    } else if d
+                        .total_bytes
+                        .map(|sz| sz <= 10 * 1024 * 1024)
+                        .unwrap_or(false)
+                    {
                         running_small += 1;
                     } else {
                         running_main += 1;
@@ -2210,7 +2261,10 @@ impl DownloadEngine {
         };
 
         for rec in to_spawn {
-            self.log_dl_mgmt(&format!("Starting queued download #{} ({})", rec.id, rec.file_name));
+            self.log_dl_mgmt(&format!(
+                "Starting queued download #{} ({})",
+                rec.id, rec.file_name
+            ));
             self.spawn_worker(rec);
         }
     }
@@ -2241,7 +2295,10 @@ impl DownloadEngine {
         // Check existing file conflict before transferring
         if matches!(
             record.download_type,
-            DownloadType::Www | DownloadType::HlsM3u8 | DownloadType::Dash | DownloadType::MediaParser
+            DownloadType::Www
+                | DownloadType::HlsM3u8
+                | DownloadType::Dash
+                | DownloadType::MediaParser
         ) && record.downloaded_bytes == 0
         {
             let reaction = record
@@ -2254,11 +2311,14 @@ impl DownloadEngine {
                 match reaction {
                     ExistingFileReaction::Ask => {
                         record.state = DownloadState::Paused;
-                        record.last_error = Some(format!("File already exists: {}", target.display()));
+                        record.last_error =
+                            Some(format!("File already exists: {}", target.display()));
                         record.abort_reason = DownloadAbortReason::AlreadyExists;
                         self.pending_conflicts.lock().unwrap().insert(id);
                         self.sync_record_update(&record, true);
-                        let _ = self.events_tx.send(EngineEventAlias::FileConflict { id, path: target });
+                        let _ = self
+                            .events_tx
+                            .send(EngineEventAlias::FileConflict { id, path: target });
                         return;
                     }
                     ExistingFileReaction::Skip => {
@@ -2332,8 +2392,16 @@ impl DownloadEngine {
                 }
             },
             DownloadType::MediaParser => {
-                self.run_media_parser_download(record, &cfg, &ssl_exceptions, cred, limiter, control_rx, emit_progress)
-                    .await
+                self.run_media_parser_download(
+                    record,
+                    &cfg,
+                    &ssl_exceptions,
+                    cred,
+                    limiter,
+                    control_rx,
+                    emit_progress,
+                )
+                .await
             }
             DownloadType::Batch | DownloadType::YoutubeChannel => {
                 record.state = DownloadState::Completed;
@@ -2364,12 +2432,17 @@ impl DownloadEngine {
                     .last_error
                     .clone()
                     .unwrap_or_else(|| "Download failed".into());
-                self.log_dl_mgmt(&format!("Failed download #{id} ({}): {err_msg}", final_rec.file_name));
+                self.log_dl_mgmt(&format!(
+                    "Failed download #{id} ({}): {err_msg}",
+                    final_rec.file_name
+                ));
                 self.log_enhanced(&format!(
                     "Failure detail id={id} reason={:?} retries={}",
                     final_rec.abort_reason, final_rec.retry_count
                 ));
-                let _ = self.events_tx.send(EngineEventAlias::Failed { id, error: err_msg });
+                let _ = self
+                    .events_tx
+                    .send(EngineEventAlias::Failed { id, error: err_msg });
             }
             DownloadState::Paused | DownloadState::Stopped => {
                 self.log_dl_mgmt(&format!(
@@ -2381,6 +2454,7 @@ impl DownloadEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_media_parser_download<F>(
         &self,
         mut record: DownloadRecord,
@@ -2416,7 +2490,8 @@ impl DownloadEngine {
 
                 if best.url.to_ascii_lowercase().contains(".m3u8") {
                     record.url = best.url;
-                    return download_hls_stream(record, cfg, limiter, control_rx, on_progress).await;
+                    return download_hls_stream(record, cfg, limiter, control_rx, on_progress)
+                        .await;
                 }
 
                 if let Some(ref aud_url) = best.audio_url {
@@ -2470,7 +2545,8 @@ impl DownloadEngine {
                         res.target_dir = orig_dir;
                         res.file_name = orig_name;
                         res.title = orig_title;
-                        res.downloaded_bytes = v_done.downloaded_bytes.saturating_add(res.downloaded_bytes);
+                        res.downloaded_bytes =
+                            v_done.downloaded_bytes.saturating_add(res.downloaded_bytes);
                         if let (Some(vt), Some(at)) = (v_done.total_bytes, res.total_bytes) {
                             res.total_bytes = Some(vt.saturating_add(at));
                         }
@@ -2479,9 +2555,14 @@ impl DownloadEngine {
 
                     let final_out = orig_dir.join(&orig_name);
                     std::fs::create_dir_all(&orig_dir).ok();
-                    if merge_av_files(cfg, &tmp_dir.join("video.mp4"), &tmp_dir.join("audio.m4a"), &final_out)
-                        .await
-                        .is_ok()
+                    if merge_av_files(
+                        cfg,
+                        &tmp_dir.join("video.mp4"),
+                        &tmp_dir.join("audio.m4a"),
+                        &final_out,
+                    )
+                    .await
+                    .is_ok()
                     {
                         if cfg.core.delete_service_files_when_finished {
                             let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -2556,20 +2637,17 @@ impl DownloadEngine {
                 return;
             }
         }
-        if cfg.core.auto_launch_antivirus {
-            if let Some(ref av_path) = cfg.core.antivirus_path {
-                let _ = scan_file_with_antivirus(av_path, &cfg.core.antivirus_args, record).await;
-            }
+        if cfg.core.auto_launch_antivirus
+            && let Some(ref av_path) = cfg.core.antivirus_path
+        {
+            let _ = scan_file_with_antivirus(av_path, &cfg.core.antivirus_args, record).await;
         }
-        if cfg.core.launch_external_on_completion {
-            if let Some(ref ext_app) = cfg.core.external_app_path {
-                let _ = run_external_completion_app(
-                    ext_app,
-                    &cfg.core.external_app_args_template,
-                    record,
-                )
-                .await;
-            }
+        if cfg.core.launch_external_on_completion
+            && let Some(ref ext_app) = cfg.core.external_app_path
+        {
+            let _ =
+                run_external_completion_app(ext_app, &cfg.core.external_app_args_template, record)
+                    .await;
         }
         if cfg.core.shutdown_when_done != ShutdownType::None {
             let any_left = self
@@ -2607,37 +2685,37 @@ impl DownloadEngine {
     pub fn spawn_supervisor(self: &Arc<Self>) -> JoinHandle<()> {
         let eng = Arc::clone(self);
         tokio::spawn(async move {
-        let mut tick_count: u64 = 0;
-        let mut last_backup_tick: u64 = 0;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            tick_count += 1;
+            let mut tick_count: u64 = 0;
+            let mut last_backup_tick: u64 = 0;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tick_count += 1;
 
-            let cfg = eng.get_config();
-            if cfg.app.db_backup_interval_secs > 0
-                && tick_count.saturating_sub(last_backup_tick)
-                    >= cfg.app.db_backup_interval_secs as u64
-            {
-                last_backup_tick = tick_count;
-                let backups_dir = eng.data_dir.join("backups");
-                let backup_name = format!(
-                    "ferrite-backup-{}.sqlite",
-                    Local::now().format("%Y%m%d-%H%M%S")
-                );
-                let _ = eng.db.backup_to(&backups_dir.join(backup_name));
-                if let Ok(rd) = std::fs::read_dir(&backups_dir) {
-                    let mut files: Vec<_> = rd
-                        .flatten()
-                        .map(|e| e.path())
-                        .filter(|p| p.is_file())
-                        .collect();
-                    files.sort();
-                    while files.len() > 5 {
-                        let old = files.remove(0);
-                        let _ = std::fs::remove_file(old);
+                let cfg = eng.get_config();
+                if cfg.app.db_backup_interval_secs > 0
+                    && tick_count.saturating_sub(last_backup_tick)
+                        >= cfg.app.db_backup_interval_secs as u64
+                {
+                    last_backup_tick = tick_count;
+                    let backups_dir = eng.data_dir.join("backups");
+                    let backup_name = format!(
+                        "ferrite-backup-{}.sqlite",
+                        Local::now().format("%Y%m%d-%H%M%S")
+                    );
+                    let _ = eng.db.backup_to(&backups_dir.join(backup_name));
+                    if let Ok(rd) = std::fs::read_dir(&backups_dir) {
+                        let mut files: Vec<_> = rd
+                            .flatten()
+                            .map(|e| e.path())
+                            .filter(|p| p.is_file())
+                            .collect();
+                        files.sort();
+                        while files.len() > 5 {
+                            let old = files.remove(0);
+                            let _ = std::fs::remove_file(old);
+                        }
                     }
                 }
-            }
                 let mut dl_bps = 0u64;
                 let mut ul_bps = 0u64;
                 let mut active_count = 0usize;
@@ -2674,36 +2752,37 @@ impl DownloadEngine {
                         }
 
                         // Scheduler tick check
-                        if let Some(ref rule) = d.schedule {
-                            if rule.enabled {
-                                let active_now = is_schedule_active(rule, now_local);
-                                if active_now && d.state == DownloadState::Scheduled {
-                                    to_start.push(d.id);
-                                } else if !active_now && d.state.is_active() {
-                                    to_pause.push(d.id);
-                                }
+                        if let Some(ref rule) = d.schedule
+                            && rule.enabled
+                        {
+                            let active_now = is_schedule_active(rule, now_local);
+                            if active_now && d.state == DownloadState::Scheduled {
+                                to_start.push(d.id);
+                            } else if !active_now && d.state.is_active() {
+                                to_pause.push(d.id);
                             }
                         }
 
                         // Periodic checks every 5 seconds: missing files & expired auto-remove
-                        if tick_count % 5 == 0 && d.state == DownloadState::Completed {
-                            if d.download_type != DownloadType::Batch {
-                                let missing = !d.output_path().exists();
-                                if d.flags.is_missing_files != missing {
-                                    d.flags.is_missing_files = missing;
-                                    let _ = eng.db.upsert_download(d);
-                                    let _ = eng.events_tx.send(EngineEventAlias::Updated { id: d.id });
-                                }
-                                if missing && cfg.core.auto_remove_missing_files {
+                        if tick_count.is_multiple_of(5)
+                            && d.state == DownloadState::Completed
+                            && d.download_type != DownloadType::Batch
+                        {
+                            let missing = !d.output_path().exists();
+                            if d.flags.is_missing_files != missing {
+                                d.flags.is_missing_files = missing;
+                                let _ = eng.db.upsert_download(d);
+                                let _ = eng.events_tx.send(EngineEventAlias::Updated { id: d.id });
+                            }
+                            if missing && cfg.core.auto_remove_missing_files {
+                                to_remove_expired.push(d.id);
+                            }
+                            if cfg.core.auto_remove_finished
+                                && let Some(done_at) = d.completed_at
+                            {
+                                let age = now_utc.signed_duration_since(done_at).num_days();
+                                if age >= cfg.core.auto_remove_finished_keep_days as i64 {
                                     to_remove_expired.push(d.id);
-                                }
-                                if cfg.core.auto_remove_finished {
-                                    if let Some(done_at) = d.completed_at {
-                                        let age = now_utc.signed_duration_since(done_at).num_days();
-                                        if age >= cfg.core.auto_remove_finished_keep_days as i64 {
-                                            to_remove_expired.push(d.id);
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -2739,17 +2818,17 @@ impl DownloadEngine {
                 }
 
                 // Torrent watch folder scanner
-                if tick_count % 3 == 0 {
-                    if let Some(ref watch_dir) = cfg.app.torrents_watch_folder {
-                        let items = {
-                            let mut seen = eng.seen_watch_files.lock().unwrap();
-                            scan_torrent_watch_folder(watch_dir, &mut seen)
-                        };
-                        for item in items {
-                            let mut req = NewDownloadRequest::from_url(item.source);
-                            req.silent = cfg.app.force_silent_from_torrent_folder;
-                            let _ = eng.add_download(req).await;
-                        }
+                if tick_count.is_multiple_of(3)
+                    && let Some(ref watch_dir) = cfg.app.torrents_watch_folder
+                {
+                    let items = {
+                        let mut seen = eng.seen_watch_files.lock().unwrap();
+                        scan_torrent_watch_folder(watch_dir, &mut seen)
+                    };
+                    for item in items {
+                        let mut req = NewDownloadRequest::from_url(item.source);
+                        req.silent = cfg.app.force_silent_from_torrent_folder;
+                        let _ = eng.add_download(req).await;
                     }
                 }
 
@@ -2771,7 +2850,10 @@ impl DownloadEngine {
         .await
     }
 
-    pub async fn ensure_remote_control(self: &Arc<Self>, host_hint: &str) -> Result<RemotePairingInfo> {
+    pub async fn ensure_remote_control(
+        self: &Arc<Self>,
+        host_hint: &str,
+    ) -> Result<RemotePairingInfo> {
         let cfg = self.get_config();
         let secret = self.ensure_remote_password();
         let bind_ip: std::net::IpAddr = cfg
@@ -2834,8 +2916,10 @@ impl DownloadEngine {
 
     pub async fn handle_ipc_request(self: &Arc<Self>, req: IpcRequest) -> IpcResponse {
         match req {
-            IpcRequest::Ping => IpcResponse::ok(serde_json::json!({ "pong": true, "app": "FerriteDM" })),
-            IpcRequest::AddDownload(dl) => match self.add_download(dl).await {
+            IpcRequest::Ping => {
+                IpcResponse::ok(serde_json::json!({ "pong": true, "app": "FerriteDM" }))
+            }
+            IpcRequest::AddDownload(dl) => match self.add_download(*dl).await {
                 Ok(rec) => IpcResponse::ok(rec),
                 Err(e) => IpcResponse::err("add_failed", e.to_string()),
             },
@@ -2870,14 +2954,12 @@ impl DownloadEngine {
                 Ok(()) => IpcResponse::ok(true),
                 Err(e) => IpcResponse::err("pause_all_failed", e.to_string()),
             },
-            IpcRequest::SetTrafficUsageMode { mode } => {
-                match self.set_traffic_usage_mode(mode) {
-                    Ok(()) => IpcResponse::ok(mode),
-                    Err(e) => IpcResponse::err("tum_failed", e.to_string()),
-                }
-            }
+            IpcRequest::SetTrafficUsageMode { mode } => match self.set_traffic_usage_mode(mode) {
+                Ok(()) => IpcResponse::ok(mode),
+                Err(e) => IpcResponse::err("tum_failed", e.to_string()),
+            },
             IpcRequest::GetConfig => IpcResponse::ok(self.get_config()),
-            IpcRequest::UpdateConfig(cfg) => match self.update_config(cfg) {
+            IpcRequest::UpdateConfig(cfg) => match self.update_config(*cfg) {
                 Ok(()) => IpcResponse::ok(true),
                 Err(e) => IpcResponse::err("config_failed", e.to_string()),
             },
@@ -2915,9 +2997,9 @@ impl DownloadEngine {
                     Err(e) => IpcResponse::err("post_settings_failed", e.to_string()),
                 }
             }
-            IpcRequest::RemoteCommand { action, payload } => {
-                IpcResponse::ok(serde_json::json!({ "action": action, "payload": payload, "summary": self.summary() }))
-            }
+            IpcRequest::RemoteCommand { action, payload } => IpcResponse::ok(
+                serde_json::json!({ "action": action, "payload": payload, "summary": self.summary() }),
+            ),
             IpcRequest::RaiseWindow => {
                 self.emit_raise();
                 IpcResponse::ok(serde_json::json!({ "raised": true }))
@@ -2990,10 +3072,10 @@ impl DownloadEngine {
                 .collect();
             (rec.torrent_info_hash.clone(), selected)
         };
-        if let Some(ih) = info_hash {
-            if let Some(ref bt) = *self.bt_manager.lock().await {
-                let _ = bt.update_file_selection(&ih, selected_indices).await;
-            }
+        if let Some(ih) = info_hash
+            && let Some(ref bt) = *self.bt_manager.lock().await
+        {
+            let _ = bt.update_file_selection(&ih, selected_indices).await;
         }
         let _ = self.events_tx.send(EngineEventAlias::Updated { id });
         Ok(())
@@ -3147,7 +3229,10 @@ mod tests {
         let rec = eng.add_download(req).await.unwrap();
         eng.resume_download(rec.id).await.unwrap();
         assert_eq!(eng.summary().preventer, AutoStartPreventer::LowDiskSpace);
-        assert_eq!(eng.get_download(rec.id).unwrap().state, DownloadState::Queued);
+        assert_eq!(
+            eng.get_download(rec.id).unwrap().state,
+            DownloadState::Queued
+        );
 
         // ShutdownType::QuitApp emits EngineEvent::QuitRequested once last download finishes.
         let mut rx = eng.subscribe();
@@ -3259,7 +3344,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_conflict_clears_last_error_and_abort_reason() {
-        let dir = std::env::temp_dir().join(format!("ferrite_conflict_test_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_conflict_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
 
@@ -3277,9 +3363,14 @@ mod tests {
         }
 
         // Test Overwrite
-        eng.resolve_conflict(rec.id, FileExistsAction::Overwrite).await.unwrap();
+        eng.resolve_conflict(rec.id, FileExistsAction::Overwrite)
+            .await
+            .unwrap();
         let d = eng.get_download(rec.id).unwrap();
-        assert!(matches!(d.state, DownloadState::Queued | DownloadState::Starting));
+        assert!(matches!(
+            d.state,
+            DownloadState::Queued | DownloadState::Starting
+        ));
         assert_eq!(d.last_error, None);
         assert_eq!(d.abort_reason, DownloadAbortReason::None);
 
@@ -3293,9 +3384,14 @@ mod tests {
         }
 
         // Test Rename
-        eng.resolve_conflict(rec.id, FileExistsAction::Rename).await.unwrap();
+        eng.resolve_conflict(rec.id, FileExistsAction::Rename)
+            .await
+            .unwrap();
         let d = eng.get_download(rec.id).unwrap();
-        assert!(matches!(d.state, DownloadState::Queued | DownloadState::Starting));
+        assert!(matches!(
+            d.state,
+            DownloadState::Queued | DownloadState::Starting
+        ));
         assert_eq!(d.last_error, None);
         assert_eq!(d.abort_reason, DownloadAbortReason::None);
 
@@ -3346,7 +3442,11 @@ mod tests {
 
         let mut cfg = eng.get_config();
         // Set max concurrency to 1 and bonuses to 0
-        cfg.core.tum_profiles.get_mut(&TrafficUsageMode::High).unwrap().max_concurrent_downloads = 1;
+        cfg.core
+            .tum_profiles
+            .get_mut(&TrafficUsageMode::High)
+            .unwrap()
+            .max_concurrent_downloads = 1;
         cfg.core.max_additional_small_downloads = 0;
         cfg.core.max_additional_query_info_downloads = 0;
         cfg.core.max_additional_downloads_if_slow = 0;
@@ -3409,7 +3509,10 @@ mod tests {
         assert_eq!(updated.target_dir, dest_dir);
 
         // Rename the partial download
-        let renamed_path = eng.rename_download_file(rec.id, "renamed.bin").await.unwrap();
+        let renamed_path = eng
+            .rename_download_file(rec.id, "renamed.bin")
+            .await
+            .unwrap();
         assert_eq!(renamed_path, dest_dir.join("renamed.bin"));
         assert!(!moved_part.exists());
         let renamed_part = dest_dir.join("renamed.bin.part");
@@ -3419,7 +3522,9 @@ mod tests {
         assert!(!updated_rename.flags.is_missing_files);
 
         // 2) Test moving and renaming multi-file directory
-        let mut req_torrent = NewDownloadRequest::from_url("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=my_torrent_dir");
+        let mut req_torrent = NewDownloadRequest::from_url(
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=my_torrent_dir",
+        );
         req_torrent.target_dir = Some(dl_dir.clone());
         req_torrent.start_paused = true;
         let rec_t = eng.add_download(req_torrent).await.unwrap();
@@ -3434,10 +3539,18 @@ mod tests {
         let moved_t_path = eng.move_download_files(rec_t.id, &dest_dir).await.unwrap();
         assert_eq!(moved_t_path, dest_dir.join(&rec_t.file_name));
         assert!(!torrent_folder.exists());
-        assert!(dest_dir.join(&rec_t.file_name).join("sub/file1.txt").is_file());
+        assert!(
+            dest_dir
+                .join(&rec_t.file_name)
+                .join("sub/file1.txt")
+                .is_file()
+        );
         assert!(dest_dir.join(&rec_t.file_name).join("file2.txt").is_file());
 
-        let renamed_t = eng.rename_download_file(rec_t.id, "renamed_torrent_dir").await.unwrap();
+        let renamed_t = eng
+            .rename_download_file(rec_t.id, "renamed_torrent_dir")
+            .await
+            .unwrap();
         assert_eq!(renamed_t, dest_dir.join("renamed_torrent_dir"));
         assert!(!dest_dir.join(&rec_t.file_name).exists());
         assert!(dest_dir.join("renamed_torrent_dir/sub/file1.txt").is_file());
@@ -3467,14 +3580,14 @@ mod tests {
                 .arg(&archived)
                 .arg("config.redacted.json")
                 .output();
-            if let Ok(out) = status {
-                if out.status.success() {
-                    let content = String::from_utf8_lossy(&out.stdout);
-                    assert!(!content.contains("SuperSecretPassword123"));
-                    assert!(!content.contains("HttpProxySecret"));
-                    assert!(!content.contains("SocksProxySecret"));
-                    assert!(content.contains("***REDACTED***"));
-                }
+            if let Ok(out) = status
+                && out.status.success()
+            {
+                let content = String::from_utf8_lossy(&out.stdout);
+                assert!(!content.contains("SuperSecretPassword123"));
+                assert!(!content.contains("HttpProxySecret"));
+                assert!(!content.contains("SocksProxySecret"));
+                assert!(content.contains("***REDACTED***"));
             }
         }
 
@@ -3507,23 +3620,27 @@ mod tests {
             let mut list = eng.downloads.write().unwrap();
             let mut to_remove_expired = Vec::new();
             for d in list.iter_mut() {
-                if d.state == DownloadState::Completed {
-                    if d.download_type != DownloadType::Batch {
-                        let missing = !d.output_path().exists();
-                        if d.flags.is_missing_files != missing {
-                            d.flags.is_missing_files = missing;
-                        }
-                        if missing {
-                            to_remove_expired.push(d.id);
-                        }
+                if d.state == DownloadState::Completed && d.download_type != DownloadType::Batch {
+                    let missing = !d.output_path().exists();
+                    if d.flags.is_missing_files != missing {
+                        d.flags.is_missing_files = missing;
+                    }
+                    if missing {
+                        to_remove_expired.push(d.id);
                     }
                 }
             }
-            assert!(to_remove_expired.is_empty(), "Batch should not be marked for auto-removal");
+            assert!(
+                to_remove_expired.is_empty(),
+                "Batch should not be marked for auto-removal"
+            );
         }
 
         let parent_check = eng.get_download(batch_parent.id).unwrap();
-        assert!(!parent_check.flags.is_missing_files, "Batch parent container must not be marked missing");
+        assert!(
+            !parent_check.flags.is_missing_files,
+            "Batch parent container must not be marked missing"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

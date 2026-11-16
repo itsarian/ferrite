@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use fdm_core::{
     DownloadId, DownloadRecord, FdmConfig, FileExistsAction, FileType, FilterQuery,
-    NewDownloadRequest, Tag, TrafficUsageMode,
-    hash::sha256_str,
+    NewDownloadRequest, Tag, TrafficUsageMode, hash::sha256_str,
 };
 use futures::{SinkExt, StreamExt};
 use qrcode::QrCode;
@@ -15,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
+};
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
@@ -24,25 +25,41 @@ use tokio_tungstenite::tungstenite::Message;
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum IpcRequest {
     Ping,
-    AddDownload(NewDownloadRequest),
+    AddDownload(Box<NewDownloadRequest>),
     ListDownloads(FilterQuery),
-    GetDownload { id: DownloadId },
-    Pause { id: DownloadId },
-    Resume { id: DownloadId },
-    Cancel { id: DownloadId },
-    Remove { id: DownloadId, delete_files: bool },
+    GetDownload {
+        id: DownloadId,
+    },
+    Pause {
+        id: DownloadId,
+    },
+    Resume {
+        id: DownloadId,
+    },
+    Cancel {
+        id: DownloadId,
+    },
+    Remove {
+        id: DownloadId,
+        delete_files: bool,
+    },
     StartAll,
     PauseAll,
-    SetTrafficUsageMode { mode: TrafficUsageMode },
+    SetTrafficUsageMode {
+        mode: TrafficUsageMode,
+    },
     GetConfig,
-    UpdateConfig(FdmConfig),
+    UpdateConfig(Box<FdmConfig>),
     ListTags,
     CreateTag {
         name: String,
         color_hex: String,
         file_types: Vec<FileType>,
     },
-    AssignTag { id: DownloadId, tag_id: i64 },
+    AssignTag {
+        id: DownloadId,
+        tag_id: i64,
+    },
     ResolveConflict {
         id: DownloadId,
         action: FileExistsAction,
@@ -100,7 +117,12 @@ impl IpcClient {
     pub async fn send(&self, req: &IpcRequest) -> Result<IpcResponse> {
         let stream = UnixStream::connect(&self.socket_path)
             .await
-            .with_context(|| format!("Failed to connect to daemon socket {}", self.socket_path.display()))?;
+            .with_context(|| {
+                format!(
+                    "Failed to connect to daemon socket {}",
+                    self.socket_path.display()
+                )
+            })?;
         let (reader, mut writer) = stream.into_split();
         let mut line = serde_json::to_string(req)?;
         line.push('\n');
@@ -117,7 +139,10 @@ impl IpcClient {
     }
 
     pub async fn ping(&self) -> bool {
-        matches!(self.send(&IpcRequest::Ping).await, Ok(IpcResponse::Ok { .. }))
+        matches!(
+            self.send(&IpcRequest::Ping).await,
+            Ok(IpcResponse::Ok { .. })
+        )
     }
 }
 
@@ -135,7 +160,10 @@ where
     if socket_path.exists() {
         // Check if existing daemon is actually alive; if stale, remove socket
         if IpcClient::new(&socket_path).ping().await {
-            anyhow::bail!("Ferrite DM daemon is already running on {}", socket_path.display());
+            anyhow::bail!(
+                "Ferrite DM daemon is already running on {}",
+                socket_path.display()
+            );
         }
         let _ = std::fs::remove_file(&socket_path);
     }
@@ -211,7 +239,10 @@ pub fn apply_browser_settings_patch(config: &mut FdmConfig, patch: &serde_json::
     if let Some(m) = patch.get("monitor").and_then(|v| v.as_bool()) {
         config.app.wb_intercept_downloads = m;
     }
-    if let Some(b) = patch.get("forwardAbortedToBrowser").and_then(|v| v.as_bool()) {
+    if let Some(b) = patch
+        .get("forwardAbortedToBrowser")
+        .and_then(|v| v.as_bool())
+    {
         config.app.wb_forward_aborted_to_browser = b;
     }
     if let Some(sz) = patch.get("skipSmallerThan").and_then(|v| v.as_u64()) {
@@ -223,17 +254,14 @@ pub fn apply_browser_settings_patch(config: &mut FdmConfig, patch: &serde_json::
         }
     }
     if let Some(ext_str) = patch.get("skipExtensions").and_then(|v| v.as_str()) {
-        config.app.wb_unwanted_extensions = ext_str
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        config.app.wb_dont_intercept_unwanted_extensions = !config.app.wb_unwanted_extensions.is_empty();
+        config.app.wb_unwanted_extensions =
+            ext_str.split_whitespace().map(str::to_string).collect();
+        config.app.wb_dont_intercept_unwanted_extensions =
+            !config.app.wb_unwanted_extensions.is_empty();
     }
     if let Some(ext_str) = patch.get("catchExtensions").and_then(|v| v.as_str()) {
-        config.app.wb_intercept_extensions = ext_str
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
+        config.app.wb_intercept_extensions =
+            ext_str.split_whitespace().map(str::to_string).collect();
         config.app.wb_intercept_only_extensions = !config.app.wb_intercept_extensions.is_empty();
     }
     if let Some(b) = patch.get("skipServersEnabled").and_then(|v| v.as_bool()) {
@@ -316,10 +344,10 @@ pub fn load_or_create_self_signed_tls(cert_dir: &Path) -> Result<Arc<rustls::Ser
         (std::fs::read(&cert_path)?, std::fs::read(&key_path)?)
     } else {
         let mut sans = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-        if let Ok(hn) = std::env::var("HOSTNAME") {
-            if !hn.is_empty() {
-                sans.push(hn);
-            }
+        if let Ok(hn) = std::env::var("HOSTNAME")
+            && !hn.is_empty()
+        {
+            sans.push(hn);
         }
         let ck = rcgen::generate_simple_self_signed(sans)?;
         let c = ck.cert.der().to_vec();
@@ -511,9 +539,13 @@ where
                                 continue;
                             };
                             let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                            let payload = val.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+                            let payload = val
+                                .get("payload")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
                             if action == "auth" {
-                                let tok = payload.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                                let tok =
+                                    payload.get("token").and_then(|v| v.as_str()).unwrap_or("");
                                 authed = verify_token(tok);
                                 let _ = ws
                                     .send(Message::Text(
@@ -537,10 +569,11 @@ where
 
                             let req = match action {
                                 "list" => Some(IpcRequest::ListDownloads(FilterQuery::default())),
-                                "add" => payload
-                                    .get("url")
-                                    .and_then(|u| u.as_str())
-                                    .map(|u| IpcRequest::AddDownload(NewDownloadRequest::from_url(u))),
+                                "add" => payload.get("url").and_then(|u| u.as_str()).map(|u| {
+                                    IpcRequest::AddDownload(Box::new(NewDownloadRequest::from_url(
+                                        u,
+                                    )))
+                                }),
                                 "pause" => payload
                                     .get("id")
                                     .and_then(|i| i.as_i64())
@@ -555,7 +588,9 @@ where
                                     .map(|id| IpcRequest::Cancel { id }),
                                 "set_tum" => payload
                                     .get("mode")
-                                    .and_then(|m| serde_json::from_value::<TrafficUsageMode>(m.clone()).ok())
+                                    .and_then(|m| {
+                                        serde_json::from_value::<TrafficUsageMode>(m.clone()).ok()
+                                    })
                                     .map(|mode| IpcRequest::SetTrafficUsageMode { mode }),
                                 _ => Some(IpcRequest::RemoteCommand {
                                     action: action.to_string(),
@@ -643,7 +678,10 @@ mod tests {
     #[test]
     fn generates_qr_pairing_and_browser_settings() {
         let pair = generate_pairing_info("srv-123", "192.168.1.50", 9443).unwrap();
-        assert!(pair.fdm_uri.starts_with("fdm://remote_control/?id=srv-123&password="));
+        assert!(
+            pair.fdm_uri
+                .starts_with("fdm://remote_control/?id=srv-123&password=")
+        );
         assert!(pair.qr_svg.contains("<svg"));
         assert!(!pair.qr_ascii.is_empty());
         assert_eq!(pair.password_hash, sha256_str(&pair.pairing_secret));

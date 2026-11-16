@@ -10,7 +10,7 @@ use fdm_core::{
 };
 use futures::StreamExt;
 use regex::Regex;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, COOKIE, RANGE, REFERER, USER_AGENT};
+use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, RANGE, REFERER, USER_AGENT};
 use reqwest::{Client, Proxy, StatusCode};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -174,10 +174,10 @@ pub fn build_http_client(
         });
     builder = builder.user_agent(ua);
 
-    if !ssl_exceptions.is_empty() {
-        if let Some(tls_cfg) = build_rustls_client_config(ssl_exceptions) {
-            builder = builder.use_preconfigured_tls(tls_cfg);
-        }
+    if !ssl_exceptions.is_empty()
+        && let Some(tls_cfg) = build_rustls_client_config(ssl_exceptions)
+    {
+        builder = builder.use_preconfigured_tls(tls_cfg);
     }
 
     builder = apply_proxy_settings(builder, &config.app.proxy)?;
@@ -227,25 +227,22 @@ fn apply_proxy_settings(
     Ok(builder)
 }
 
-fn build_request_headers(
-    record: &DownloadRecord,
-    cred: Option<&AuthCredential>,
-) -> HeaderMap {
+fn build_request_headers(record: &DownloadRecord, cred: Option<&AuthCredential>) -> HeaderMap {
     let mut map = HeaderMap::new();
-    if let Some(ref r) = record.http.referrer {
-        if let Ok(v) = HeaderValue::from_str(r) {
-            map.insert(REFERER, v);
-        }
+    if let Some(ref r) = record.http.referrer
+        && let Ok(v) = HeaderValue::from_str(r)
+    {
+        map.insert(REFERER, v);
     }
-    if let Some(ref c) = record.http.cookies {
-        if let Ok(v) = HeaderValue::from_str(c) {
-            map.insert(COOKIE, v);
-        }
+    if let Some(ref c) = record.http.cookies
+        && let Ok(v) = HeaderValue::from_str(c)
+    {
+        map.insert(COOKIE, v);
     }
-    if let Some(ref ua) = record.http.user_agent {
-        if let Ok(v) = HeaderValue::from_str(ua) {
-            map.insert(USER_AGENT, v);
-        }
+    if let Some(ref ua) = record.http.user_agent
+        && let Ok(v) = HeaderValue::from_str(ua)
+    {
+        map.insert(USER_AGENT, v);
     }
     for (k, v) in &record.http.custom_headers {
         if let (Ok(hn), Ok(hv)) = (
@@ -275,12 +272,12 @@ pub fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
         }
     }
     let b64_re = Regex::new(r#"(?i)filename\s*=\s*"?=\?utf-8\?b\?([^;\s"?]+)\?="?"#).unwrap();
-    if let Some(caps) = b64_re.captures(header_val) {
-        if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(&caps[1]) {
-            let s = String::from_utf8_lossy(&raw).into_owned();
-            if !s.is_empty() {
-                return Some(sanitize_filename(&s));
-            }
+    if let Some(caps) = b64_re.captures(header_val)
+        && let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(&caps[1])
+    {
+        let s = String::from_utf8_lossy(&raw).into_owned();
+        if !s.is_empty() {
+            return Some(sanitize_filename(&s));
         }
     }
     let quoted = Regex::new(r#"(?i)filename\s*=\s*"([^"]+)""#).unwrap();
@@ -317,7 +314,11 @@ pub async fn probe_http_resource(
     }
 
     let headers = build_request_headers(record, cred);
-    let head_resp = client.head(&record.url).headers(headers.clone()).send().await;
+    let head_resp = client
+        .head(&record.url)
+        .headers(headers.clone())
+        .send()
+        .await;
 
     let mut final_url = record.url.clone();
     let mut total_bytes = None;
@@ -327,36 +328,36 @@ pub async fn probe_http_resource(
     let mut content_type = None;
     let mut suggested_filename = None;
 
-    if let Ok(resp) = head_resp {
-        if resp.status().is_success() {
-            final_url = resp.url().to_string();
-            let h = resp.headers();
-            total_bytes = h
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok());
-            accept_ranges = h
-                .get(reqwest::header::ACCEPT_RANGES)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_ascii_lowercase().contains("bytes"))
-                .unwrap_or(false);
-            etag = h
-                .get(reqwest::header::ETAG)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            last_modified = h
-                .get(reqwest::header::LAST_MODIFIED)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            content_type = h
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            suggested_filename = h
-                .get(reqwest::header::CONTENT_DISPOSITION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(parse_content_disposition_filename);
-        }
+    if let Ok(resp) = head_resp
+        && resp.status().is_success()
+    {
+        final_url = resp.url().to_string();
+        let h = resp.headers();
+        total_bytes = h
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        accept_ranges = h
+            .get(reqwest::header::ACCEPT_RANGES)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_ascii_lowercase().contains("bytes"))
+            .unwrap_or(false);
+        etag = h
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        last_modified = h
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        content_type = h
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        suggested_filename = h
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_disposition_filename);
     }
 
     // Fallback or verify byte-range capability via GET Range: bytes=0-0
@@ -396,10 +397,9 @@ pub async fn probe_http_resource(
                 if let Some(cr) = h
                     .get(reqwest::header::CONTENT_RANGE)
                     .and_then(|v| v.to_str().ok())
+                    && let Some(tot) = parse_content_range_total(cr)
                 {
-                    if let Some(tot) = parse_content_range_total(cr) {
-                        total_bytes = Some(tot);
-                    }
+                    total_bytes = Some(tot);
                 }
             } else if total_bytes.is_none() {
                 total_bytes = h
@@ -426,8 +426,12 @@ pub async fn probe_http_resource(
     })
 }
 
-pub fn build_initial_segments(total_bytes: u64, sections: u32, mirrors: &[String]) -> Vec<SegmentProgress> {
-    let n = sections.max(1).min(32);
+pub fn build_initial_segments(
+    total_bytes: u64,
+    sections: u32,
+    mirrors: &[String],
+) -> Vec<SegmentProgress> {
+    let n = sections.clamp(1, 32);
     let chunk = total_bytes / n as u64;
     let mut out = Vec::with_capacity(n as usize);
     let mut offset = 0u64;
@@ -481,11 +485,8 @@ where
         .await;
     }
 
-    let client = match build_http_client(
-        config,
-        ssl_exceptions,
-        record.http.user_agent.as_deref(),
-    ) {
+    let client = match build_http_client(config, ssl_exceptions, record.http.user_agent.as_deref())
+    {
         Ok(c) => c,
         Err(e) => {
             record.state = DownloadState::Error;
@@ -559,11 +560,11 @@ where
             }
         }
 
-        if let Some(ref name) = probe.suggested_filename {
-            if record.file_name.is_empty() || record.file_name == "download.bin" {
-                record.file_name = name.clone();
-                record.title = name.clone();
-            }
+        if let Some(ref name) = probe.suggested_filename
+            && (record.file_name.is_empty() || record.file_name == "download.bin")
+        {
+            record.file_name = name.clone();
+            record.title = name.clone();
         }
         record.file_type = classify_file_type(&record.file_name, probe.content_type.as_deref());
         record.total_bytes = probe.total_bytes;
@@ -624,13 +625,12 @@ where
                         return record;
                     }
                 }
-                if config.core.take_last_modified_from_server {
-                    if let Some(ref lm) = record.last_modified {
-                        if let Ok(st) = httpdate::parse_http_date(lm) {
-                            let ft = filetime::FileTime::from_system_time(st);
-                            let _ = filetime::set_file_mtime(&output_path, ft);
-                        }
-                    }
+                if config.core.take_last_modified_from_server
+                    && let Some(ref lm) = record.last_modified
+                    && let Ok(st) = httpdate::parse_http_date(lm)
+                {
+                    let ft = filetime::FileTime::from_system_time(st);
+                    let _ = filetime::set_file_mtime(&output_path, ft);
                 }
                 if config.core.set_mark_of_the_web {
                     let _ = set_mark_of_the_web(&output_path, &record.url, "FerriteDM");
@@ -702,6 +702,7 @@ struct DownloadFailure {
     unwanted: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_multi_section<F>(
     client: &Client,
     record: &mut DownloadRecord,
@@ -721,6 +722,7 @@ where
         .create(true)
         .write(true)
         .read(true)
+        .truncate(false)
         .open(partial_path)
         .map_err(|e| DownloadFailure {
             message: format!("Open partial file failed: {e}"),
@@ -850,7 +852,9 @@ where
                         break;
                     }
                     let mut h = headers.clone();
-                    if let Ok(hv) = HeaderValue::from_str(&format!("bytes={range_start}-{current_end}")) {
+                    if let Ok(hv) =
+                        HeaderValue::from_str(&format!("bytes={range_start}-{current_end}"))
+                    {
                         h.insert(RANGE, hv);
                     }
                     let resp = match client.get(&try_url).headers(h).send().await {
@@ -1025,11 +1029,7 @@ where
             .iter()
             .filter(|s| s.state == SegmentState::Active)
             .count() as u32;
-        record.eta_secs = if speed > 0 {
-            Some(total.saturating_sub(cur) / speed)
-        } else {
-            None
-        };
+        record.eta_secs = total.saturating_sub(cur).checked_div(speed);
         record.updated_at = chrono::Utc::now();
         on_progress(record);
 
@@ -1094,6 +1094,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_single_stream<F>(
     client: &Client,
     record: &mut DownloadRecord,
@@ -1109,23 +1110,22 @@ where
     F: FnMut(&DownloadRecord) + Send,
 {
     let existing_len = if probe.resume_support == ResumeSupport::Present && partial_path.exists() {
-        std::fs::metadata(partial_path).map(|m| m.len()).unwrap_or(0)
+        std::fs::metadata(partial_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
     } else {
         0
     };
 
     let mut headers = build_request_headers(record, cred);
-    if existing_len > 0 {
-        if let Ok(hv) = HeaderValue::from_str(&format!("bytes={existing_len}-")) {
-            headers.insert(RANGE, hv);
-        }
+    if existing_len > 0
+        && let Ok(hv) = HeaderValue::from_str(&format!("bytes={existing_len}-"))
+    {
+        headers.insert(RANGE, hv);
     }
 
     let req = if let Some(ref body) = record.http.post_data {
-        client
-            .post(&record.url)
-            .headers(headers)
-            .body(body.clone())
+        client.post(&record.url).headers(headers).body(body.clone())
     } else {
         client.get(&record.url).headers(headers)
     };
@@ -1167,6 +1167,7 @@ where
             .create(true)
             .write(true)
             .read(true)
+            .truncate(false)
             .open(partial_path)
     } else {
         File::create(partial_path)
@@ -1233,9 +1234,9 @@ where
                     if let Some(s0) = record.segments.get_mut(0) {
                         s0.speed_bps = speed;
                     }
-                    record.eta_secs = record.total_bytes.and_then(|tot| {
-                        if speed > 0 { Some(tot.saturating_sub(written) / speed) } else { None }
-                    });
+                    record.eta_secs = record
+                        .total_bytes
+                        .and_then(|tot| tot.saturating_sub(written).checked_div(speed));
                     if config.core.detect_unacceptably_slow {
                         if speed < config.core.unacceptably_slow_speed_bps {
                             slow_accum_secs += speed_dt;
@@ -1325,9 +1326,9 @@ where
                             if let Some(s0) = record.segments.get_mut(0) {
                                 s0.speed_bps = speed;
                             }
-                            record.eta_secs = record.total_bytes.and_then(|tot| {
-                                if speed > 0 { Some(tot.saturating_sub(written) / speed) } else { None }
-                            });
+                            record.eta_secs = record
+                                .total_bytes
+                                .and_then(|tot| tot.saturating_sub(written).checked_div(speed));
                             should_emit = true;
                         }
                         if should_emit {
@@ -1494,7 +1495,9 @@ where
 
         let _ = std::fs::create_dir_all(&record.target_dir);
         let partial_path = record.partial_path();
-        let offset = std::fs::metadata(&partial_path).map(|m| m.len()).unwrap_or(0);
+        let offset = std::fs::metadata(&partial_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
         if offset > 0 {
             let _ = ftp.resume_transfer(offset as usize).await;
         }
@@ -1513,7 +1516,11 @@ where
         };
 
         let file = if offset > 0 {
-            OpenOptions::new().create(true).write(true).open(&partial_path)
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&partial_path)
         } else {
             File::create(&partial_path)
         };
@@ -1563,9 +1570,9 @@ where
                         bytes_since_tick = 0;
                         last_tick = now;
                         record.download_speed_bps = speed;
-                        record.eta_secs = record.total_bytes.and_then(|tot| {
-                            if speed > 0 { Some(tot.saturating_sub(written) / speed) } else { None }
-                        });
+                        record.eta_secs = record
+                            .total_bytes
+                            .and_then(|tot| tot.saturating_sub(written).checked_div(speed));
                         on_progress(&record);
                         if config.core.detect_unacceptably_slow {
                             if speed < config.core.unacceptably_slow_speed_bps {
@@ -1701,25 +1708,24 @@ mod tests {
                         .and_then(|l| l.split_once(':'))
                         .map(|(_, v)| v.trim().to_string());
 
-                    if let Some(rh) = range_hdr {
-                        if let Some(spec) = rh.strip_prefix("bytes=") {
-                            if let Some((a, b)) = spec.split_once('-') {
-                                let start: usize = a.parse().unwrap_or(0);
-                                let end: usize = b
-                                    .parse::<usize>()
-                                    .unwrap_or(data.len() - 1)
-                                    .min(data.len() - 1);
-                                let slice = &data[start..=end];
-                                let hdr = format!(
-                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nContent-Disposition: attachment; filename=\"bundle.bin\"\r\nConnection: close\r\n\r\n",
-                                    slice.len(),
-                                    data.len()
-                                );
-                                let _ = sock.write_all(hdr.as_bytes()).await;
-                                let _ = sock.write_all(slice).await;
-                                return;
-                            }
-                        }
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(data.len() - 1)
+                            .min(data.len() - 1);
+                        let slice = &data[start..=end];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nContent-Disposition: attachment; filename=\"bundle.bin\"\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(slice).await;
+                        return;
                     }
 
                     let hdr = format!(
@@ -1796,13 +1802,20 @@ mod tests {
         let (_tx, rx) = watch::channel(ControlCommand::Run);
         let limiter = BandwidthLimiter::new(0);
         let done = download_http_or_ftp(rec, &cfg, &[], None, limiter, rx, |_| {}).await;
-        assert_eq!(done.state, DownloadState::Completed, "err={:?}", done.last_error);
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
         assert!(done.segments.len() >= 4, "expected >=4 sections");
         assert_eq!(done.downloaded_bytes, 600 * 1024);
 
-        let actual_hash =
-            fdm_core::hash::compute_file_hash(&dir.join("bundle.bin"), fdm_core::HashAlgorithm::Sha256)
-                .unwrap();
+        let actual_hash = fdm_core::hash::compute_file_hash(
+            &dir.join("bundle.bin"),
+            fdm_core::HashAlgorithm::Sha256,
+        )
+        .unwrap();
         assert_eq!(actual_hash, expected_hash);
 
         srv_handle.abort();
@@ -1887,33 +1900,32 @@ mod tests {
                         .and_then(|l| l.split_once(':'))
                         .map(|(_, v)| v.trim().to_string());
 
-                    if let Some(rh) = range_hdr {
-                        if let Some(spec) = rh.strip_prefix("bytes=") {
-                            if let Some((a, b)) = spec.split_once('-') {
-                                let start: usize = a.parse().unwrap_or(0);
-                                let end: usize = b
-                                    .parse::<usize>()
-                                    .unwrap_or(data.len() - 1)
-                                    .min(data.len() - 1);
-                                if start > 0 {
-                                    saw_resume.store(true, Ordering::SeqCst);
-                                }
-                                let slice = &data[start..=end];
-                                let hdr = format!(
-                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
-                                    slice.len(),
-                                    data.len()
-                                );
-                                let _ = sock.write_all(hdr.as_bytes()).await;
-                                for chunk in slice.chunks(8192) {
-                                    if sock.write_all(chunk).await.is_err() {
-                                        break;
-                                    }
-                                    tokio::time::sleep(std::time::Duration::from_millis(12)).await;
-                                }
-                                return;
-                            }
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(data.len() - 1)
+                            .min(data.len() - 1);
+                        if start > 0 {
+                            saw_resume.store(true, Ordering::SeqCst);
                         }
+                        let slice = &data[start..=end];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        for chunk in slice.chunks(8192) {
+                            if sock.write_all(chunk).await.is_err() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(12)).await;
+                        }
+                        return;
                     }
 
                     let hdr = format!(
@@ -1945,21 +1957,29 @@ mod tests {
         let (tx, rx) = watch::channel(ControlCommand::Run);
         let paused_sent = Arc::new(AtomicBool::new(false));
 
-        let paused = download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |p| {
-            if p.downloaded_bytes >= 16384 && !paused_sent.swap(true, Ordering::SeqCst) {
-                let _ = tx.send(ControlCommand::Pause);
-            }
-        })
-        .await;
+        let paused =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |p| {
+                if p.downloaded_bytes >= 16384 && !paused_sent.swap(true, Ordering::SeqCst) {
+                    let _ = tx.send(ControlCommand::Pause);
+                }
+            })
+            .await;
         assert_eq!(paused.state, DownloadState::Paused);
         assert!(dir.join("paused.bin.fdmdownload").exists());
         assert!(paused.downloaded_bytes > 0);
         assert!(paused.downloaded_bytes < payload.len() as u64);
 
         let (_tx2, rx2) = watch::channel(ControlCommand::Run);
-        let completed =
-            download_http_or_ftp(paused, &cfg, &[], None, BandwidthLimiter::new(0), rx2, |_| {})
-                .await;
+        let completed = download_http_or_ftp(
+            paused,
+            &cfg,
+            &[],
+            None,
+            BandwidthLimiter::new(0),
+            rx2,
+            |_| {},
+        )
+        .await;
         assert_eq!(completed.state, DownloadState::Completed);
         assert!(saw_resume_range.load(Ordering::SeqCst));
         assert_eq!(std::fs::read(dir.join("paused.bin")).unwrap(), *payload);
@@ -1986,12 +2006,15 @@ mod tests {
                     let n = sock.read(&mut buf).await.unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]);
                     if req.starts_with("GET ") {
-                        let range_hdr = req.lines().any(|l| l.to_ascii_lowercase().starts_with("range: bytes=0-0"));
+                        let range_hdr = req
+                            .lines()
+                            .any(|l| l.to_ascii_lowercase().starts_with("range: bytes=0-0"));
                         if !range_hdr {
                             hits.fetch_add(1, Ordering::SeqCst);
                         }
                     }
-                    let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let resp =
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                     let _ = sock.write_all(resp.as_bytes()).await;
                 });
             }
@@ -2008,8 +2031,8 @@ mod tests {
 
         let rec = make_test_record(format!("http://{addr}/missing.zip"), &dir, "missing.zip");
         let (_tx, rx) = watch::channel(ControlCommand::Run);
-        let done = download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {})
-            .await;
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
 
         assert_eq!(done.state, DownloadState::Error);
         assert_eq!(done.abort_reason, DownloadAbortReason::UnwantedError);
@@ -2039,12 +2062,12 @@ mod tests {
                     if let Some(ua_line) = req
                         .lines()
                         .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+                        && let Some((_, val)) = ua_line.split_once(':')
                     {
-                        if let Some((_, val)) = ua_line.split_once(':') {
-                            *seen_ua.lock().unwrap() = val.trim().to_string();
-                        }
+                        *seen_ua.lock().unwrap() = val.trim().to_string();
                     }
-                    let resp = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+                    let resp =
+                        "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
                     let _ = sock.write_all(resp.as_bytes()).await;
                 });
             }
@@ -2053,9 +2076,16 @@ mod tests {
         let mut cfg = FdmConfig::default();
         cfg.core.use_system_default_user_agent = true;
         let client = build_http_client(&cfg, &[], None).unwrap();
-        let _ = client.get(format!("http://{addr}/ua")).send().await.unwrap();
+        let _ = client
+            .get(format!("http://{addr}/ua"))
+            .send()
+            .await
+            .unwrap();
         let captured = seen_ua.lock().unwrap().clone();
-        assert_eq!(captured, fdm_core::os_integration::system_default_user_agent());
+        assert_eq!(
+            captured,
+            fdm_core::os_integration::system_default_user_agent()
+        );
 
         srv.abort();
     }
@@ -2078,7 +2108,9 @@ mod tests {
                     let n = sock.read(&mut buf).await.unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]);
                     if req.starts_with("GET ") && req.contains("/err500") {
-                        let range_hdr = req.lines().any(|l| l.to_ascii_lowercase().starts_with("range: bytes=0-0"));
+                        let range_hdr = req
+                            .lines()
+                            .any(|l| l.to_ascii_lowercase().starts_with("range: bytes=0-0"));
                         if !range_hdr {
                             hits.fetch_add(1, Ordering::SeqCst);
                         }
@@ -2086,7 +2118,8 @@ mod tests {
                         let _ = sock.write_all(resp.as_bytes()).await;
                     } else if req.contains("/stall") {
                         let is_head = req.starts_with("HEAD ");
-                        let hdr = "HTTP/1.1 200 OK\r\nContent-Length: 10240\r\nConnection: close\r\n\r\n";
+                        let hdr =
+                            "HTTP/1.1 200 OK\r\nContent-Length: 10240\r\nConnection: close\r\n\r\n";
                         let _ = sock.write_all(hdr.as_bytes()).await;
                         if !is_head {
                             let _ = sock.write_all(&[1u8; 8]).await;
@@ -2109,8 +2142,8 @@ mod tests {
         let mut rec = make_test_record(format!("http://{addr}/err500"), &dir, "err.bin");
         rec.flags.disable_auto_retry = true;
         let (_tx, rx) = watch::channel(ControlCommand::Run);
-        let done = download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {})
-            .await;
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
         assert_eq!(done.state, DownloadState::Error);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
@@ -2121,9 +2154,16 @@ mod tests {
         cfg.core.unacceptably_slow_interval_secs = 1;
         let slow_rec = make_test_record(format!("http://{addr}/stall"), &dir, "stall.bin");
         let (_tx2, rx2) = watch::channel(ControlCommand::Run);
-        let slow_done =
-            download_http_or_ftp(slow_rec, &cfg, &[], None, BandwidthLimiter::new(0), rx2, |_| {})
-                .await;
+        let slow_done = download_http_or_ftp(
+            slow_rec,
+            &cfg,
+            &[],
+            None,
+            BandwidthLimiter::new(0),
+            rx2,
+            |_| {},
+        )
+        .await;
         assert_eq!(slow_done.state, DownloadState::Error);
         assert_eq!(slow_done.abort_reason, DownloadAbortReason::SlowDownload);
 

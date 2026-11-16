@@ -15,7 +15,9 @@ mod ui_widgets;
 
 use app::{AppWindowGlobal, FerriteApp, bind_app_keys_and_menus};
 use assets::FerriteAssets;
-use helpers::{detect_lan_ip, is_portable_active, macos_restore_windows_and_activate, parse_launch_args};
+use helpers::{
+    detect_lan_ip, is_portable_active, macos_restore_windows_and_activate, parse_launch_args,
+};
 use text_input::bind_text_input_keys;
 
 use fdm_cli::DownloadEngine;
@@ -98,13 +100,11 @@ fn main() {
 
         let win_handle = cx
             .open_window(opts, move |window, cx| {
-                cx.new(|cx| {
-                    FerriteApp::new(rt_clone, eng_clone, launch_clone, window, cx)
-                })
+                cx.new(|cx| FerriteApp::new(rt_clone, eng_clone, launch_clone, window, cx))
             })
             .expect("Failed to open Ferrite DM main window");
 
-        if let Some(view_entity) = win_handle.entity(cx).ok() {
+        if let Ok(view_entity) = win_handle.entity(cx) {
             cx.set_global(AppWindowGlobal {
                 entity: view_entity.downgrade(),
                 window: win_handle,

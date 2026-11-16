@@ -1,7 +1,9 @@
 use anyhow::{Context as _, Result, bail};
 use boa_engine::context::ContextBuilder;
 use boa_engine::job::{Job, JobExecutor, SimpleJobExecutor, TimeoutJob};
-use boa_engine::{Context, JsArgs, JsNativeError, JsObject, JsResult, JsValue, NativeFunction, Source, js_string};
+use boa_engine::{
+    Context, JsArgs, JsNativeError, JsObject, JsResult, JsValue, NativeFunction, Source, js_string,
+};
 use fdm_core::FdmConfig;
 use fdm_http::build_http_client;
 use reqwest::Client;
@@ -262,7 +264,7 @@ async fn host_http_fetch(
 
     let client = TL_HTTP_CLIENT
         .with(|cell| cell.borrow().clone())
-        .unwrap_or_else(Client::new);
+        .unwrap_or_default();
 
     let allow_cookies = TL_ALLOW_COOKIES.with(|b| *b.borrow());
     let mut req = if !post_data.is_empty() {
@@ -322,7 +324,12 @@ async fn host_http_fetch(
     let obj = JsObject::with_object_proto(c.intrinsics());
     obj.set(js_string!("ok"), ok, false, &mut c)?;
     obj.set(js_string!("body"), js_string!(body), false, &mut c)?;
-    obj.set(js_string!("cookies"), js_string!(out_cookies), false, &mut c)?;
+    obj.set(
+        js_string!("cookies"),
+        js_string!(out_cookies),
+        false,
+        &mut c,
+    )?;
     obj.set(js_string!("error"), js_string!(error), false, &mut c)?;
     obj.set(js_string!("isNetworkError"), is_net, false, &mut c)?;
     Ok(obj.into())
@@ -348,7 +355,12 @@ async fn host_python_exec(
 
     let allowed = TL_ALLOW_PYTHON.with(|b| *b.borrow());
     let (exit_code, error, output, error_output) = if !allowed {
-        (-1, "Python execution disabled".to_string(), String::new(), String::new())
+        (
+            -1,
+            "Python execution disabled".to_string(),
+            String::new(),
+            String::new(),
+        )
     } else {
         let cli_args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
         let mut cmd = Command::new("python3");
@@ -368,8 +380,18 @@ async fn host_python_exec(
                 };
                 (code, err, stdout, stderr)
             }
-            Ok(Err(e)) => (-1, format!("Failed to spawn python3: {e}"), String::new(), String::new()),
-            Err(_) => (-1, "Python script timed out".into(), String::new(), String::new()),
+            Ok(Err(e)) => (
+                -1,
+                format!("Failed to spawn python3: {e}"),
+                String::new(),
+                String::new(),
+            ),
+            Err(_) => (
+                -1,
+                "Python script timed out".into(),
+                String::new(),
+                String::new(),
+            ),
         }
     };
 
@@ -378,7 +400,12 @@ async fn host_python_exec(
     obj.set(js_string!("exitCode"), exit_code, false, &mut c)?;
     obj.set(js_string!("error"), js_string!(error), false, &mut c)?;
     obj.set(js_string!("output"), js_string!(output), false, &mut c)?;
-    obj.set(js_string!("errorOutput"), js_string!(error_output), false, &mut c)?;
+    obj.set(
+        js_string!("errorOutput"),
+        js_string!(error_output),
+        false,
+        &mut c,
+    )?;
     Ok(obj.into())
 }
 
@@ -514,15 +541,14 @@ pub async fn run_js_parser_script(
                 .global_object()
                 .get(js_string!("__ferrite_error"), &mut ctx)
                 .ok();
-            if let Some(v) = err_val {
-                if !v.is_null_or_undefined() {
+            if let Some(v) = err_val
+                && !v.is_null_or_undefined() {
                     let s = v
                         .to_string(&mut ctx)
                         .map(|j| j.to_std_string_escaped())
                         .unwrap_or_else(|_| "JS promise rejected".into());
                     bail!("JS parser rejected: {s}");
                 }
-            }
 
             let res_val = ctx
                 .global_object()
@@ -585,26 +611,25 @@ pub fn list_plugins(plugins_dir: &Path) -> Vec<JsPluginInfo> {
             continue;
         }
         let json_path = dir.join("manifest.json");
-        if json_path.is_file() {
-            if let Ok(raw) = std::fs::read_to_string(&json_path) {
-                if let Ok(m) = serde_json::from_str::<PluginManifestFile>(&raw) {
-                    let entry_script = dir.join(&m.entry);
-                    if entry_script.is_file() {
-                        out.push(JsPluginInfo {
-                            uid: m.uid,
-                            name: m.name,
-                            version: m.version,
-                            author: m.author,
-                            description: m.description,
-                            enabled: m.enabled,
-                            auto_update: m.auto_update,
-                            update_url: m.update_url,
-                            domains: m.domains,
-                            entry_script,
-                            dir,
-                        });
-                    }
-                }
+        if json_path.is_file()
+            && let Ok(raw) = std::fs::read_to_string(&json_path)
+            && let Ok(m) = serde_json::from_str::<PluginManifestFile>(&raw)
+        {
+            let entry_script = dir.join(&m.entry);
+            if entry_script.is_file() {
+                out.push(JsPluginInfo {
+                    uid: m.uid,
+                    name: m.name,
+                    version: m.version,
+                    author: m.author,
+                    description: m.description,
+                    enabled: m.enabled,
+                    auto_update: m.auto_update,
+                    update_url: m.update_url,
+                    domains: m.domains,
+                    entry_script,
+                    dir,
+                });
             }
         }
     }
@@ -699,9 +724,19 @@ pub fn install_plugin_from_path_with_options(
         let folder_name: String = mf
             .uid
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
-        let dest = plugins_dir.join(if folder_name.is_empty() { "plugin" } else { &folder_name });
+        let dest = plugins_dir.join(if folder_name.is_empty() {
+            "plugin"
+        } else {
+            &folder_name
+        });
         if dest.exists() {
             std::fs::remove_dir_all(&dest)?;
         }
@@ -730,7 +765,13 @@ pub fn install_plugin_from_path_with_options(
             .to_string();
         let uid: String = stem
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect();
         let dest = plugins_dir.join(&uid);
         std::fs::create_dir_all(&dest)?;
@@ -748,7 +789,10 @@ pub fn install_plugin_from_path_with_options(
             sha256: None,
             update_url: None,
         };
-        std::fs::write(dest.join("manifest.json"), serde_json::to_string_pretty(&mf)?)?;
+        std::fs::write(
+            dest.join("manifest.json"),
+            serde_json::to_string_pretty(&mf)?,
+        )?;
         return list_plugins(plugins_dir)
             .into_iter()
             .find(|p| p.uid == uid)
@@ -798,9 +842,19 @@ pub fn install_plugin_from_path_with_options(
     let folder_name: String = mf
         .uid
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let dest = plugins_dir.join(if folder_name.is_empty() { "plugin" } else { &folder_name });
+    let dest = plugins_dir.join(if folder_name.is_empty() {
+        "plugin"
+    } else {
+        &folder_name
+    });
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
@@ -834,7 +888,11 @@ pub async fn check_and_update_plugins(
     let installed = list_plugins(plugins_dir);
     let updatable: Vec<_> = installed
         .into_iter()
-        .filter(|p| p.update_url.as_deref().is_some_and(|u| !u.trim().is_empty()))
+        .filter(|p| {
+            p.update_url
+                .as_deref()
+                .is_some_and(|u| !u.trim().is_empty())
+        })
         .filter(|p| config.app.update_plugins_automatically || p.auto_update)
         .collect();
     if updatable.is_empty() {
@@ -884,7 +942,7 @@ pub async fn check_and_update_plugins(
             .ok()
             .and_then(|u| {
                 u.path_segments()
-                    .and_then(|s| s.last().map(str::to_string))
+                    .and_then(|mut s| s.next_back().map(str::to_string))
             })
             .and_then(|f| {
                 Path::new(&f)
@@ -900,23 +958,23 @@ pub async fn check_and_update_plugins(
         let stage_file = stage_dir.join(format!("payload.{ext}"));
         std::fs::write(&stage_file, &bytes)?;
 
-        if !config.app.plugins_dev_ignore_sign {
-            if let Some(ref expected) = remote.sha256 {
-                let expected = expected.trim();
-                if !expected.is_empty() {
-                    let actual = fdm_core::hash::compute_file_hash(
-                        &stage_file,
-                        fdm_core::HashAlgorithm::Sha256,
-                    )?;
-                    if !actual.eq_ignore_ascii_case(expected) {
-                        let _ = std::fs::remove_dir_all(&stage_dir);
-                        bail!(
-                            "Plugin update '{}' SHA-256 mismatch (expected {}, got {})",
-                            pl.name,
-                            expected,
-                            actual
-                        );
-                    }
+        if !config.app.plugins_dev_ignore_sign
+            && let Some(ref expected) = remote.sha256
+        {
+            let expected = expected.trim();
+            if !expected.is_empty() {
+                let actual = fdm_core::hash::compute_file_hash(
+                    &stage_file,
+                    fdm_core::HashAlgorithm::Sha256,
+                )?;
+                if !actual.eq_ignore_ascii_case(expected) {
+                    let _ = std::fs::remove_dir_all(&stage_dir);
+                    bail!(
+                        "Plugin update '{}' SHA-256 mismatch (expected {}, got {})",
+                        pl.name,
+                        expected,
+                        actual
+                    );
                 }
             }
         }
@@ -924,14 +982,14 @@ pub async fn check_and_update_plugins(
         if ext == "js" {
             std::fs::copy(&stage_file, &pl.entry_script)?;
             let manifest_path = pl.dir.join("manifest.json");
-            if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
-                if let Ok(mut mf) = serde_json::from_str::<PluginManifestFile>(&raw) {
-                    mf.version = remote.version.clone();
-                    if remote.sha256.is_some() {
-                        mf.sha256 = remote.sha256.clone();
-                    }
-                    let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&mf)?);
+            if let Ok(raw) = std::fs::read_to_string(&manifest_path)
+                && let Ok(mut mf) = serde_json::from_str::<PluginManifestFile>(&raw)
+            {
+                mf.version = remote.version.clone();
+                if remote.sha256.is_some() {
+                    mf.sha256 = remote.sha256.clone();
                 }
+                let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&mf)?);
             }
         } else {
             let _ = install_plugin_from_path_with_options(
@@ -953,10 +1011,10 @@ pub async fn check_and_update_plugins(
 }
 
 pub fn resolve_ffmpeg_path(config: &FdmConfig) -> Option<PathBuf> {
-    if let Some(ref p) = config.core.ffmpeg_path {
-        if p.exists() {
-            return Some(p.clone());
-        }
+    if let Some(ref p) = config.core.ffmpeg_path
+        && p.exists()
+    {
+        return Some(p.clone());
     }
     for cand in [
         "/opt/homebrew/bin/ffmpeg",
@@ -972,12 +1030,12 @@ pub fn resolve_ffmpeg_path(config: &FdmConfig) -> Option<PathBuf> {
 }
 
 pub fn resolve_ffprobe_path(config: &FdmConfig) -> Option<PathBuf> {
-    if let Some(ffmpeg) = resolve_ffmpeg_path(config) {
-        if let Some(parent) = ffmpeg.parent() {
-            let probe = parent.join("ffprobe");
-            if probe.exists() {
-                return Some(probe);
-            }
+    if let Some(ffmpeg) = resolve_ffmpeg_path(config)
+        && let Some(parent) = ffmpeg.parent()
+    {
+        let probe = parent.join("ffprobe");
+        if probe.exists() {
+            return Some(probe);
         }
     }
     for cand in [
@@ -994,10 +1052,10 @@ pub fn resolve_ffprobe_path(config: &FdmConfig) -> Option<PathBuf> {
 }
 
 pub fn resolve_yt_dlp_path(config: &FdmConfig) -> Option<PathBuf> {
-    if let Some(ref p) = config.core.yt_dlp_path {
-        if p.exists() {
-            return Some(p.clone());
-        }
+    if let Some(ref p) = config.core.yt_dlp_path
+        && p.exists()
+    {
+        return Some(p.clone());
     }
     for cand in [
         "/opt/homebrew/bin/yt-dlp",
@@ -1086,11 +1144,11 @@ where
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(val) = line.strip_prefix("out_time_ms=") {
-                if let (Ok(us), Some(tot)) = (val.trim().parse::<f64>(), total_duration_secs) {
-                    if tot > 0.0 {
-                        let pct = ((us / 1_000_000.0) / tot * 100.0).clamp(0.0, 99.9) as f32;
-                        on_progress(pct);
-                    }
+                if let (Ok(us), Some(tot)) = (val.trim().parse::<f64>(), total_duration_secs)
+                    && tot > 0.0
+                {
+                    let pct = ((us / 1_000_000.0) / tot * 100.0).clamp(0.0, 99.9) as f32;
+                    on_progress(pct);
                 }
             } else if line.trim() == "progress=end" {
                 on_progress(100.0);
@@ -1208,7 +1266,16 @@ where
     if stream_copy {
         run_ffmpeg_with_progress(
             &ffmpeg,
-            &["-y", "-i", &in_s, "-c", "copy", "-movflags", "+faststart", &out_s],
+            &[
+                "-y",
+                "-i",
+                &in_s,
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                &out_s,
+            ],
             total_dur,
             on_progress,
         )
@@ -1310,60 +1377,60 @@ pub async fn probe_media_url(
             let expr = format!(
                 "(typeof msParser !== 'undefined' && (!msParser.isSupportedSource || msParser.isSupportedSource({escaped}))) ? msParser.parse({escaped}) : null"
             );
-            if let Ok((val, _logs)) = run_js_parser_script(&script, &expr, config).await {
-                if !val.is_null() {
-                    if let Ok(mut parsed) = serde_json::from_value::<MediaParseResult>(val.clone()) {
-                        if parsed.extractor.is_empty() {
-                            parsed.extractor = format!("plugin:{}", plugin.name);
+            if let Ok((val, _logs)) = run_js_parser_script(&script, &expr, config).await
+                && !val.is_null()
+            {
+                if let Ok(mut parsed) = serde_json::from_value::<MediaParseResult>(val.clone()) {
+                    if parsed.extractor.is_empty() {
+                        parsed.extractor = format!("plugin:{}", plugin.name);
+                    }
+                    return Ok(parsed);
+                }
+                // Map looser JS plugin objects cleanly
+                let title = val["title"].as_str().unwrap_or("Media Stream").to_string();
+                let mut variants = Vec::new();
+                if let Some(arr) = val["formats"]
+                    .as_array()
+                    .or_else(|| val["variants"].as_array())
+                {
+                    for (idx, item) in arr.iter().enumerate() {
+                        if let Some(u) = item["url"].as_str() {
+                            variants.push(MediaVariantOption {
+                                format_id: item["format_id"]
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| format!("v{idx}")),
+                                title: item["label"]
+                                    .as_str()
+                                    .or_else(|| item["title"].as_str())
+                                    .unwrap_or("Stream")
+                                    .to_string(),
+                                ext: item["ext"].as_str().unwrap_or("mp4").to_string(),
+                                url: u.to_string(),
+                                audio_url: item["audio_url"].as_str().map(str::to_string),
+                                width: item["width"].as_u64().map(|n| n as u32),
+                                height: item["height"].as_u64().map(|n| n as u32),
+                                bitrate_kbps: item["bitrate_kbps"].as_u64(),
+                                codecs: item["codecs"].as_str().map(str::to_string),
+                                is_audio_only: item["is_audio_only"].as_bool().unwrap_or(false),
+                                filesize: item["filesize"].as_u64(),
+                            });
                         }
-                        return Ok(parsed);
                     }
-                    // Map looser JS plugin objects cleanly
-                    let title = val["title"]
-                        .as_str()
-                        .unwrap_or("Media Stream")
-                        .to_string();
-                    let mut variants = Vec::new();
-                    if let Some(arr) = val["formats"].as_array().or_else(|| val["variants"].as_array()) {
-                        for (idx, item) in arr.iter().enumerate() {
-                            if let Some(u) = item["url"].as_str() {
-                                variants.push(MediaVariantOption {
-                                    format_id: item["format_id"]
-                                        .as_str()
-                                        .map(str::to_string)
-                                        .unwrap_or_else(|| format!("v{idx}")),
-                                    title: item["label"]
-                                        .as_str()
-                                        .or_else(|| item["title"].as_str())
-                                        .unwrap_or("Stream")
-                                        .to_string(),
-                                    ext: item["ext"].as_str().unwrap_or("mp4").to_string(),
-                                    url: u.to_string(),
-                                    audio_url: item["audio_url"].as_str().map(str::to_string),
-                                    width: item["width"].as_u64().map(|n| n as u32),
-                                    height: item["height"].as_u64().map(|n| n as u32),
-                                    bitrate_kbps: item["bitrate_kbps"].as_u64(),
-                                    codecs: item["codecs"].as_str().map(str::to_string),
-                                    is_audio_only: item["is_audio_only"].as_bool().unwrap_or(false),
-                                    filesize: item["filesize"].as_u64(),
-                                });
-                            }
-                        }
-                    }
-                    if !variants.is_empty() {
-                        return Ok(MediaParseResult {
-                            source_url: url.to_string(),
-                            title,
-                            thumbnail_url: val["thumbnail"].as_str().map(str::to_string),
-                            duration_secs: val["duration"].as_f64(),
-                            uploader: val["uploader"].as_str().map(str::to_string),
-                            is_playlist: false,
-                            variants,
-                            subtitles: vec![],
-                            playlist_entries: vec![],
-                            extractor: format!("plugin:{}", plugin.name),
-                        });
-                    }
+                }
+                if !variants.is_empty() {
+                    return Ok(MediaParseResult {
+                        source_url: url.to_string(),
+                        title,
+                        thumbnail_url: val["thumbnail"].as_str().map(str::to_string),
+                        duration_secs: val["duration"].as_f64(),
+                        uploader: val["uploader"].as_str().map(str::to_string),
+                        is_playlist: false,
+                        variants,
+                        subtitles: vec![],
+                        playlist_entries: vec![],
+                        extractor: format!("plugin:{}", plugin.name),
+                    });
                 }
             }
         }
@@ -1378,7 +1445,7 @@ pub async fn probe_media_url(
             source_url: url.to_string(),
             title: parsed_url
                 .path_segments()
-                .and_then(|s| s.last())
+                .and_then(|mut s| s.next_back())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("HLS Stream")
                 .to_string(),
@@ -1420,7 +1487,13 @@ pub async fn probe_media_url(
 
     if lower.contains(".mpd") {
         let client = build_http_client(config, &[], None)?;
-        let xml = client.get(url).send().await?.error_for_status()?.text().await?;
+        let xml = client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
         let reps = fdm_hls::parse_dash_mpd(url, &xml)?;
         return Ok(MediaParseResult {
             source_url: url.to_string(),
@@ -1635,15 +1708,21 @@ mod tests {
         assert_eq!(info.height, Some(240));
 
         let mp3_out = dir.join("audio.mp3");
-        convert_to_mp3(&cfg, &sample, &mp3_out, 192, |_| {}).await.unwrap();
+        convert_to_mp3(&cfg, &sample, &mp3_out, 192, |_| {})
+            .await
+            .unwrap();
         assert!(std::fs::metadata(&mp3_out).unwrap().len() > 100);
 
         let mp4_out = dir.join("remux.mp4");
-        convert_to_mp4(&cfg, &sample, &mp4_out, true, |_| {}).await.unwrap();
+        convert_to_mp4(&cfg, &sample, &mp4_out, true, |_| {})
+            .await
+            .unwrap();
         assert!(std::fs::metadata(&mp4_out).unwrap().len() > 100);
 
         let jpg_out = dir.join("thumb.jpg");
-        extract_video_thumbnail(&cfg, &sample, &jpg_out, 0.2).await.unwrap();
+        extract_video_thumbnail(&cfg, &sample, &jpg_out, 0.2)
+            .await
+            .unwrap();
         assert!(std::fs::metadata(&jpg_out).unwrap().len() > 100);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1715,9 +1794,15 @@ mod tests {
 
     #[tokio::test]
     async fn semver_and_plugin_auto_update_work_end_to_end() {
-        assert_eq!(compare_semver("1.2.0", "1.1.9"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_semver("1.2.0", "1.1.9"),
+            std::cmp::Ordering::Greater
+        );
         assert_eq!(compare_semver("v2.0", "2.0.0"), std::cmp::Ordering::Equal);
-        assert_eq!(compare_semver("1.0.0-alpha", "1.0.0"), std::cmp::Ordering::Less);
+        assert_eq!(
+            compare_semver("1.0.0-alpha", "1.0.0"),
+            std::cmp::Ordering::Less
+        );
 
         let dir = std::env::temp_dir().join(format!("ferrite_pl_upd_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

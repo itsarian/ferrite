@@ -1,7 +1,5 @@
 use crate::app::{ActivePage, ActivePopover, FerriteApp, SettingsTab};
-use crate::helpers::{
-    count_by_state_filter, format_speed, sort_field_label, state_filter_label,
-};
+use crate::helpers::{count_by_state_filter, format_speed, sort_field_label, state_filter_label};
 use crate::i18n;
 use crate::theme::{ThemePalette, parse_hex_color};
 use crate::ui_widgets::{badge_themed, chip_toggle, ellipsis_text, svg_icon};
@@ -16,6 +14,7 @@ use gpui::{
 use std::sync::Arc;
 use std::time::Duration;
 
+#[allow(clippy::too_many_arguments)]
 pub fn menu_item_row<F>(
     id: impl Into<SharedString>,
     icon: &'static str,
@@ -78,10 +77,7 @@ where
         })
 }
 
-pub fn render_popover(
-    app: &mut FerriteApp,
-    cx: &mut Context<FerriteApp>,
-) -> Option<AnyElement> {
+pub fn render_popover(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> Option<AnyElement> {
     let p = app.theme;
     let pop = app.active_popover.clone();
     if pop == ActivePopover::None {
@@ -110,9 +106,7 @@ pub fn render_popover(
         ActivePopover::FilterMenu => render_filter_menu(app, &p, cx, card_shell),
         ActivePopover::TumMenu => render_tum_menu(app, &p, cx, card_shell),
         ActivePopover::MainMenu => render_main_menu(app, &p, cx, card_shell),
-        ActivePopover::RowContextMenu(id) => {
-            render_row_context_menu(app, id, &p, cx, card_shell)?
-        }
+        ActivePopover::RowContextMenu(id) => render_row_context_menu(app, id, &p, cx, card_shell)?,
     };
 
     let anim_layer = div()
@@ -134,9 +128,12 @@ pub fn render_popover(
             .id("popover-backdrop")
             .absolute()
             .inset_0()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                this.close_popover(cx);
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.close_popover(cx);
+                }),
+            )
             .child(anim_layer)
             .into_any_element(),
     )
@@ -562,11 +559,7 @@ fn render_tum_menu(
                                 } else {
                                     FontWeight::MEDIUM
                                 })
-                                .text_color(if active {
-                                    p.accent
-                                } else {
-                                    p.text_primary
-                                })
+                                .text_color(if active { p.accent } else { p.text_primary })
                                 .child(title),
                         )
                         .child(
@@ -576,7 +569,9 @@ fn render_tum_menu(
                                 .child(desc),
                         ),
                 )
-                .when(active, |el| el.child(svg_icon("icons/check.svg", p.spx_f32(13.), p.accent)))
+                .when(active, |el| {
+                    el.child(svg_icon("icons/check.svg", p.spx_f32(13.), p.accent))
+                })
         }))
         .child(div().h(px(1.)).bg(p.separator).my_1())
         .child(menu_item_row(
@@ -746,7 +741,11 @@ fn render_main_menu(
                                 .flex_row()
                                 .items_center()
                                 .gap_2()
-                                .child(svg_icon("icons/hourglass.svg", p.spx_f32(14.), p.text_primary))
+                                .child(svg_icon(
+                                    "icons/hourglass.svg",
+                                    p.spx_f32(14.),
+                                    p.text_primary,
+                                ))
                                 .child(
                                     div()
                                         .text_size(p.fpx(12.))
@@ -1137,22 +1136,25 @@ fn render_row_context_menu(
                             this.set_inspector_expanded(true, cx);
                         },
                     ))
-                    .when(!is_batch && app.settings_cfg.app.enable_standalone_downloads_windows, |el| {
-                        el.child(menu_item_row(
-                            "rcm-standalone",
-                            "icons/link.svg",
-                            "Open in Standalone Window",
-                            None,
-                            false,
-                            false,
-                            p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.active_popover = ActivePopover::None;
-                                this.open_download_window(id, cx);
-                            },
-                        ))
-                    })
+                    .when(
+                        !is_batch && app.settings_cfg.app.enable_standalone_downloads_windows,
+                        |el| {
+                            el.child(menu_item_row(
+                                "rcm-standalone",
+                                "icons/link.svg",
+                                "Open in Standalone Window",
+                                None,
+                                false,
+                                false,
+                                p,
+                                cx,
+                                move |this, _, _, cx| {
+                                    this.active_popover = ActivePopover::None;
+                                    this.open_download_window(id, cx);
+                                },
+                            ))
+                        },
+                    )
                     .child(div().h(px(1.)).bg(p.separator).my_1())
                     .child(
                         div()
@@ -1170,16 +1172,14 @@ fn render_row_context_menu(
                                     .child("Priority"),
                             )
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_1()
-                                    .children([
+                                div().flex().flex_row().items_center().gap_1().children(
+                                    [
                                         (DownloadPriority::Low, "Low"),
                                         (DownloadPriority::Normal, "Normal"),
                                         (DownloadPriority::High, "High"),
-                                    ].into_iter().map(|(pr, lbl)| {
+                                    ]
+                                    .into_iter()
+                                    .map(|(pr, lbl)| {
                                         chip_toggle(
                                             format!("rcm-prio-{pr:?}"),
                                             lbl,
@@ -1190,7 +1190,8 @@ fn render_row_context_menu(
                                                 this.set_priority_action(id, pr, cx);
                                             },
                                         )
-                                    })),
+                                    }),
+                                ),
                             ),
                     )
                     .child(menu_item_row(
