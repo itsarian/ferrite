@@ -3,7 +3,9 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,7 +72,7 @@ pub fn disk_space_stats(path: &Path) -> Option<DiskSpaceStats> {
         use std::os::windows::ffi::OsStrExt;
 
         #[link(name = "kernel32")]
-        extern "system" {
+        unsafe extern "system" {
             fn GetDiskFreeSpaceExW(
                 lpDirectoryName: *const u16,
                 lpFreeBytesAvailableToCaller: *mut u64,
@@ -291,7 +293,9 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
         }
     }
 
+    #[allow(unused_mut)]
     let mut cellular = false;
+    #[allow(unused_mut)]
     let mut roaming = false;
     #[cfg(target_os = "macos")]
     {
@@ -342,6 +346,7 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
     (cellular, roaming)
 }
 
+#[cfg(target_os = "macos")]
 fn applescript_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -453,13 +458,13 @@ pub struct SleepPreventer {
 impl SleepPreventer {
     pub fn update(&mut self, should_prevent: bool) {
         if should_prevent {
-            if let Some(ref mut c) = self.child
-                && let Ok(None) = c.try_wait()
-            {
-                return;
-            }
             #[cfg(target_os = "macos")]
             {
+                if let Some(ref mut c) = self.child
+                    && let Ok(None) = c.try_wait()
+                {
+                    return;
+                }
                 let pid = std::process::id().to_string();
                 if let Ok(child) = std::process::Command::new("caffeinate")
                     .args(["-i", "-d", "-w", &pid])
