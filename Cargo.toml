@@ -16,8 +16,6 @@ members = [
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
-license = "MIT OR Apache-2.0"
-authors = ["Ferrite DM Contributors"]
 
 [patch.crates-io]
 librqbit-utp = { git = "https://github.com/ikatson/librqbit-utp", branch = "main" }

@@ -40,3 +40,10 @@ Before staging, committing, or proposing code changes:
 - Always bump `version` in `Cargo.toml` before tagging.
 - Checksums in `SHA256SUMS.txt` must always be generated and verified across all 10 release assets.
 - Never push directly to tags without local build validation or dry-run via `workflow_dispatch`.
+
+## Mandatory CI Monitoring & Completion Rule
+Whenever you push changes or trigger a CI run:
+- **DO NOT end the conversation turn or report completion until all in-flight CI workflow runs have passed successfully (`conclusion: success` / green checkmark).**
+- Monitor active runs using `gh run list` or `gh run watch`.
+- If any job in CI fails, inspect the failure logs immediately (`gh run view <id> --log-failed`), apply the fix, execute the pre-flight verification checks, commit, push, and continue monitoring until the entire pipeline is 100% green (`✓`).
+

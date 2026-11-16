@@ -113,7 +113,7 @@ fn pipe_name_from_path(p: &Path) -> String {
     if s.starts_with(r"\\.\pipe\") {
         s.to_string()
     } else {
-        let hash = sha256_str(s.as_bytes());
+        let hash = sha256_str(&s);
         format!(r"\\.\pipe\ferrite-dm-{}", &hash[..16])
     }
 }
