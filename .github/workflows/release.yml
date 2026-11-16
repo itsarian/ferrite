@@ -7,17 +7,112 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v0.1.1)'
+        description: 'Release Tag (e.g. v0.1.1, defaults to package version if omitted)'
         required: false
+        type: string
         default: ''
+      dry_run:
+        description: 'Dry run (build assets and compute checksums without publishing to GitHub Releases)'
+        required: false
+        type: boolean
+        default: false
+      draft:
+        description: 'Create GitHub Release as draft'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark GitHub Release as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  metadata:
+    name: Prepare Release Metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+      version: ${{ steps.meta.outputs.version }}
+      is_draft: ${{ steps.meta.outputs.is_draft }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      is_dry_run: ${{ steps.meta.outputs.is_dry_run }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          if [[ "$RAW_TAG" == v* ]]; then
+            VERSION="${RAW_TAG#v}"
+            TAG_NAME="$RAW_TAG"
+          else
+            PKG_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version' 2>/dev/null || echo "0.1.1")
+            VERSION="${PKG_VERSION}"
+            TAG_NAME="v${PKG_VERSION}"
+          fi
+
+          IS_PRERELEASE="false"
+          if [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
+            IS_PRERELEASE="true"
+          elif [[ "$TAG_NAME" =~ -(alpha|beta|rc|dev) ]]; then
+            IS_PRERELEASE="true"
+          fi
+
+          IS_DRAFT="false"
+          if [ "${{ github.event.inputs.draft }}" = "true" ]; then
+            IS_DRAFT="true"
+          fi
+
+          IS_DRY_RUN="false"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            IS_DRY_RUN="true"
+          fi
+
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "is_draft=${IS_DRAFT}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "is_dry_run=${IS_DRY_RUN}" >> "$GITHUB_OUTPUT"
+
+          echo "=========================================================="
+          echo " Release Configuration:"
+          echo "  Tag:         $TAG_NAME"
+          echo "  Version:     $VERSION"
+          echo "  Draft:       $IS_DRAFT"
+          echo "  Pre-release: $IS_PRERELEASE"
+          echo "  Dry Run:     $IS_DRY_RUN"
+          echo "=========================================================="
+
   build-macos:
-    name: Build macOS Installers (Apple Silicon)
+    name: Build macOS (${{ matrix.target-name }})
+    needs: metadata
     runs-on: macos-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target-name: Apple Silicon
+            package-args: ""
+            artifact-name: macos-arm64
+          - target-name: Universal
+            package-args: "--universal"
+            artifact-name: macos-universal
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,37 +121,46 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          targets: aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "macos-release"
 
       - name: Build and Package macOS Installers
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
+          set -euo pipefail
           chmod +x scripts/*.sh scripts/*.swift resources/pkg-scripts/*
-          ./scripts/package-macos.sh
+          ./scripts/package-macos.sh ${{ matrix.package-args }}
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload macOS Release Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          files: |
+          name: ${{ matrix.artifact-name }}
+          path: |
             dist/*.dmg
             dist/*.pkg
             dist/*.zip
             dist/*.tar.gz
-            dist/SHA256SUMS.txt
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          retention-days: 1
+          if-no-files-found: error
 
-  build-linux-cli:
-    name: Build Linux CLI & Daemon (x86_64)
+  build-linux:
+    name: Build Linux CLI (x86_64)
+    needs: metadata
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install build dependencies
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libssl-dev
@@ -65,46 +169,184 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          targets: x86_64-unknown-linux-gnu
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-release"
 
       - name: Build Linux CLI Binaries
+        shell: bash
         run: |
           cargo build --release -p fdm-cli -p fdm-native-host
 
       - name: Package Linux Standalone Tarball
+        shell: bash
         run: |
-          RAW_VER="${{ github.event.inputs.tag_name || github.ref_name }}"
-          VERSION="${RAW_VER#v}"
-          if [ -z "$VERSION" ]; then
-            VERSION="0.1.0"
-          fi
-          
-          mkdir -p dist/linux-stage/ferrite-dm-${VERSION}
+          set -euo pipefail
+          VERSION="${{ needs.metadata.outputs.version }}"
           STAGE="dist/linux-stage/ferrite-dm-${VERSION}"
-          
+          mkdir -p "$STAGE" dist
+
           cp target/release/ferrite-dm "$STAGE/"
           cp target/release/ferrite-native-host "$STAGE/"
           cp scripts/install-cli.sh "$STAGE/install.sh"
           cp scripts/uninstall-cli.sh "$STAGE/uninstall.sh"
+          cp scripts/install-cli.sh "$STAGE/install-cli.sh"
+          cp scripts/uninstall-cli.sh "$STAGE/uninstall-cli.sh"
           cp README.md "$STAGE/" 2>/dev/null || true
-          cp LICENSE-MIT "$STAGE/" 2>/dev/null || true
-          
-          chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/ferrite-dm" "$STAGE/ferrite-native-host"
-          
+          cp LICENSE* "$STAGE/" 2>/dev/null || true
+
+          chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/install-cli.sh" "$STAGE/uninstall-cli.sh" "$STAGE/ferrite-dm" "$STAGE/ferrite-native-host"
+
           TAR_NAME="ferrite-dm-${VERSION}-linux-x86_64.tar.gz"
           tar -czf "dist/$TAR_NAME" -C dist/linux-stage "ferrite-dm-${VERSION}"
-          
-          cd dist
-          shasum -a 256 "$TAR_NAME" > "${TAR_NAME}.sha256"
 
-      - name: Upload Linux Assets to Release
+      - name: Upload Linux Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/ferrite-dm-*-linux-x86_64.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows CLI (x86_64)
+    needs: metadata
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "windows-release"
+
+      - name: Build Windows CLI Binaries
+        shell: bash
+        run: |
+          cargo build --release -p fdm-cli -p fdm-native-host
+
+      - name: Package Windows Standalone Zip
+        shell: pwsh
+        run: |
+          $version = "${{ needs.metadata.outputs.version }}"
+          $stage = "dist/windows-stage/ferrite-dm-$version"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+
+          Copy-Item "target/release/ferrite-dm.exe" "$stage/"
+          Copy-Item "target/release/ferrite-native-host.exe" "$stage/"
+          Copy-Item "scripts/install-cli.ps1" "$stage/install.ps1"
+          Copy-Item "scripts/uninstall-cli.ps1" "$stage/uninstall.ps1"
+          Copy-Item "scripts/install-cli.ps1" "$stage/install-cli.ps1"
+          Copy-Item "scripts/uninstall-cli.ps1" "$stage/uninstall-cli.ps1"
+          Copy-Item "scripts/install.bat" "$stage/install.bat"
+          Copy-Item "scripts/uninstall.bat" "$stage/uninstall.bat"
+          if (Test-Path "README.md") { Copy-Item "README.md" "$stage/" }
+          Get-ChildItem -Path "." -Filter "LICENSE*" | ForEach-Object { Copy-Item $_.FullName "$stage/" }
+
+          $zipName = "ferrite-dm-$version-windows-x86_64.zip"
+          Compress-Archive -Path "dist/windows-stage/ferrite-dm-$version" -DestinationPath "dist/$zipName" -Force
+
+      - name: Upload Windows Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/ferrite-dm-*-windows-x86_64.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [metadata, build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Compute unified SHA256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          rm -f SHA256SUMS.txt *.sha256
+
+          echo "==> Computing SHA256 checksums for all release assets..."
+          sha256sum * > SHA256SUMS.txt
+
+          echo "=========================================================="
+          echo " Generated SHA256SUMS.txt:"
+          echo "=========================================================="
+          cat SHA256SUMS.txt
+          echo "=========================================================="
+
+          echo "==> Verifying SHA256 checksums..."
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Report Dry Run Summary
+        if: needs.metadata.outputs.is_dry_run == 'true'
+        shell: bash
+        run: |
+          echo "=========================================================="
+          echo " [DRY RUN] GitHub Release was NOT created."
+          echo " Tag:         ${{ needs.metadata.outputs.tag_name }}"
+          echo " Version:     ${{ needs.metadata.outputs.version }}"
+          echo " Draft:       ${{ needs.metadata.outputs.is_draft }}"
+          echo " Pre-release: ${{ needs.metadata.outputs.is_prerelease }}"
+          echo "=========================================================="
+          echo " Verified Release Assets:"
+          cat release-assets/SHA256SUMS.txt
+          echo "=========================================================="
+
+      - name: Publish GitHub Release
+        if: needs.metadata.outputs.is_dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          files: |
-            dist/ferrite-dm-*-linux-x86_64.tar.gz
-            dist/ferrite-dm-*-linux-x86_64.tar.gz.sha256
-          draft: false
-          prerelease: false
+          tag_name: ${{ needs.metadata.outputs.tag_name }}
+          name: Ferrite DM ${{ needs.metadata.outputs.tag_name }}
+          target_commitish: ${{ github.sha }}
+          files: release-assets/*
+          draft: ${{ needs.metadata.outputs.is_draft == 'true' }}
+          prerelease: ${{ needs.metadata.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            ## Ferrite DM ${{ needs.metadata.outputs.tag_name }}
+
+            Ferrite DM is a high-performance, modular, modern download manager for macOS, Linux, and Windows.
+
+            ### Package Assets
+            - **macOS (Apple Silicon)**: `.dmg` installer, `.pkg` installer, `.zip` app bundle, `.tar.gz` CLI bundle
+            - **macOS (Universal)**: `.dmg` installer, `.pkg` installer, `.zip` app bundle, `.tar.gz` CLI bundle (runs natively on Apple Silicon & Intel)
+            - **Linux (x86_64)**: Standalone `.tar.gz` archive containing `ferrite-dm` CLI, `ferrite-native-host`, and installer
+            - **Windows (x86_64)**: Standalone `.zip` archive containing `ferrite-dm.exe`, `ferrite-native-host.exe`, and PowerShell / batch installer
+            - **Checksums**: `SHA256SUMS.txt` containing SHA256 digests for all published assets
+
+            ### Verifying Release Assets
+            To verify the integrity of your download using `SHA256SUMS.txt`:
+            - **macOS / Linux**:
+              ```bash
+              shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+              ```
+            - **Windows (PowerShell)**:
+              ```powershell
+              Get-FileHash <filename> -Algorithm SHA256
+              ```

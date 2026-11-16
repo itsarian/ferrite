@@ -11,21 +11,37 @@ RESOURCES_DIR="$ROOT_DIR/resources"
 
 RAW_VERSION="${VERSION:-${GITHUB_REF_NAME:-0.1.0}}"
 VERSION="${RAW_VERSION#v}"
-ARCH="$(uname -m)"
+ARCH="${ARCH:-$(uname -m)}"
 SKIP_BUILD=false
 CLEAN=false
+UNIVERSAL=false
 
-for arg in "$@"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --skip-build)
             SKIP_BUILD=true
+            shift
             ;;
         --clean)
             CLEAN=true
+            shift
+            ;;
+        --universal)
+            UNIVERSAL=true
+            ARCH="universal"
+            shift
+            ;;
+        --arch)
+            ARCH="$2"
+            shift 2
+            ;;
+        --arch=*)
+            ARCH="${1#*=}"
+            shift
             ;;
         *)
-            echo "Unknown option: $arg"
-            echo "Usage: $0 [--skip-build] [--clean]"
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--skip-build] [--clean] [--universal] [--arch <arch>]"
             exit 1
             ;;
     esac
@@ -42,8 +58,22 @@ mkdir -p "$DIST_DIR" "$RESOURCES_DIR"
 
 # 1. Build release binaries
 if [ "$SKIP_BUILD" = false ]; then
-    echo "==> Building release binaries with cargo..."
-    cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+    if [ "$UNIVERSAL" = true ]; then
+        echo "==> Building universal macOS binaries (aarch64-apple-darwin + x86_64-apple-darwin)..."
+        rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        cargo build --release --target aarch64-apple-darwin -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --target x86_64-apple-darwin -p fdm-gui -p fdm-cli -p fdm-native-host
+        mkdir -p target/release
+        for bin in fdm-gui ferrite-dm ferrite-native-host; do
+            lipo -create \
+                "target/aarch64-apple-darwin/release/$bin" \
+                "target/x86_64-apple-darwin/release/$bin" \
+                -output "target/release/$bin"
+        done
+    else
+        echo "==> Building release binaries with cargo..."
+        cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+    fi
 else
     echo "==> Skipping cargo build (using existing target/release binaries)..."
 fi
@@ -152,10 +182,12 @@ cp "target/release/ferrite-dm" "$TAR_STAGE/"
 cp "target/release/ferrite-native-host" "$TAR_STAGE/"
 cp "$SCRIPT_DIR/install-cli.sh" "$TAR_STAGE/install.sh"
 cp "$SCRIPT_DIR/uninstall-cli.sh" "$TAR_STAGE/uninstall.sh"
+cp "$SCRIPT_DIR/install-cli.sh" "$TAR_STAGE/install-cli.sh"
+cp "$SCRIPT_DIR/uninstall-cli.sh" "$TAR_STAGE/uninstall-cli.sh"
 cp "$ROOT_DIR/README.md" "$TAR_STAGE/" 2>/dev/null || true
-cp "$ROOT_DIR/LICENSE-MIT" "$TAR_STAGE/" 2>/dev/null || true
+cp "$ROOT_DIR"/LICENSE* "$TAR_STAGE/" 2>/dev/null || true
 
-chmod +x "$TAR_STAGE/install.sh" "$TAR_STAGE/uninstall.sh" "$TAR_STAGE/fdm-gui" "$TAR_STAGE/ferrite-dm" "$TAR_STAGE/ferrite-native-host"
+chmod +x "$TAR_STAGE/install.sh" "$TAR_STAGE/uninstall.sh" "$TAR_STAGE/install-cli.sh" "$TAR_STAGE/uninstall-cli.sh" "$TAR_STAGE/fdm-gui" "$TAR_STAGE/ferrite-dm" "$TAR_STAGE/ferrite-native-host"
 
 tar -czf "$TAR_PATH" -C "$DIST_DIR/tar-stage" "ferrite-dm-${VERSION}"
 rm -rf "$DIST_DIR/tar-stage"

@@ -5,15 +5,21 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    name: Test & Verify
-    runs-on: macos-latest
+  fmt:
+    name: Code Formatting (rustfmt)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,20 +27,99 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Lints (Clippy)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Full Workspace & Assets)
+            os: macos-latest
+            workspace_scope: "--workspace"
+            is_macos: true
+          - name: Linux (Cross-Platform Crates)
+            os: ubuntu-latest
+            workspace_scope: "--workspace --exclude fdm-gui"
+            is_macos: false
+          - name: Windows (Cross-Platform Crates)
+            os: windows-latest
+            workspace_scope: "--workspace --exclude fdm-gui"
+            is_macos: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
       - name: Workspace check
-        run: cargo check --workspace
+        run: cargo check ${{ matrix.workspace_scope }}
 
       - name: Workspace tests
-        run: cargo test --workspace
+        run: cargo test ${{ matrix.workspace_scope }}
 
       - name: Verify Packaging Assets
+        if: matrix.is_macos
         run: |
           chmod +x scripts/*.sh scripts/*.swift resources/pkg-scripts/*
           swift scripts/generate-icon.swift resources
           test -f resources/Ferrite.icns
           test -f resources/Info.plist
+          test -x scripts/package-macos.sh
+          test -x scripts/install-cli.sh
+          test -x scripts/uninstall-cli.sh
+
+  doc:
+    name: Documentation Check
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps

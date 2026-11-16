@@ -6,7 +6,8 @@
   <p><strong>A fast, telemetry-free desktop and CLI download manager built in Rust.</strong></p>
 
   [![Release](https://img.shields.io/github/v/release/itsarian/ferrite-dm?style=flat-square)](https://github.com/itsarian/ferrite-dm/releases)
-  [![CI](https://img.shields.io/github/actions/workflow/status/itsarian/ferrite-dm/ci.yml?style=flat-square)](https://github.com/itsarian/ferrite-dm/actions)
+  [![CI](https://img.shields.io/github/actions/workflow/status/itsarian/ferrite-dm/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/itsarian/ferrite-dm/actions/workflows/ci.yml)
+  [![Security Audit](https://img.shields.io/github/actions/workflow/status/itsarian/ferrite-dm/audit.yml?branch=main&label=Security%20Audit&style=flat-square)](https://github.com/itsarian/ferrite-dm/actions/workflows/audit.yml)
   [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](#license)
   [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square)](#prerequisites)
 
@@ -18,7 +19,8 @@
   <a href="#cli-reference">CLI Reference</a> •
   <a href="#desktop-shortcuts">Shortcuts</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#project-structure">Architecture</a>
+  <a href="#project-structure">Architecture</a> •
+  <a href="docs/CI_CD.md">CI/CD & Releases</a>
 </div>
 
 <br />
@@ -309,6 +311,7 @@ Ferrite DM is structured as a modular Cargo workspace across 10 focused crates:
 | [`crates/fdm-cli`](crates/fdm-cli) | Command-line interface executable (`ferrite-dm`) and background daemon supervisor |
 | [`crates/fdm-gui`](crates/fdm-gui) | Native GPUI desktop application interface (`fdm-gui` / `Ferrite DM.app`) |
 | [`docs/ARCHITECTURE_BLUEPRINT.md`](docs/ARCHITECTURE_BLUEPRINT.md) | Reverse engineering analysis, FDM architectural mappings, and protocol specifications |
+| [`docs/CI_CD.md`](docs/CI_CD.md) | Continuous Integration, security audit, release pipelines, and contributor pre-flight guide |
 | [`scripts/`](scripts/) | Packaging scripts (`package-macos.sh`), CLI installers, and icon generation |
 | [`resources/`](resources/) | Application icon (`Ferrite-1024.png`, `Ferrite.icns`), screenshots, and `Info.plist` |
 
@@ -320,11 +323,13 @@ Contributions from the open-source community are welcome!
 
 1. Fork and clone the repository.
 2. Create a feature branch: `git checkout -b feature/my-feature`.
-3. Check code formatting and run tests:
+3. Check code formatting, lints, and run tests (see [CI/CD Guide](docs/CI_CD.md) for full pre-flight instructions):
    ```bash
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets -- -D warnings
    cargo check --workspace
    cargo test --workspace
-   ./target/release/ferrite-dm self-test
+   cargo doc --workspace --no-deps
    ```
 4. Commit your changes following conventional commits (`docs:`, `feat:`, `fix:`).
 5. Open a Pull Request on GitHub against `main`.

@@ -1,0 +1,35 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run weekly every Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Security Vulnerability Scan (cargo-audit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Cargo Audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
