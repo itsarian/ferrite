@@ -34,12 +34,17 @@ jobs:
 
   clippy:
     name: Lints (Clippy)
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -50,7 +55,30 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude fdm-gui --all-targets -- -D warnings
+
+  doc:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build documentation
+        run: cargo doc --workspace --exclude fdm-gui --no-deps
 
   test:
     name: Test (${{ matrix.name }})
@@ -85,12 +113,22 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ matrix.is_macos && 'clippy' || '' }}
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
       - name: Workspace check
         run: cargo check ${{ matrix.workspace_scope }}
+
+      - name: Lints (Clippy - Full Workspace)
+        if: matrix.is_macos
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Documentation (Full Workspace)
+        if: matrix.is_macos
+        run: cargo doc --workspace --no-deps
 
       - name: Workspace tests
         run: cargo test ${{ matrix.workspace_scope }}
@@ -105,21 +143,3 @@ jobs:
           test -x scripts/package-macos.sh
           test -x scripts/install-cli.sh
           test -x scripts/uninstall-cli.sh
-
-  doc:
-    name: Documentation Check
-    runs-on: macos-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build documentation
-        run: cargo doc --workspace --no-deps

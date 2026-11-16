@@ -776,9 +776,9 @@ pub fn build_native_manifest_json(browser: KnownWebBrowser, host_exe_path: &Path
 }
 
 pub fn default_native_manifest_dir(browser: KnownWebBrowser) -> Option<PathBuf> {
-    let base = directories::BaseDirs::new()?;
     #[cfg(target_os = "macos")]
     {
+        let base = directories::BaseDirs::new()?;
         let app_support = base.data_local_dir(); // ~/Library/Application Support
         let rel = match browser {
             KnownWebBrowser::Chrome => "Google/Chrome/NativeMessagingHosts",
@@ -793,6 +793,7 @@ pub fn default_native_manifest_dir(browser: KnownWebBrowser) -> Option<PathBuf> 
     }
     #[cfg(target_os = "linux")]
     {
+        let base = directories::BaseDirs::new()?;
         let cfg = base.config_dir();
         let home = base.home_dir();
         return match browser {

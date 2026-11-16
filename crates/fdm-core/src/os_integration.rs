@@ -18,9 +18,23 @@ pub fn disk_space_stats(path: &Path) -> Option<DiskSpaceStats> {
     let mut probe = path.to_path_buf();
     while !probe.exists() {
         if !probe.pop() {
-            probe = PathBuf::from("/");
+            #[cfg(unix)]
+            {
+                probe = PathBuf::from("/");
+            }
+            #[cfg(windows)]
+            {
+                probe = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\"));
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                break;
+            }
             break;
         }
+    }
+    if probe.is_file() {
+        probe.pop();
     }
     #[cfg(unix)]
     {
@@ -51,7 +65,50 @@ pub fn disk_space_stats(path: &Path) -> Option<DiskSpaceStats> {
             free_percent,
         })
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetDiskFreeSpaceExW(
+                lpDirectoryName: *const u16,
+                lpFreeBytesAvailableToCaller: *mut u64,
+                lpTotalNumberOfBytes: *mut u64,
+                lpTotalNumberOfFreeBytes: *mut u64,
+            ) -> i32;
+        }
+
+        let mut wide: Vec<u16> = probe.as_os_str().encode_wide().collect();
+        wide.push(0);
+
+        let mut available_bytes: u64 = 0;
+        let mut total_bytes: u64 = 0;
+        let mut total_free_bytes: u64 = 0;
+
+        let rc = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut available_bytes,
+                &mut total_bytes,
+                &mut total_free_bytes,
+            )
+        };
+        if rc == 0 {
+            return None;
+        }
+        let free_percent = if total_bytes > 0 {
+            (available_bytes as f64 / total_bytes as f64 * 100.0) as f32
+        } else {
+            100.0
+        };
+        Some(DiskSpaceStats {
+            available_bytes,
+            total_bytes,
+            free_percent,
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = probe;
         None
