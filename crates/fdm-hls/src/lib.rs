@@ -236,6 +236,10 @@ where
                 return record;
             }
             Ok(OutcomeHls::Cancelled) => {
+                if config.core.delete_service_files_when_finished {
+                    let work_dir = record.target_dir.join(format!(".{}.hls_tmp", record.uuid));
+                    let _ = std::fs::remove_dir_all(&work_dir);
+                }
                 record.state = DownloadState::Stopped;
                 record.abort_reason = DownloadAbortReason::AbortedByUser;
                 record.download_speed_bps = 0;
@@ -251,6 +255,10 @@ where
                 if attempt + 1 < max_attempts {
                     tokio::time::sleep(std::time::Duration::from_secs(1 + attempt as u64)).await;
                     continue;
+                }
+                if config.core.delete_service_files_when_finished {
+                    let work_dir = record.target_dir.join(format!(".{}.hls_tmp", record.uuid));
+                    let _ = std::fs::remove_dir_all(&work_dir);
                 }
                 record.state = DownloadState::Error;
                 on_progress(&record);
@@ -323,6 +331,11 @@ where
     .await?;
 
     if !matches!(outcome, OutcomeHls::Completed) {
+        if matches!(outcome, OutcomeHls::Cancelled)
+            && config.core.delete_service_files_when_finished
+        {
+            let _ = std::fs::remove_dir_all(&work_dir);
+        }
         return Ok(outcome);
     }
 
@@ -342,6 +355,11 @@ where
         )
         .await?;
         if !matches!(a_outcome, OutcomeHls::Completed) {
+            if matches!(a_outcome, OutcomeHls::Cancelled)
+                && config.core.delete_service_files_when_finished
+            {
+                let _ = std::fs::remove_dir_all(&work_dir);
+            }
             return Ok(a_outcome);
         }
 
@@ -701,19 +719,27 @@ where
         }
     }
 
-    // Concatenate segments cleanly into dest_file
-    let mut out = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(dest_file)?;
-    let mut total_written = 0u64;
-    for sp in &seq_files {
-        let mut f = File::open(sp)?;
-        let n = std::io::copy(&mut f, &mut out)?;
-        total_written += n;
-    }
-    out.flush()?;
+    // Concatenate segments cleanly into dest_file via blocking task
+    let dest_file_path = dest_file.to_path_buf();
+    let seq_files_buf = seq_files.clone();
+    let total_written = tokio::task::spawn_blocking(move || -> Result<u64> {
+        let mut out = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&dest_file_path)?;
+        let mut written = 0u64;
+        for sp in &seq_files_buf {
+            let mut f = File::open(sp)?;
+            let n = std::io::copy(&mut f, &mut out)?;
+            written += n;
+        }
+        out.flush()?;
+        Ok(written)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Segment concatenation task panicked: {e}"))??;
+
     record.downloaded_bytes = total_written;
     record.total_bytes = Some(total_written);
     Ok(OutcomeHls::Completed)
@@ -928,6 +954,9 @@ where
         )
         .await
         {
+            if config.core.delete_service_files_when_finished {
+                let _ = std::fs::remove_dir_all(&work_dir);
+            }
             record.state = DownloadState::Error;
             record.last_error = Some(e.to_string());
             return record;
@@ -949,6 +978,9 @@ where
             )
             .await
             {
+                if config.core.delete_service_files_when_finished {
+                    let _ = std::fs::remove_dir_all(&work_dir);
+                }
                 record.state = DownloadState::Error;
                 record.last_error = Some(e.to_string());
                 return record;

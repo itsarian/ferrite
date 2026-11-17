@@ -23,7 +23,7 @@ use std::os::unix::fs::FileExt;
 use std::os::windows::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream};
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
@@ -265,17 +265,24 @@ fn build_request_headers(record: &DownloadRecord, cred: Option<&AuthCredential>)
     map
 }
 
+static UTF8_EXT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)filename\*\s*=\s*UTF-8''([^;\s]+)"#).unwrap());
+static B64_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*"?=\?utf-8\?b\?([^;\s"?]+)\?="?"#).unwrap());
+static QUOTED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*"([^"]+)""#).unwrap());
+static BARE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*([^;\s]+)"#).unwrap());
+
 pub fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
     // Matches FDM's filename*=UTF-8'', RFC 2047 =?utf-8?b?...?=, quoted filename="..." and bare filename=...
-    let utf8_ext = Regex::new(r#"(?i)filename\*\s*=\s*UTF-8''([^;\s]+)"#).unwrap();
-    if let Some(caps) = utf8_ext.captures(header_val) {
+    if let Some(caps) = UTF8_EXT_RE.captures(header_val) {
         let decoded = urlencoding_decode(&caps[1]);
         if !decoded.is_empty() {
             return Some(sanitize_filename(&decoded));
         }
     }
-    let b64_re = Regex::new(r#"(?i)filename\s*=\s*"?=\?utf-8\?b\?([^;\s"?]+)\?="?"#).unwrap();
-    if let Some(caps) = b64_re.captures(header_val)
+    if let Some(caps) = B64_RE.captures(header_val)
         && let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(&caps[1])
     {
         let s = String::from_utf8_lossy(&raw).into_owned();
@@ -283,12 +290,10 @@ pub fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
             return Some(sanitize_filename(&s));
         }
     }
-    let quoted = Regex::new(r#"(?i)filename\s*=\s*"([^"]+)""#).unwrap();
-    if let Some(caps) = quoted.captures(header_val) {
+    if let Some(caps) = QUOTED_RE.captures(header_val) {
         return Some(sanitize_filename(&caps[1]));
     }
-    let bare = Regex::new(r#"(?i)filename\s*=\s*([^;\s]+)"#).unwrap();
-    if let Some(caps) = bare.captures(header_val) {
+    if let Some(caps) = BARE_RE.captures(header_val) {
         return Some(sanitize_filename(&caps[1]));
     }
     None

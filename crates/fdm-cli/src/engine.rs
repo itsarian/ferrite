@@ -114,6 +114,8 @@ pub struct DownloadEngine {
     remote_target_addr: Mutex<Option<SocketAddr>>,
     bt_sig: Mutex<String>,
     ephemeral_bt: bool,
+    supervisor_handle: Mutex<Option<JoinHandle<()>>>,
+    disk_space_cache: Mutex<HashMap<PathBuf, (std::time::Instant, bool)>>,
 }
 
 pub type EngineEventAlias = fdm_core::EngineEvent;
@@ -180,11 +182,16 @@ impl DownloadEngine {
                 rec.upload_speed_bps = 0;
                 rec.connections_active = 0;
                 rec.updated_at = now;
-                let _ = db.upsert_download(rec);
+                if let Err(e) = db.upsert_download(rec) {
+                    eprintln!(
+                        "Warning: failed to persist recovered download #{}: {e}",
+                        rec.id
+                    );
+                }
             }
         }
 
-        let (events_tx, _) = broadcast::channel(512);
+        let (events_tx, _) = broadcast::channel(2048);
         let (raise_tx, _) = broadcast::channel(32);
 
         Ok(Arc::new(Self {
@@ -209,6 +216,8 @@ impl DownloadEngine {
             remote_target_addr: Mutex::new(None),
             bt_sig: Mutex::new(init_bt_sig),
             ephemeral_bt,
+            supervisor_handle: Mutex::new(None),
+            disk_space_cache: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -237,7 +246,10 @@ impl DownloadEngine {
     }
 
     pub fn get_config(&self) -> FdmConfig {
-        self.config.read().unwrap().clone()
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn update_config(self: &Arc<Self>, new_cfg: FdmConfig) -> Result<()> {
@@ -248,14 +260,19 @@ impl DownloadEngine {
 
         let new_bt_sig = bt_session_signature(&new_cfg);
         let bt_changed = {
-            let mut sig_g = self.bt_sig.lock().unwrap();
+            let mut sig_g = self.bt_sig.lock().unwrap_or_else(|e| e.into_inner());
             let changed = *sig_g != new_bt_sig;
             *sig_g = new_bt_sig;
             changed
         };
-        let bt_busy = self.downloads.read().unwrap().iter().any(|d| {
-            d.download_type == DownloadType::BitTorrent && d.state.is_running_or_seeding()
-        });
+        let bt_busy = self
+            .downloads
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|d| {
+                d.download_type == DownloadType::BitTorrent && d.state.is_running_or_seeding()
+            });
 
         let bind_ip: std::net::IpAddr = new_cfg
             .app
@@ -263,7 +280,11 @@ impl DownloadEngine {
             .parse()
             .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
         let desired_remote = SocketAddr::new(bind_ip, new_cfg.app.remote_access_port);
-        let remote_changed = *self.remote_target_addr.lock().unwrap() != Some(desired_remote);
+        let remote_changed = *self
+            .remote_target_addr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            != Some(desired_remote);
 
         let prev_remote_pw = self
             .config
@@ -289,7 +310,10 @@ impl DownloadEngine {
                 "default-pair",
                 &sha256_str(&new_cfg.app.remote_access_password),
             )?;
-            if let Some(ref mut pair) = *self.remote_pairing.lock().unwrap()
+            if let Some(ref mut pair) = *self
+                .remote_pairing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 && let Ok(updated) = generate_pairing_info_with_secret(
                     &new_cfg.app.remote_control_server_id,
                     &existing_remote_host,
@@ -300,10 +324,15 @@ impl DownloadEngine {
                 *pair = updated;
             }
         }
-        *self.config.write().unwrap() = new_cfg.clone();
+        *self.config.write().unwrap_or_else(|e| e.into_inner()) = new_cfg.clone();
 
         if !new_cfg.app.enable_remote_access
-            || (remote_changed && self.remote_handle.lock().unwrap().is_some())
+            || (remote_changed
+                && self
+                    .remote_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some())
         {
             self.stop_remote_control();
         }
@@ -367,7 +396,7 @@ impl DownloadEngine {
 
     pub fn delete_tag(&self, tag_id: i64) -> Result<()> {
         self.db.delete_tag(tag_id)?;
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         for rec in list.iter_mut() {
             if rec.tags.contains(&tag_id) {
                 rec.tags.retain(|&t| t != tag_id);
@@ -379,7 +408,7 @@ impl DownloadEngine {
     }
 
     pub fn assign_tag(&self, download_id: DownloadId, tag_id: i64) -> Result<()> {
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         let rec = list
             .iter_mut()
             .find(|d| d.id == download_id)
@@ -396,7 +425,7 @@ impl DownloadEngine {
     }
 
     pub fn unassign_tag(&self, download_id: DownloadId, tag_id: i64) -> Result<()> {
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         let rec = list
             .iter_mut()
             .find(|d| d.id == download_id)
@@ -411,7 +440,7 @@ impl DownloadEngine {
     }
 
     pub fn list_downloads(&self, query: &FilterQuery) -> Vec<DownloadRecord> {
-        let items = self.downloads.read().unwrap();
+        let items = self.downloads.read().unwrap_or_else(|e| e.into_inner());
         let tags = self.db.list_tags().unwrap_or_default();
         filter_and_sort_downloads(&items, &tags, query)
     }
@@ -426,9 +455,12 @@ impl DownloadEngine {
     }
 
     pub fn summary(&self) -> EngineStateSummary {
-        let items = self.downloads.read().unwrap();
-        let cfg = self.config.read().unwrap();
-        let prev = *self.last_preventer.lock().unwrap();
+        let items = self.downloads.read().unwrap_or_else(|e| e.into_inner());
+        let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
+        let prev = *self
+            .last_preventer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut active_count = 0usize;
         let mut queued_count = 0usize;
         let mut paused_count = 0usize;
@@ -476,7 +508,12 @@ impl DownloadEngine {
     }
 
     pub fn speed_history(&self) -> Vec<(u64, u64)> {
-        self.speed_history.lock().unwrap().iter().copied().collect()
+        self.speed_history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .collect()
     }
 
     pub fn add_ssl_exception(&self, host_port: &str, sha256_fp: &str) -> Result<()> {
@@ -893,11 +930,14 @@ impl DownloadEngine {
             && remember_target_dir_preference(&mut cfg, &saved.url, &saved.target_dir)
         {
             let _ = self.db.save_config(&cfg);
-            *self.config.write().unwrap() = cfg;
+            *self.config.write().unwrap_or_else(|e| e.into_inner()) = cfg;
             let _ = self.events_tx.send(EngineEventAlias::SettingsUpdated);
         }
         {
-            self.downloads.write().unwrap().push(saved.clone());
+            self.downloads
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(saved.clone());
         }
         self.log_dl_mgmt(&format!(
             "Added download #{} ({}) -> {}",
@@ -937,7 +977,10 @@ impl DownloadEngine {
             let mut rec = self.draft_record(&req, &cfg);
             rec.flags.created_by_batch = true;
             let saved = self.db.next_download_id_and_insert(rec)?;
-            self.downloads.write().unwrap().push(saved.clone());
+            self.downloads
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(saved.clone());
             let _ = self
                 .events_tx
                 .send(EngineEventAlias::Added { id: saved.id });
@@ -1034,14 +1077,20 @@ impl DownloadEngine {
             rec.flags.created_by_batch = true;
             let saved = self.db.next_download_id_and_insert(rec)?;
             parent.children_ids.push(saved.id);
-            self.downloads.write().unwrap().push(saved.clone());
+            self.downloads
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(saved.clone());
             let _ = self
                 .events_tx
                 .send(EngineEventAlias::Added { id: saved.id });
             children.push(saved);
         }
         let _ = self.db.upsert_download(&parent);
-        self.downloads.write().unwrap().push(parent.clone());
+        self.downloads
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(parent.clone());
         let _ = self
             .events_tx
             .send(EngineEventAlias::Added { id: parent.id });
@@ -1052,11 +1101,16 @@ impl DownloadEngine {
     }
 
     pub async fn pause_download(self: &Arc<Self>, id: DownloadId) -> Result<()> {
-        if let Some(tx) = self.controls.lock().unwrap().get(&id) {
+        if let Some(tx) = self
+            .controls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+        {
             let _ = tx.send(ControlCommand::Pause);
         }
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
                 if !matches!(rec.state, DownloadState::Completed | DownloadState::Stopped)
                     && !rec.state.is_active()
@@ -1078,7 +1132,7 @@ impl DownloadEngine {
 
     pub async fn resume_download(self: &Arc<Self>, id: DownloadId) -> Result<()> {
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1100,11 +1154,16 @@ impl DownloadEngine {
     }
 
     pub async fn cancel_download(self: &Arc<Self>, id: DownloadId) -> Result<()> {
-        if let Some(tx) = self.controls.lock().unwrap().get(&id) {
+        if let Some(tx) = self
+            .controls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+        {
             let _ = tx.send(ControlCommand::Cancel);
         }
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             if let Some(rec) = list.iter_mut().find(|d| d.id == id)
                 && !rec.state.is_active()
             {
@@ -1129,7 +1188,7 @@ impl DownloadEngine {
     ) -> Result<()> {
         let _ = self.cancel_download(id).await;
         let removed = {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             list.iter()
                 .position(|d| d.id == id)
                 .map(|pos| list.remove(pos))
@@ -1148,8 +1207,14 @@ impl DownloadEngine {
                 }
             }
             self.db.remove_download(id)?;
-            self.controls.lock().unwrap().remove(&id);
-            self.pending_conflicts.lock().unwrap().remove(&id);
+            self.controls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            self.pending_conflicts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
             let _ = self.events_tx.send(EngineEventAlias::Removed { id });
         }
         Ok(())
@@ -1157,7 +1222,7 @@ impl DownloadEngine {
 
     pub async fn start_all(self: &Arc<Self>) -> Result<()> {
         let ids: Vec<DownloadId> = {
-            let list = self.downloads.read().unwrap();
+            let list = self.downloads.read().unwrap_or_else(|e| e.into_inner());
             list.iter()
                 .filter(|d| {
                     matches!(
@@ -1179,7 +1244,7 @@ impl DownloadEngine {
 
     pub async fn pause_all(self: &Arc<Self>) -> Result<()> {
         let ids: Vec<DownloadId> = {
-            let list = self.downloads.read().unwrap();
+            let list = self.downloads.read().unwrap_or_else(|e| e.into_inner());
             list.iter()
                 .filter(|d| d.state.is_running_or_seeding() || d.state == DownloadState::Queued)
                 .map(|d| d.id)
@@ -1193,7 +1258,7 @@ impl DownloadEngine {
 
     pub async fn set_priority(&self, id: DownloadId, priority: DownloadPriority) -> Result<()> {
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1210,7 +1275,7 @@ impl DownloadEngine {
         let trimmed = new_url.trim();
         let _ = Url::parse(trimmed).context("Invalid replacement URL")?;
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1230,7 +1295,7 @@ impl DownloadEngine {
         mirrors: Vec<String>,
     ) -> Result<()> {
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1245,7 +1310,7 @@ impl DownloadEngine {
 
     pub async fn toggle_sequential_play_asap(&self, id: DownloadId, enabled: bool) -> Result<()> {
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1264,7 +1329,7 @@ impl DownloadEngine {
         selected_indices: HashSet<usize>,
     ) -> Result<()> {
         let info_hash = {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1298,9 +1363,12 @@ impl DownloadEngine {
         id: DownloadId,
         action: FileExistsAction,
     ) -> Result<()> {
-        self.pending_conflicts.lock().unwrap().remove(&id);
+        self.pending_conflicts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
         let should_resume = {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1356,7 +1424,7 @@ impl DownloadEngine {
         expected: Option<&str>,
     ) -> Result<(String, Option<bool>)> {
         let path = {
-            let list = self.downloads.read().unwrap();
+            let list = self.downloads.read().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter()
                 .find(|d| d.id == id)
@@ -1373,7 +1441,7 @@ impl DownloadEngine {
         });
 
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1407,7 +1475,7 @@ impl DownloadEngine {
 
     pub async fn move_download_files(&self, id: DownloadId, dest_dir: &Path) -> Result<PathBuf> {
         let (src, file_name, partial_suffix, is_active) = {
-            let list = self.downloads.read().unwrap();
+            let list = self.downloads.read().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter()
                 .find(|d| d.id == id)
@@ -1460,7 +1528,7 @@ impl DownloadEngine {
             || dest_dir.join(format!("{}.part", file_name)).exists();
 
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
                 rec.target_dir = dest_dir.to_path_buf();
                 rec.flags.is_missing_files = !is_present;
@@ -1730,7 +1798,7 @@ impl DownloadEngine {
     pub async fn restart_download(self: &Arc<Self>, id: DownloadId) -> Result<()> {
         let _ = self.cancel_download(id).await;
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1762,7 +1830,7 @@ impl DownloadEngine {
     pub async fn rename_download_file(&self, id: DownloadId, new_name: &str) -> Result<PathBuf> {
         let cleaned = sanitize_filename(new_name);
         let (old_out, target_dir, file_name, partial_suffix, is_active) = {
-            let list = self.downloads.read().unwrap();
+            let list = self.downloads.read().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter()
                 .find(|d| d.id == id)
@@ -1809,7 +1877,7 @@ impl DownloadEngine {
             || target_dir.join(format!("{}.part", cleaned)).exists();
 
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             if let Some(rec) = list.iter_mut().find(|d| d.id == id) {
                 rec.file_name = cleaned.clone();
                 rec.title = cleaned;
@@ -1829,7 +1897,7 @@ impl DownloadEngine {
     ) -> Result<()> {
         let was_active;
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -1877,7 +1945,7 @@ impl DownloadEngine {
     }
 
     pub fn toggle_bt_disable_seeding(&self, id: DownloadId, val: bool) -> Result<()> {
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         let rec = list
             .iter_mut()
             .find(|d| d.id == id)
@@ -1890,7 +1958,7 @@ impl DownloadEngine {
     }
 
     pub fn toggle_bt_ignore_ratio(&self, id: DownloadId, val: bool) -> Result<()> {
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         let rec = list
             .iter_mut()
             .find(|d| d.id == id)
@@ -1903,7 +1971,7 @@ impl DownloadEngine {
     }
 
     pub fn toggle_disable_auto_retry(&self, id: DownloadId, allow_auto_retry: bool) -> Result<()> {
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         let rec = list
             .iter_mut()
             .find(|d| d.id == id)
@@ -2055,7 +2123,7 @@ impl DownloadEngine {
             let _ = self
                 .db
                 .save_rc_password_hash("default-pair", &sha256_str(&secret));
-            *self.config.write().unwrap() = cfg;
+            *self.config.write().unwrap_or_else(|e| e.into_inner()) = cfg;
             secret
         } else {
             let secret = cfg.app.remote_access_password.clone();
@@ -2073,8 +2141,12 @@ impl DownloadEngine {
         self.db.save_config(&cfg)?;
         self.db
             .save_rc_password_hash("default-pair", &sha256_str(&secret))?;
-        *self.config.write().unwrap() = cfg.clone();
-        if let Some(ref mut pair) = *self.remote_pairing.lock().unwrap() {
+        *self.config.write().unwrap_or_else(|e| e.into_inner()) = cfg.clone();
+        if let Some(ref mut pair) = *self
+            .remote_pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
             let host = Url::parse(&pair.https_url)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_string))
@@ -2093,7 +2165,11 @@ impl DownloadEngine {
     }
 
     pub fn export_downloads(&self, path: &Path) -> Result<usize> {
-        let items = self.downloads.read().unwrap().clone();
+        let items = self
+            .downloads
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let n = items.len();
         export_downloads_json(&items, path)?;
         Ok(n)
@@ -2116,7 +2192,10 @@ impl DownloadEngine {
                 DownloadState::Queued
             };
             let saved = self.db.next_download_id_and_insert(rec)?;
-            self.downloads.write().unwrap().push(saved.clone());
+            self.downloads
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(saved.clone());
             let _ = self
                 .events_tx
                 .send(EngineEventAlias::Added { id: saved.id });
@@ -2136,7 +2215,10 @@ impl DownloadEngine {
             rec.uuid = uuid::Uuid::new_v4().to_string();
             rec.state = DownloadState::Paused;
             let saved = self.db.next_download_id_and_insert(rec)?;
-            self.downloads.write().unwrap().push(saved.clone());
+            self.downloads
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(saved.clone());
             let _ = self
                 .events_tx
                 .send(EngineEventAlias::Added { id: saved.id });
@@ -2154,6 +2236,44 @@ impl DownloadEngine {
         self.update_config(cfg)
     }
 
+    pub fn check_disk_space(&self, path: &Path, min_bytes: u64, min_percent: f32) -> bool {
+        if min_bytes == 0 && min_percent <= 0.0 {
+            return true;
+        }
+        let now = std::time::Instant::now();
+        {
+            let cache = self
+                .disk_space_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some((cached_at, ok)) = cache.get(path)
+                && now.duration_since(*cached_at) < std::time::Duration::from_secs(5)
+            {
+                return *ok;
+            }
+        }
+        let ok = has_sufficient_disk_space(path, min_bytes, min_percent);
+        {
+            let mut cache = self
+                .disk_space_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            cache.insert(path.to_path_buf(), (now, ok));
+        }
+        ok
+    }
+
+    pub fn stop_supervisor(&self) {
+        if let Some(jh) = self
+            .supervisor_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            jh.abort();
+        }
+    }
+
     pub async fn schedule_queue(self: &Arc<Self>) {
         // Check low battery, network restrictions, and low disk space guards
         let cfg = self.get_config();
@@ -2162,33 +2282,48 @@ impl DownloadEngine {
             && pct < cfg.core.battery_min_level_percent
             && cfg.core.battery_min_level_percent > 0
         {
-            *self.last_preventer.lock().unwrap() = AutoStartPreventer::LowBattery;
+            *self
+                .last_preventer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = AutoStartPreventer::LowBattery;
             return;
         }
         let (is_cellular, is_roaming) = detect_network_restrictions().await;
         if is_roaming && !cfg.core.allow_roaming_networks {
-            *self.last_preventer.lock().unwrap() = AutoStartPreventer::NetworkRoaming;
+            *self
+                .last_preventer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = AutoStartPreventer::NetworkRoaming;
             return;
         }
         if is_cellular && !cfg.core.allow_mobile_networks {
-            *self.last_preventer.lock().unwrap() = AutoStartPreventer::NoAllowedNetworkInterface;
+            *self
+                .last_preventer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = AutoStartPreventer::NoAllowedNetworkInterface;
             return;
         }
-        if !has_sufficient_disk_space(
+        if !self.check_disk_space(
             &cfg.core.default_download_path,
             cfg.core.low_disk_space_min_bytes,
             cfg.core.low_disk_space_min_percent,
         ) {
-            *self.last_preventer.lock().unwrap() = AutoStartPreventer::LowDiskSpace;
+            *self
+                .last_preventer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = AutoStartPreventer::LowDiskSpace;
             return;
         }
-        *self.last_preventer.lock().unwrap() = AutoStartPreventer::None;
+        *self
+            .last_preventer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = AutoStartPreventer::None;
 
         let profile = cfg.active_profile();
         let base_max = profile.max_concurrent_downloads.max(1) as usize;
 
         let to_spawn: Vec<DownloadRecord> = {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let mut running_main = 0usize;
             let mut running_small = 0usize;
             let mut running_probe = 0usize;
@@ -2234,7 +2369,7 @@ impl DownloadEngine {
                     .enumerate()
                     .filter(|(_, d)| d.state == DownloadState::Queued)
                     .filter(|(_, d)| {
-                        has_sufficient_disk_space(
+                        self.check_disk_space(
                             &d.target_dir,
                             cfg.core.low_disk_space_min_bytes,
                             cfg.core.low_disk_space_min_percent,
@@ -2244,7 +2379,10 @@ impl DownloadEngine {
                     .collect();
                 let had_queued = list.iter().any(|d| d.state == DownloadState::Queued);
                 if had_queued && candidates.is_empty() {
-                    *self.last_preventer.lock().unwrap() = AutoStartPreventer::LowDiskSpace;
+                    *self
+                        .last_preventer
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = AutoStartPreventer::LowDiskSpace;
                 }
                 candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
 
@@ -2272,16 +2410,28 @@ impl DownloadEngine {
     fn spawn_worker(self: &Arc<Self>, rec: DownloadRecord) {
         let id = rec.id;
         let (tx, rx) = watch::channel(ControlCommand::Run);
-        self.controls.lock().unwrap().insert(id, tx);
+        self.controls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
 
         let eng = Arc::clone(self);
         let jh = tokio::spawn(async move {
             eng.run_single_download(rec, rx).await;
-            eng.controls.lock().unwrap().remove(&id);
-            eng.tasks.lock().unwrap().remove(&id);
+            eng.controls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            eng.tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
             eng.schedule_queue().await;
         });
-        self.tasks.lock().unwrap().insert(id, jh);
+        self.tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, jh);
     }
 
     async fn run_single_download(
@@ -2314,7 +2464,10 @@ impl DownloadEngine {
                         record.last_error =
                             Some(format!("File already exists: {}", target.display()));
                         record.abort_reason = DownloadAbortReason::AlreadyExists;
-                        self.pending_conflicts.lock().unwrap().insert(id);
+                        self.pending_conflicts
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(id);
                         self.sync_record_update(&record, true);
                         let _ = self
                             .events_tx
@@ -2352,7 +2505,7 @@ impl DownloadEngine {
             let now = tokio::time::Instant::now();
             let mut flush = false;
             {
-                let mut g = last_db_flush.lock().unwrap();
+                let mut g = last_db_flush.lock().unwrap_or_else(|e| e.into_inner());
                 if now.duration_since(*g).as_millis() >= 750 {
                     *g = now;
                     flush = true;
@@ -2669,7 +2822,7 @@ impl DownloadEngine {
 
     fn sync_record_update(&self, snapshot: &DownloadRecord, flush_db: bool) {
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             if let Some(slot) = list.iter_mut().find(|d| d.id == snapshot.id) {
                 *slot = snapshot.clone();
             }
@@ -2682,14 +2835,25 @@ impl DownloadEngine {
             .send(EngineEventAlias::Updated { id: snapshot.id });
     }
 
-    pub fn spawn_supervisor(self: &Arc<Self>) -> JoinHandle<()> {
+    pub fn spawn_supervisor(self: &Arc<Self>) -> tokio::task::AbortHandle {
+        let mut handle_guard = self
+            .supervisor_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = handle_guard.take() {
+            old.abort();
+        }
         let eng = Arc::clone(self);
-        tokio::spawn(async move {
+        let jh = tokio::spawn(async move {
             let mut tick_count: u64 = 0;
             let mut last_backup_tick: u64 = 0;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 tick_count += 1;
+
+                if tick_count.is_multiple_of(60) {
+                    let _ = eng.db.checkpoint_wal();
+                }
 
                 let cfg = eng.get_config();
                 if cfg.app.db_backup_interval_secs > 0
@@ -2725,7 +2889,7 @@ impl DownloadEngine {
                 let mut to_remove_expired = Vec::new();
 
                 {
-                    let mut list = eng.downloads.write().unwrap();
+                    let mut list = eng.downloads.write().unwrap_or_else(|e| e.into_inner());
                     let now_local = Local::now();
                     let now_utc = Utc::now();
 
@@ -2790,16 +2954,19 @@ impl DownloadEngine {
                 }
 
                 {
-                    let mut hist = eng.speed_history.lock().unwrap();
+                    let mut hist = eng.speed_history.lock().unwrap_or_else(|e| e.into_inner());
                     if hist.len() >= 120 {
                         hist.pop_front();
                     }
                     hist.push_back((dl_bps, ul_bps));
                 }
 
-                eng.sleep_preventer.lock().unwrap().update(prevent_sleep);
+                eng.sleep_preventer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .update(prevent_sleep);
 
-                let preventer = *eng.last_preventer.lock().unwrap();
+                let preventer = *eng.last_preventer.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = eng.events_tx.send(EngineEventAlias::QueueStats {
                     total_download_bps: dl_bps,
                     total_upload_bps: ul_bps,
@@ -2822,7 +2989,10 @@ impl DownloadEngine {
                     && let Some(ref watch_dir) = cfg.app.torrents_watch_folder
                 {
                     let items = {
-                        let mut seen = eng.seen_watch_files.lock().unwrap();
+                        let mut seen = eng
+                            .seen_watch_files
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         scan_torrent_watch_folder(watch_dir, &mut seen)
                     };
                     for item in items {
@@ -2834,7 +3004,10 @@ impl DownloadEngine {
 
                 eng.schedule_queue().await;
             }
-        })
+        });
+        let abort = jh.abort_handle();
+        *handle_guard = Some(jh);
+        abort
     }
 
     pub async fn start_ipc_listener(self: &Arc<Self>) -> Result<JoinHandle<()>> {
@@ -2870,12 +3043,26 @@ impl DownloadEngine {
             &secret,
         )?;
 
-        let prev_addr = *self.remote_target_addr.lock().unwrap();
-        if self.remote_handle.lock().unwrap().is_some() && prev_addr != Some(bind_addr) {
+        let prev_addr = *self
+            .remote_target_addr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self
+            .remote_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+            && prev_addr != Some(bind_addr)
+        {
             self.stop_remote_control();
         }
 
-        if self.remote_handle.lock().unwrap().is_none() {
+        if self
+            .remote_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+        {
             let db_clone = self.db.clone();
             let eng = Arc::clone(self);
             let cert_dir = self.data_dir.join("certs");
@@ -2904,13 +3091,22 @@ impl DownloadEngine {
                 bound_addr.port(),
                 &secret,
             )?;
-            *self.remote_pairing.lock().unwrap() = Some(updated_pair.clone());
-            *self.remote_handle.lock().unwrap() = Some(handle);
-            *self.remote_target_addr.lock().unwrap() = Some(bind_addr);
+            *self
+                .remote_pairing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(updated_pair.clone());
+            *self.remote_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+            *self
+                .remote_target_addr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(bind_addr);
             return Ok(updated_pair);
         }
 
-        *self.remote_pairing.lock().unwrap() = Some(pairing.clone());
+        *self
+            .remote_pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(pairing.clone());
         Ok(pairing)
     }
 
@@ -3028,7 +3224,7 @@ impl DownloadEngine {
     }
 
     pub fn set_schedule(&self, id: DownloadId, schedule: Option<ScheduleRule>) -> Result<()> {
-        let mut list = self.downloads.write().unwrap();
+        let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
         let rec = list
             .iter_mut()
             .find(|d| d.id == id)
@@ -3047,7 +3243,7 @@ impl DownloadEngine {
         priority: DownloadPriority,
     ) -> Result<()> {
         let (info_hash, selected_indices) = {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -3120,7 +3316,7 @@ impl DownloadEngine {
         let changed = etag_changed || lm_changed || size_changed;
 
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             if let Some(slot) = list.iter_mut().find(|d| d.id == id) {
                 slot.flags.can_detect_remote_changes = probe.etag.is_some()
                     || probe.last_modified.is_some()
@@ -3140,7 +3336,7 @@ impl DownloadEngine {
         let _ = self.pause_download(id).await;
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         {
-            let mut list = self.downloads.write().unwrap();
+            let mut list = self.downloads.write().unwrap_or_else(|e| e.into_inner());
             let rec = list
                 .iter_mut()
                 .find(|d| d.id == id)
@@ -3172,11 +3368,22 @@ impl DownloadEngine {
     }
 
     pub fn stop_remote_control(&self) {
-        if let Some(handle) = self.remote_handle.lock().unwrap().take() {
+        if let Some(handle) = self
+            .remote_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             handle.abort();
         }
-        *self.remote_target_addr.lock().unwrap() = None;
-        *self.remote_pairing.lock().unwrap() = None;
+        *self
+            .remote_target_addr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .remote_pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     pub fn remove_ssl_exception(&self, host_port: &str) -> Result<()> {
@@ -3185,6 +3392,19 @@ impl DownloadEngine {
 
     pub fn clear_ssl_exceptions(&self) -> Result<()> {
         self.db.clear_ssl_exceptions()
+    }
+}
+
+impl Drop for DownloadEngine {
+    fn drop(&mut self) {
+        if let Some(jh) = self
+            .supervisor_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            jh.abort();
+        }
     }
 }
 
@@ -3355,7 +3575,7 @@ mod tests {
 
         // Simulate conflict state
         {
-            let mut list = eng.downloads.write().unwrap();
+            let mut list = eng.downloads.write().unwrap_or_else(|e| e.into_inner());
             let d = list.iter_mut().find(|d| d.id == rec.id).unwrap();
             d.state = DownloadState::Paused;
             d.last_error = Some("File already exists: /tmp/file.bin".into());
@@ -3376,7 +3596,7 @@ mod tests {
 
         // Put back in conflict state
         {
-            let mut list = eng.downloads.write().unwrap();
+            let mut list = eng.downloads.write().unwrap_or_else(|e| e.into_inner());
             let d = list.iter_mut().find(|d| d.id == rec.id).unwrap();
             d.state = DownloadState::Paused;
             d.last_error = Some("File already exists".into());
@@ -3462,7 +3682,7 @@ mod tests {
 
         // Mark rec1 as Downloading (active)
         {
-            let mut list = eng.downloads.write().unwrap();
+            let mut list = eng.downloads.write().unwrap_or_else(|e| e.into_inner());
             let d1 = list.iter_mut().find(|d| d.id == rec1.id).unwrap();
             d1.state = DownloadState::Downloading;
             let d2 = list.iter_mut().find(|d| d.id == rec2.id).unwrap();
@@ -3617,7 +3837,7 @@ mod tests {
 
         // Run supervisor tick check logic
         {
-            let mut list = eng.downloads.write().unwrap();
+            let mut list = eng.downloads.write().unwrap_or_else(|e| e.into_inner());
             let mut to_remove_expired = Vec::new();
             for d in list.iter_mut() {
                 if d.state == DownloadState::Completed && d.download_type != DownloadType::Batch {

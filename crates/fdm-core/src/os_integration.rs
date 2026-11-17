@@ -211,7 +211,27 @@ pub fn sync_autorun_plist_in_dir(
     Ok(())
 }
 
-/// Sync login autorun item (macOS LaunchAgent plist; no-op on unsupported targets).
+pub fn linux_autostart_desktop_content(exe_path: &Path, minimized: bool) -> String {
+    let exec_cmd = if minimized {
+        format!("{} --hidden", exe_path.display())
+    } else {
+        format!("{}", exe_path.display())
+    };
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Ferrite DM\n\
+         Comment=Ferrite Download Manager\n\
+         Exec={exec_cmd}\n\
+         Icon=ferrite-dm\n\
+         Terminal=false\n\
+         Categories=Network;FileTransfer;\n\
+         StartupNotify=false\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
+}
+
+/// Sync login autorun item (macOS LaunchAgent plist; Linux ~/.config/autostart desktop entry).
 pub fn sync_autorun_on_login(enabled: bool, minimized: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -222,7 +242,22 @@ pub fn sync_autorun_on_login(enabled: bool, minimized: bool) -> Result<()> {
         let exe = std::env::current_exe()?;
         sync_autorun_plist_in_dir(&launch_agents, &exe, enabled, minimized)?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()) {
+            let autostart_dir = home.join(".config").join("autostart");
+            let desktop_file = autostart_dir.join("ferrite-dm.desktop");
+            if enabled {
+                std::fs::create_dir_all(&autostart_dir)?;
+                let exe = std::env::current_exe()?;
+                let content = linux_autostart_desktop_content(&exe, minimized);
+                std::fs::write(desktop_file, content)?;
+            } else if desktop_file.exists() {
+                std::fs::remove_file(desktop_file)?;
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (enabled, minimized);
     }
@@ -338,6 +373,54 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        let mut default_iface = None;
+        if let Ok(route_content) = std::fs::read_to_string("/proc/net/route") {
+            for line in route_content.lines().skip(1) {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                if fields.len() >= 2 && fields[1] == "00000000" {
+                    default_iface = Some(fields[0].to_string());
+                    break;
+                }
+            }
+        }
+
+        if let Some(iface) = default_iface {
+            let is_wwan = iface.starts_with("ww")
+                || iface.starts_with("cdc")
+                || iface.starts_with("ppp")
+                || iface.starts_with("lte");
+            if is_wwan {
+                cellular = true;
+            }
+        } else if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("ww") || name.starts_with("cdc") || name.starts_with("ppp") {
+                    if let Ok(operstate) = std::fs::read_to_string(entry.path().join("operstate")) {
+                        if operstate.trim() == "up" {
+                            cellular = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !cellular {
+            if let Ok(out) = Command::new("nmcli")
+                .args(["-t", "-f", "GENERAL.METERED", "dev", "show"])
+                .output()
+                .await
+            {
+                let txt = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+                if txt.contains("yes") {
+                    cellular = true;
+                }
+            }
+        }
+    }
 
     {
         let mut g = mutex.lock().unwrap_or_else(|e| e.into_inner());
@@ -369,7 +452,16 @@ pub fn send_os_notification(title: &str, body: &str) {
             .stderr(Stdio::null())
             .spawn();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args(["--app-name=Ferrite DM", "--icon=ferrite-dm", title, body])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (title, body);
     }
@@ -392,7 +484,33 @@ pub fn play_notification_sound(custom_path: Option<&Path>) {
                 .spawn();
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = custom_path.filter(|p| p.exists()) {
+            let _ = std::process::Command::new("paplay")
+                .arg(path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .or_else(|_| {
+                    std::process::Command::new("aplay")
+                        .arg(path)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                });
+        } else {
+            let _ = std::process::Command::new("canberra-gtk-play")
+                .args(["-i", "complete"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = custom_path;
     }
@@ -422,34 +540,82 @@ pub fn set_mark_of_the_web(path: &Path, source_url: &str, app_name: &str) -> Res
     Ok(())
 }
 
-/// Check macOS battery state: returns `(on_battery, battery_percentage)`.
+/// Check battery and power state: returns `(on_battery, battery_percentage)`.
 pub async fn check_power_status() -> (bool, u8) {
     #[cfg(target_os = "macos")]
-    {
-        if let Ok(out) = Command::new("pmset").args(["-g", "batt"]).output().await {
-            let txt = String::from_utf8_lossy(&out.stdout);
-            let on_battery = txt.contains("Battery Power");
-            let mut pct = 100u8;
-            for tok in txt.split_whitespace() {
-                if let Some(num) = tok.strip_suffix("%;") {
-                    if let Ok(v) = num.parse::<u8>() {
-                        pct = v;
-                        break;
-                    }
-                } else if let Some(num) = tok.strip_suffix('%')
-                    && let Ok(v) = num.parse::<u8>()
-                {
+    if let Ok(out) = Command::new("pmset").args(["-g", "batt"]).output().await {
+        let txt = String::from_utf8_lossy(&out.stdout);
+        let on_battery = txt.contains("Battery Power");
+        let mut pct = 100u8;
+        for tok in txt.split_whitespace() {
+            if let Some(num) = tok.strip_suffix("%;") {
+                if let Ok(v) = num.parse::<u8>() {
                     pct = v;
                     break;
                 }
+            } else if let Some(num) = tok.strip_suffix('%')
+                && let Ok(v) = num.parse::<u8>()
+            {
+                pct = v;
+                break;
             }
-            return (on_battery, pct);
         }
+        return (on_battery, pct);
     }
+    #[cfg(target_os = "linux")]
+    {
+        let mut on_battery = false;
+        let mut battery_capacity: Option<u8> = None;
+        let mut has_battery = false;
+        let mut ac_online: Option<bool> = None;
+
+        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let type_file = path.join("type");
+                let supply_type = std::fs::read_to_string(&type_file)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+
+                if supply_type == "mains" || supply_type.contains("ac") {
+                    if let Ok(online_str) = std::fs::read_to_string(path.join("online")) {
+                        if online_str.trim() == "1" {
+                            ac_online = Some(true);
+                        } else if online_str.trim() == "0" {
+                            ac_online = Some(false);
+                        }
+                    }
+                } else if supply_type == "battery" {
+                    has_battery = true;
+                    if let Ok(cap_str) = std::fs::read_to_string(path.join("capacity")) {
+                        if let Ok(v) = cap_str.trim().parse::<u8>() {
+                            battery_capacity = Some(battery_capacity.map_or(v, |old| old.min(v)));
+                        }
+                    }
+                    if let Ok(status_str) = std::fs::read_to_string(path.join("status")) {
+                        if status_str.trim().eq_ignore_ascii_case("discharging") {
+                            on_battery = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ac) = ac_online {
+            if !ac && has_battery {
+                on_battery = true;
+            }
+        }
+
+        let pct = battery_capacity.unwrap_or(100);
+        return (on_battery, pct);
+    }
+    #[allow(unreachable_code)]
     (false, 100)
 }
 
-/// Holds a macOS `caffeinate` child process while active downloads prevent auto-sleep.
+/// Holds a child process (macOS `caffeinate` or Linux `systemd-inhibit`) while active downloads prevent auto-sleep.
 #[derive(Debug, Default)]
 pub struct SleepPreventer {
     child: Option<std::process::Child>,
@@ -468,6 +634,30 @@ impl SleepPreventer {
                 let pid = std::process::id().to_string();
                 if let Ok(child) = std::process::Command::new("caffeinate")
                     .args(["-i", "-d", "-w", &pid])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    self.child = Some(child);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(ref mut c) = self.child
+                    && let Ok(None) = c.try_wait()
+                {
+                    return;
+                }
+                if let Ok(child) = std::process::Command::new("systemd-inhibit")
+                    .args([
+                        "--what=sleep:idle",
+                        "--who=FerriteDM",
+                        "--why=Active downloads",
+                        "--mode=block",
+                        "sleep",
+                        "infinity",
+                    ])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -580,7 +770,22 @@ pub async fn perform_shutdown_action(action: ShutdownType) -> Result<()> {
                 .await?;
             Ok(())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        ShutdownType::Sleep => {
+            Command::new("systemctl").arg("suspend").status().await?;
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        ShutdownType::Hibernate => {
+            Command::new("systemctl").arg("hibernate").status().await?;
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        ShutdownType::Shutdown => {
+            Command::new("systemctl").arg("poweroff").status().await?;
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         _ => Ok(()),
     }
 }

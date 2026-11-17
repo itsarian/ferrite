@@ -442,7 +442,7 @@ impl BtSessionManager {
             || (default_stop_when_done && !record.flags.bt_ignore_upload_ratio);
 
         loop {
-            let cmd = control_rx.borrow().clone();
+            let cmd = control_rx.borrow_and_update().clone();
             match cmd {
                 ControlCommand::Pause => {
                     let _ = self.session.pause(&handle).await;

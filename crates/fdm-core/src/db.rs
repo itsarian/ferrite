@@ -229,10 +229,10 @@ impl Database {
             params![final_json, new_id],
         )?;
         for &tag_id in &record.tags {
-            let _ = tx.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO downloads_tags (download_id, tag_id) VALUES (?1, ?2)",
                 params![new_id, tag_id],
-            );
+            )?;
         }
         tx.commit()?;
         Ok(record)
@@ -278,10 +278,10 @@ impl Database {
             params![record.id],
         )?;
         for &tag_id in &record.tags {
-            let _ = tx.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO downloads_tags (download_id, tag_id) VALUES (?1, ?2)",
                 params![record.id, tag_id],
-            );
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -593,6 +593,12 @@ impl Database {
     pub fn vacuum(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("VACUUM;")?;
+        Ok(())
+    }
+
+    pub fn checkpoint_wal(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
 }

@@ -103,8 +103,22 @@ impl IpcResponse {
     }
 }
 
+pub fn normalize_socket_path(path: &Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        // Standard sockaddr_un sun_path limit is 104 bytes on macOS/BSD and 108 bytes on Linux.
+        // We enforce <= 103 bytes (leaving room for null terminator).
+        if path.as_os_str().as_bytes().len() >= 104 {
+            let hash = sha256_str(&path.to_string_lossy());
+            return PathBuf::from(format!("/tmp/ferrite-{}.sock", &hash[..16]));
+        }
+    }
+    path.to_path_buf()
+}
+
 pub fn default_socket_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("ferrite.sock")
+    normalize_socket_path(&data_dir.join("ferrite.sock"))
 }
 
 #[cfg(windows)]
@@ -125,7 +139,7 @@ pub struct IpcClient {
 impl IpcClient {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
-            socket_path: socket_path.into(),
+            socket_path: normalize_socket_path(&socket_path.into()),
         }
     }
 
@@ -192,6 +206,7 @@ where
     F: Fn(IpcRequest) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = IpcResponse> + Send + 'static,
 {
+    let socket_path = normalize_socket_path(&socket_path);
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -794,5 +809,23 @@ mod tests {
         assert!(!cfg.app.wb_forward_aborted_to_browser);
         assert_eq!(cfg.app.wb_too_small_size_bytes, 204800);
         assert_eq!(cfg.app.wb_unwanted_extensions, vec!["tmp", "log"]);
+    }
+
+    #[test]
+    fn socket_path_fallback_for_long_paths() {
+        let long_dir = PathBuf::from(
+            "/tmp/very_long_path_that_exceeds_the_standard_unix_sun_path_limit_of_one_hundred_and_four_bytes_by_far_for_testing/ferrite-data",
+        );
+        let sock = default_socket_path(&long_dir);
+        #[cfg(unix)]
+        {
+            assert!(sock.to_string_lossy().starts_with("/tmp/ferrite-"));
+            assert!(sock.to_string_lossy().ends_with(".sock"));
+            assert!(sock.to_string_lossy().len() < 104);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = sock;
+        }
     }
 }

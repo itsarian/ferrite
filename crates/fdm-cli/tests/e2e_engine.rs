@@ -88,6 +88,8 @@ async fn e2e_http_download_batch_tags_ipc_and_native_host() {
     let eng = DownloadEngine::open(tmp.join("data"), true).unwrap();
     let mut cfg = eng.get_config();
     cfg.core.default_download_path = tmp.join("downloads");
+    cfg.core.low_disk_space_min_bytes = 0;
+    cfg.core.low_disk_space_min_percent = 0.0;
     eng.update_config(cfg).unwrap();
 
     let sup = eng.spawn_supervisor();
@@ -223,6 +225,11 @@ async fn e2e_engine_hls_aes128_stream() {
     });
 
     let eng = DownloadEngine::open(tmp.join("data"), true).unwrap();
+    let mut cfg = eng.get_config();
+    cfg.core.default_download_path = tmp.join("downloads");
+    cfg.core.low_disk_space_min_bytes = 0;
+    cfg.core.low_disk_space_min_percent = 0.0;
+    eng.update_config(cfg).unwrap();
     let sup = eng.spawn_supervisor();
     let mut req = NewDownloadRequest::from_url(format!("http://{addr}/stream.m3u8"));
     req.target_dir = Some(tmp.join("downloads"));

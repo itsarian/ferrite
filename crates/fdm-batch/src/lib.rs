@@ -1,8 +1,11 @@
 use anyhow::{Result, bail};
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 const MAX_BATCH_URLS: usize = 10_000;
+
+static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\[[^\]]+\]|\{[^}]+\})").unwrap());
 
 /// Expand FDM-style batch URL patterns:
 /// - Numeric ranges with optional zero-padding and step: `[1-10]`, `[001-020:2]`
@@ -16,11 +19,10 @@ pub fn expand_batch_pattern(template: &str) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
-    let token_re = Regex::new(r"(\[[^\]]+\]|\{[^}]+\})").unwrap();
     let mut results = vec![String::new()];
     let mut last_end = 0;
 
-    for m in token_re.find_iter(input) {
+    for m in TOKEN_RE.find_iter(input) {
         let literal = &input[last_end..m.start()];
         for r in &mut results {
             r.push_str(literal);
