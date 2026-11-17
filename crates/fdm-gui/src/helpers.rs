@@ -652,29 +652,30 @@ pub fn open_path_os(path: &Path) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         // Primary: xdg-open (standard Freedesktop launcher)
-        if let Ok(mut child) = Command::new("xdg-open").arg(path).spawn() {
-            if let Ok(status) = child.wait() {
-                if status.success() {
-                    return Ok(());
-                }
-            }
+        if Command::new("xdg-open")
+            .arg(path)
+            .status()
+            .map_or(false, |s| s.success())
+        {
+            return Ok(());
         }
         // Fallback: gio open (GLib / GNOME standard)
-        if let Ok(mut child) = Command::new("gio").args(["open"]).arg(path).spawn() {
-            if let Ok(status) = child.wait() {
-                if status.success() {
-                    return Ok(());
-                }
-            }
+        if Command::new("gio")
+            .args(["open"])
+            .arg(path)
+            .status()
+            .map_or(false, |s| s.success())
+        {
+            return Ok(());
         }
         // Fallback: kde-open / kde-open5 (KDE Plasma)
         for opener in &["kde-open5", "kde-open"] {
-            if let Ok(mut child) = Command::new(opener).arg(path).spawn() {
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return Ok(());
-                    }
-                }
+            if Command::new(opener)
+                .arg(path)
+                .status()
+                .map_or(false, |s| s.success())
+            {
+                return Ok(());
             }
         }
         anyhow::bail!(
@@ -721,7 +722,7 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                 .unwrap_or_else(|_| format!("file://{}", abs_path.display()));
 
             // Attempt DBus org.freedesktop.FileManager1.ShowItems via dbus-send
-            if let Ok(mut child) = Command::new("dbus-send")
+            if Command::new("dbus-send")
                 .args([
                     "--session",
                     "--dest=org.freedesktop.FileManager1",
@@ -731,17 +732,14 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                     &format!("array:string:{}", file_uri),
                     "string:",
                 ])
-                .spawn()
+                .status()
+                .map_or(false, |s| s.success())
             {
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return Ok(());
-                    }
-                }
+                return Ok(());
             }
 
             // Attempt DBus org.freedesktop.FileManager1.ShowItems via gdbus
-            if let Ok(mut child) = Command::new("gdbus")
+            if Command::new("gdbus")
                 .args([
                     "call",
                     "--session",
@@ -754,17 +752,14 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                     &format!("['{}']", file_uri),
                     "",
                 ])
-                .spawn()
+                .status()
+                .map_or(false, |s| s.success())
             {
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return Ok(());
-                    }
-                }
+                return Ok(());
             }
 
             // Attempt DBus org.freedesktop.FileManager1.ShowItems via busctl
-            if let Ok(mut child) = Command::new("busctl")
+            if Command::new("busctl")
                 .args([
                     "--user",
                     "call",
@@ -778,13 +773,10 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                     "s",
                     "",
                 ])
-                .spawn()
+                .status()
+                .map_or(false, |s| s.success())
             {
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return Ok(());
-                    }
-                }
+                return Ok(());
             }
         }
 
