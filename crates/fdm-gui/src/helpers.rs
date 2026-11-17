@@ -388,7 +388,39 @@ pub fn update_macos_dock_badge(label: Option<&str>) {
         }
         pool.drain();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux desktop environments supporting Unity LauncherEntry (Ubuntu Dock,
+        // GNOME Dash-to-Dock, KDE Task Manager), update the application badge count via DBus.
+        if let Some(txt) = label {
+            if let Ok(count) = txt.parse::<i64>() {
+                let _ = Command::new("dbus-send")
+                    .args([
+                        "--type=method_call",
+                        "--dest=com.canonical.Unity",
+                        "/com/canonical/unity/launcherentry",
+                        "com.canonical.Unity.LauncherEntry.Update",
+                        "string:application://ferrite-dm.desktop",
+                        &format!(
+                            "dict:string:variant:count,int64:{count},count-visible,boolean:true"
+                        ),
+                    ])
+                    .spawn();
+            }
+        } else {
+            let _ = Command::new("dbus-send")
+                .args([
+                    "--type=method_call",
+                    "--dest=com.canonical.Unity",
+                    "/com/canonical/unity/launcherentry",
+                    "com.canonical.Unity.LauncherEntry.Update",
+                    "string:application://ferrite-dm.desktop",
+                    "dict:string:variant:count-visible,boolean:false",
+                ])
+                .spawn();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = label;
     }
@@ -412,7 +444,13 @@ pub fn set_macos_hide_dock_icon(hide: bool) {
             let _: bool = msg_send![app, setActivationPolicy: policy];
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, dock/taskbar visibility is managed by window manager state hints
+        // and .desktop file integration. Safe stub.
+        let _ = hide;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = hide;
     }
@@ -446,6 +484,22 @@ pub fn macos_restore_windows_and_activate() {
             let _: () = msg_send![app, activateIgnoringOtherApps: YES];
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        // Under X11, attempt window activation via wmctrl or xdotool
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
+            let _ = Command::new("wmctrl")
+                .args(["-x", "-a", "ferrite-dm"])
+                .spawn()
+                .or_else(|_| {
+                    Command::new("xdotool")
+                        .args(["search", "--class", "ferrite-dm", "windowactivate"])
+                        .spawn()
+                });
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {}
 }
 
 #[allow(deprecated, unexpected_cfgs)]
@@ -470,6 +524,16 @@ pub fn macos_hide_all_windows() {
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
+            let _ = Command::new("xdotool")
+                .args(["search", "--class", "ferrite-dm", "windowminimize"])
+                .spawn();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {}
 }
 
 #[allow(deprecated, unexpected_cfgs)]
@@ -485,6 +549,12 @@ pub fn macos_unhide_all_applications() {
             let _: () = msg_send![app, unhideAllApplications: nil];
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        macos_restore_windows_and_activate();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {}
 }
 
 #[allow(deprecated, unexpected_cfgs)]
@@ -520,6 +590,12 @@ pub fn macos_bring_all_to_front() {
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        macos_restore_windows_and_activate();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {}
 }
 
 pub fn count_by_state_filter(all: &[DownloadRecord], filter: StateFilter) -> usize {
@@ -564,25 +640,50 @@ pub fn detect_lan_ip() -> String {
 
 pub fn open_path_os(path: &Path) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = Command::new("open");
-        c.arg(path);
-        c
-    };
+    {
+        let mut cmd = Command::new("open");
+        cmd.arg(path);
+        let status = cmd.status()?;
+        if !status.success() {
+            anyhow::bail!("Failed to open {}", path.display());
+        }
+        Ok(())
+    }
     #[cfg(target_os = "linux")]
-    let mut cmd = {
-        let mut c = Command::new("xdg-open");
-        c.arg(path);
-        c
-    };
+    {
+        // Primary: xdg-open (standard Freedesktop launcher)
+        if let Ok(mut child) = Command::new("xdg-open").arg(path).spawn() {
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+        // Fallback: gio open (GLib / GNOME standard)
+        if let Ok(mut child) = Command::new("gio").args(["open"]).arg(path).spawn() {
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+        // Fallback: kde-open / kde-open5 (KDE Plasma)
+        for opener in &["kde-open5", "kde-open"] {
+            if let Ok(mut child) = Command::new(opener).arg(path).spawn() {
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        anyhow::bail!(
+            "Failed to open {} with xdg-open/gio/kde-open",
+            path.display()
+        );
+    }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     anyhow::bail!("OS open is not implemented on this platform");
-
-    let status = cmd.status()?;
-    if !status.success() {
-        anyhow::bail!("Failed to open {}", path.display());
-    }
-    Ok(())
 }
 
 pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
@@ -602,7 +703,100 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        if path.exists() {
+            let abs_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else if let Ok(canon) = path.canonicalize() {
+                canon
+            } else if let Ok(cwd) = std::env::current_dir() {
+                cwd.join(path)
+            } else {
+                path.to_path_buf()
+            };
+
+            let file_uri = url::Url::from_file_path(&abs_path)
+                .map(|u| u.to_string())
+                .unwrap_or_else(|_| format!("file://{}", abs_path.display()));
+
+            // Attempt DBus org.freedesktop.FileManager1.ShowItems via dbus-send
+            if let Ok(mut child) = Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &format!("array:string:{}", file_uri),
+                    "string:",
+                ])
+                .spawn()
+            {
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Attempt DBus org.freedesktop.FileManager1.ShowItems via gdbus
+            if let Ok(mut child) = Command::new("gdbus")
+                .args([
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.freedesktop.FileManager1",
+                    "--object-path",
+                    "/org/freedesktop/FileManager1",
+                    "--method",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &format!("['{}']", file_uri),
+                    "",
+                ])
+                .spawn()
+            {
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Attempt DBus org.freedesktop.FileManager1.ShowItems via busctl
+            if let Ok(mut child) = Command::new("busctl")
+                .args([
+                    "--user",
+                    "call",
+                    "org.freedesktop.FileManager1",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1",
+                    "ShowItems",
+                    "as",
+                    "1",
+                    &file_uri,
+                    "s",
+                    "",
+                ])
+                .spawn()
+            {
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Safe fallback: open the parent directory or target path using open_path_os (xdg-open)
+        let target = if path.is_file() {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        };
+        open_path_os(target)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let target = path.parent().unwrap_or(path);
         open_path_os(target)

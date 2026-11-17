@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.ferrite_dm.FerriteDM</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>Ferrite DM</name>
+  <summary>High-performance, multi-protocol download manager and accelerator</summary>
+  <description>
+    <p>
+      Ferrite DM is a fast, telemetry-free download accelerator written in Rust.
+      It combines an ultra-fast asynchronous core with a sleek, GPU-accelerated
+      graphical interface designed to replace legacy tools like Free Download Manager (FDM).
+    </p>
+    <p>Key Features:</p>
+    <ul>
+      <li>High-throughput multi-connection HTTP/HTTPS downloads with dynamic byte-range splitting</li>
+      <li>Full BitTorrent client featuring sequential downloading, piece streaming, and magnet link handling</li>
+      <li>Native HLS (m3u8) video stream capturing and parallel segment downloading</li>
+      <li>Automated wildcard batch downloads and URL sequence expansion</li>
+      <li>Cross-browser Native Messaging integration for Chrome, Firefox, Edge, Brave, and Opera</li>
+      <li>Daemon mode with local Unix IPC and optional encrypted LAN remote control</li>
+      <li>Zero telemetry, zero ads, and 100% open source</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">ferrite-dm.desktop</launchable>
+  <icon type="stock">ferrite-dm</icon>
+  <provides>
+    <binary>fdm-gui</binary>
+    <binary>ferrite-dm</binary>
+    <binary>ferrite-native-host</binary>
+    <mediatype>application/x-bittorrent</mediatype>
+    <mediatype>x-scheme-handler/magnet</mediatype>
+    <mediatype>x-scheme-handler/http</mediatype>
+    <mediatype>x-scheme-handler/https</mediatype>
+  </provides>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main window displaying active downloads, real-time speed charts, and media preview</caption>
+      <image>https://raw.githubusercontent.com/itsarian/ferrite-dm/main/resources/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/itsarian/ferrite-dm</url>
+  <url type="bugtracker">https://github.com/itsarian/ferrite-dm/issues</url>
+  <url type="vcs-browser">https://github.com/itsarian/ferrite-dm</url>
+  <developer id="io.ferrite_dm">
+    <name>Ferrite DM Maintainers</name>
+  </developer>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+    <category>P2P</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.1" date="2026-11-17">
+      <description>
+        <p>Comprehensive multi-distribution Linux GUI support and packaging release.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-11-10">
+      <description>
+        <p>Initial release with HTTP engine, BitTorrent sequential streaming, and macOS desktop app.</p>
+      </description>
+    </release>
+  </releases>
+</component>

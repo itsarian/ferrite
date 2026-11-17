@@ -149,3 +149,4 @@ jobs:
           test -x scripts/package-linux-deb.sh
           test -x scripts/package-linux-rpm.sh
           test -x scripts/package-linux-appimage.sh
+          test -x scripts/package-linux-tarball.sh

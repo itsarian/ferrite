@@ -19,4 +19,5 @@ edition = "2024"
 
 [patch.crates-io]
 librqbit-utp = { git = "https://github.com/ikatson/librqbit-utp", branch = "main" }
+xattr = { path = "patches/xattr" }
 

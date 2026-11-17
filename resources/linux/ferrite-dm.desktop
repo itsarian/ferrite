@@ -1,0 +1,35 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=Ferrite DM
+GenericName=Download Manager
+Comment=High-performance, multi-protocol download manager and accelerator
+Exec=fdm-gui %U
+Icon=ferrite-dm
+Terminal=false
+StartupNotify=true
+StartupWMClass=ferrite-dm
+Categories=Network;FileTransfer;P2P;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/magnet;application/x-bittorrent;application/vnd.apple.mpegurl;application/x-mpegurl;
+Keywords=download;accelerator;torrent;bittorrent;hls;batch;manager;transfer;daemon;
+Actions=NewDownload;OpenDownloadsFolder;DaemonMode;CLIStatus;
+
+[Desktop Action NewDownload]
+Name=New Download
+Exec=fdm-gui
+Icon=ferrite-dm
+
+[Desktop Action OpenDownloadsFolder]
+Name=Open Downloads Folder
+Exec=xdg-open Downloads
+
+[Desktop Action DaemonMode]
+Name=Start Background Daemon
+Exec=ferrite-dm daemon
+Icon=ferrite-dm
+
+[Desktop Action CLIStatus]
+Name=Check Status (CLI)
+Exec=ferrite-dm status
+Terminal=true
+Icon=ferrite-dm

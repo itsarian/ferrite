@@ -166,3 +166,54 @@ if task.terminationStatus == 0 {
 } else {
     print("Failed to run iconutil")
 }
+
+// Generate Linux Freedesktop hicolor icon hierarchy
+let linuxSizes: [Int] = [16, 32, 48, 64, 128, 256, 512, 1024]
+for px in linuxSizes {
+    let iconDir = "\(outDir)/linux/icons/hicolor/\(px)x\(px)/apps"
+    try? FileManager.default.createDirectory(atPath: iconDir, withIntermediateDirectories: true)
+    let resized = NSImage(size: NSSize(width: px, height: px))
+    resized.lockFocus()
+    image.draw(in: NSRect(x: 0, y: 0, width: px, height: px),
+               from: NSRect(x: 0, y: 0, width: size, height: size),
+               operation: .copy,
+               fraction: 1.0)
+    resized.unlockFocus()
+    if let rTiff = resized.tiffRepresentation,
+       let rRep = NSBitmapImageRep(data: rTiff),
+       let rPng = rRep.representation(using: .png, properties: [:]) {
+        try? rPng.write(to: URL(fileURLWithPath: "\(iconDir)/ferrite-dm.png"))
+    }
+}
+
+// Write scalable SVG icon
+let scalableDir = "\(outDir)/linux/icons/hicolor/scalable/apps"
+try? FileManager.default.createDirectory(atPath: scalableDir, withIntermediateDirectories: true)
+let svgContent = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="fdm-grad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#1F61E0"/>
+      <stop offset="50%" stop-color="#147BF5"/>
+      <stop offset="100%" stop-color="#0DA6FA"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.2"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="symbol-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#fdm-grad)" filter="url(#shadow)"/>
+  <path d="M 100 285 C 100 183 183 100 285 100 L 739 100 C 841 100 924 183 924 285 L 924 380 L 100 380 Z" fill="url(#sheen)"/>
+  <g transform="translate(282, 292) scale(19.166667)" filter="url(#symbol-shadow)">
+    <path fill="#ffffff" fill-rule="evenodd" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 5v6.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 1.4-1.42l2.3 2.3V7a1 1 0 1 1 2 0zM7 17.5a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1z"/>
+  </g>
+</svg>
+"""
+try? svgContent.write(to: URL(fileURLWithPath: "\(scalableDir)/ferrite-dm.svg"), atomically: true, encoding: .utf8)
+print("Generated Linux hicolor icons and scalable SVG in \(outDir)/linux/icons/hicolor")

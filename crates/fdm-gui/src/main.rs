@@ -66,6 +66,15 @@ fn main() {
     let rt_for_app = Arc::clone(&rt);
     let eng_for_app = Arc::clone(&engine);
 
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
+            eprintln!(
+                "[ferrite-gui] Warning: Neither WAYLAND_DISPLAY nor DISPLAY is set. Display initialization may fail."
+            );
+        }
+    }
+
     let gpui_app = Application::new().with_assets(FerriteAssets);
     gpui_app.on_reopen(|cx| {
         macos_restore_windows_and_activate();
@@ -83,13 +92,24 @@ fn main() {
         .detach();
 
         let bounds = Bounds::centered(None, size(px(1220.0), px(808.0)), cx);
-        let opts = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
+        let titlebar = if cfg!(target_os = "macos") {
+            Some(TitlebarOptions {
                 title: Some("Ferrite DM".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(gpui::point(px(12.), px(8.))),
-            }),
+            })
+        } else {
+            Some(TitlebarOptions {
+                title: Some("Ferrite DM".into()),
+                appears_transparent: false,
+                traffic_light_position: None,
+            })
+        };
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar,
+            app_id: Some("ferrite-dm".into()),
+            window_decorations: Some(gpui::WindowDecorations::Server),
             show: !launch_for_app.hidden,
             ..Default::default()
         };

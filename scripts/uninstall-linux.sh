@@ -1,0 +1,79 @@
+#!/bin/bash
+set -euo pipefail
+
+# Ferrite DM Linux Uninstaller
+# Removes binaries, desktop launchers, AppStream metadata, and icons.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PREFIX="${PREFIX:-}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --prefix)
+            PREFIX="$2"
+            shift 2
+            ;;
+        --prefix=*)
+            PREFIX="${1#*=}"
+            shift
+            ;;
+        --user)
+            PREFIX="$HOME/.local"
+            shift
+            ;;
+        --system)
+            PREFIX="/usr/local"
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--user | --system | --prefix <path>]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--user | --system | --prefix <path>]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$PREFIX" ]; then
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        PREFIX="/usr/local"
+    elif [ -w "/usr/local/bin" ]; then
+        PREFIX="/usr/local"
+    else
+        PREFIX="$HOME/.local"
+    fi
+fi
+
+BIN_DIR="$PREFIX/bin"
+DATA_DIR="$PREFIX/share"
+APP_DIR="$DATA_DIR/applications"
+META_DIR="$DATA_DIR/metainfo"
+ICON_BASE="$DATA_DIR/icons/hicolor"
+
+echo "==> Uninstalling Ferrite DM from prefix: $PREFIX"
+
+# Remove binaries
+rm -f "$BIN_DIR/fdm-gui" "$BIN_DIR/ferrite-dm" "$BIN_DIR/ferrite-native-host"
+
+# Remove desktop entry and AppStream metadata
+rm -f "$APP_DIR/ferrite-dm.desktop"
+rm -f "$META_DIR/io.ferrite_dm.FerriteDM.metainfo.xml"
+
+# Remove icons
+for size in 16 32 48 64 128 256 512 1024; do
+    rm -f "$ICON_BASE/${size}x${size}/apps/ferrite-dm.png"
+done
+rm -f "$ICON_BASE/scalable/apps/ferrite-dm.svg"
+
+# Update caches
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APP_DIR" 2>/dev/null || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f "$ICON_BASE" 2>/dev/null || true
+fi
+
+echo "==> Ferrite DM uninstalled cleanly."

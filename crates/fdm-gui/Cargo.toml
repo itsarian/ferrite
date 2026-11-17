@@ -23,3 +23,6 @@ url = "2.5"
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { version = "0.2.2", features = ["wayland", "x11"] }

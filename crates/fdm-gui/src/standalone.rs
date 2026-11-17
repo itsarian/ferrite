@@ -37,13 +37,24 @@ pub fn open_standalone_add_window(
     cx: &mut App,
 ) {
     let bounds = Bounds::centered(None, size(px(580.0), px(590.0)), cx);
-    let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
+    let titlebar = if cfg!(target_os = "macos") {
+        Some(TitlebarOptions {
             title: Some("Add Download — Ferrite DM".into()),
             appears_transparent: true,
             traffic_light_position: Some(gpui::point(px(12.), px(8.))),
-        }),
+        })
+    } else {
+        Some(TitlebarOptions {
+            title: Some("Add Download — Ferrite DM".into()),
+            appears_transparent: false,
+            traffic_light_position: None,
+        })
+    };
+    let opts = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar,
+        app_id: Some("ferrite-dm".into()),
+        window_decorations: Some(gpui::WindowDecorations::Server),
         ..Default::default()
     };
     let _ = cx.open_window(opts, move |window, cx| {
@@ -58,13 +69,24 @@ pub fn open_standalone_download_window(
     cx: &mut App,
 ) {
     let bounds = Bounds::centered(None, size(px(540.0), px(340.0)), cx);
-    let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
+    let titlebar = if cfg!(target_os = "macos") {
+        Some(TitlebarOptions {
             title: Some(format!("Download #{id} — Ferrite DM").into()),
             appears_transparent: true,
             traffic_light_position: Some(gpui::point(px(12.), px(8.))),
-        }),
+        })
+    } else {
+        Some(TitlebarOptions {
+            title: Some(format!("Download #{id} — Ferrite DM").into()),
+            appears_transparent: false,
+            traffic_light_position: None,
+        })
+    };
+    let opts = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar,
+        app_id: Some("ferrite-dm".into()),
+        window_decorations: Some(gpui::WindowDecorations::Server),
         ..Default::default()
     };
     let _ = cx.open_window(opts, move |window, cx| {

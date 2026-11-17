@@ -182,7 +182,24 @@ impl ThemePalette {
             }
             Self::light()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(out) = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+                .output()
+            {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains("prefer-light")
+                    || (stdout.contains("default") && !stdout.contains("prefer-dark"))
+                {
+                    return Self::light();
+                } else if stdout.contains("prefer-dark") {
+                    return Self::dark();
+                }
+            }
+            Self::dark()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             Self::dark()
         }

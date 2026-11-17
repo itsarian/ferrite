@@ -189,27 +189,12 @@ jobs:
 
       - name: Package Linux Standalone Tarball
         shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.metadata.outputs.version }}"
-          STAGE="dist/linux-stage/ferrite-dm-${VERSION}"
-          mkdir -p "$STAGE" dist
-
-          cp target/release/fdm-gui "$STAGE/"
-          cp target/release/ferrite-dm "$STAGE/"
-          cp target/release/ferrite-native-host "$STAGE/"
-          cp scripts/install-cli.sh "$STAGE/install.sh"
-          cp scripts/uninstall-cli.sh "$STAGE/uninstall.sh"
-          cp scripts/install-cli.sh "$STAGE/install-cli.sh"
-          cp scripts/uninstall-cli.sh "$STAGE/uninstall-cli.sh"
-          cp README.md "$STAGE/" 2>/dev/null || true
-          cp LICENSE* "$STAGE/" 2>/dev/null || true
-
-          chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/install-cli.sh" "$STAGE/uninstall-cli.sh" \
-                   "$STAGE/fdm-gui" "$STAGE/ferrite-dm" "$STAGE/ferrite-native-host"
-
-          TAR_NAME="ferrite-dm-${VERSION}-linux-x86_64.tar.gz"
-          tar -czf "dist/$TAR_NAME" -C dist/linux-stage "ferrite-dm-${VERSION}"
+          chmod +x scripts/*.sh
+          ./scripts/package-linux-tarball.sh --skip-build
 
       - name: Package Linux .deb (Debian/Ubuntu)
         shell: bash
@@ -217,8 +202,8 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          chmod +x scripts/package-linux-deb.sh
-          ./scripts/package-linux-deb.sh
+          chmod +x scripts/*.sh
+          ./scripts/package-linux-deb.sh --skip-build
 
       - name: Package Linux .rpm (Fedora/RHEL/openSUSE)
         shell: bash
@@ -226,8 +211,8 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          chmod +x scripts/package-linux-rpm.sh
-          ./scripts/package-linux-rpm.sh
+          chmod +x scripts/*.sh
+          ./scripts/package-linux-rpm.sh --skip-build
 
       - name: Package Linux .AppImage (Universal)
         shell: bash
@@ -235,18 +220,18 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          chmod +x scripts/package-linux-appimage.sh
-          ./scripts/package-linux-appimage.sh
+          chmod +x scripts/*.sh
+          ./scripts/package-linux-appimage.sh --skip-build
 
       - name: Upload Linux Release Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
           path: |
-            dist/ferrite-dm-*-linux-x86_64.tar.gz
-            dist/ferrite-dm-*-linux-x86_64.deb
-            dist/ferrite-dm-*-linux-x86_64.rpm
-            dist/ferrite-dm-*-linux-x86_64.AppImage
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
           retention-days: 1
           if-no-files-found: error
 
