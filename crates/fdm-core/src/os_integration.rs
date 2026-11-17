@@ -378,9 +378,11 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
         let mut default_iface = None;
         if let Ok(route_content) = std::fs::read_to_string("/proc/net/route") {
             for line in route_content.lines().skip(1) {
-                let fields: Vec<&str> = line.split_whitespace().collect();
-                if fields.len() >= 2 && fields[1] == "00000000" {
-                    default_iface = Some(fields[0].to_string());
+                let mut fields = line.split_whitespace();
+                let iface = fields.next();
+                let dest = fields.next();
+                if dest == Some("00000000") {
+                    default_iface = iface.map(|s| s.to_string());
                     break;
                 }
             }
@@ -397,27 +399,25 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
         } else if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("ww") || name.starts_with("cdc") || name.starts_with("ppp") {
-                    if let Ok(operstate) = std::fs::read_to_string(entry.path().join("operstate")) {
-                        if operstate.trim() == "up" {
-                            cellular = true;
-                            break;
-                        }
-                    }
+                if (name.starts_with("ww") || name.starts_with("cdc") || name.starts_with("ppp"))
+                    && let Ok(operstate) = std::fs::read_to_string(entry.path().join("operstate"))
+                    && operstate.trim() == "up"
+                {
+                    cellular = true;
+                    break;
                 }
             }
         }
 
-        if !cellular {
-            if let Ok(out) = Command::new("nmcli")
+        if !cellular
+            && let Ok(out) = Command::new("nmcli")
                 .args(["-t", "-f", "GENERAL.METERED", "dev", "show"])
                 .output()
                 .await
-            {
-                let txt = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
-                if txt.contains("yes") {
-                    cellular = true;
-                }
+        {
+            let txt = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+            if txt.contains("yes") {
+                cellular = true;
             }
         }
     }
@@ -588,24 +588,25 @@ pub async fn check_power_status() -> (bool, u8) {
                     }
                 } else if supply_type == "battery" {
                     has_battery = true;
-                    if let Ok(cap_str) = std::fs::read_to_string(path.join("capacity")) {
-                        if let Ok(v) = cap_str.trim().parse::<u8>() {
-                            battery_capacity = Some(battery_capacity.map_or(v, |old| old.min(v)));
-                        }
+                    if let Ok(cap_str) = std::fs::read_to_string(path.join("capacity"))
+                        && let Ok(v) = cap_str.trim().parse::<u8>()
+                    {
+                        battery_capacity = Some(battery_capacity.map_or(v, |old| old.min(v)));
                     }
-                    if let Ok(status_str) = std::fs::read_to_string(path.join("status")) {
-                        if status_str.trim().eq_ignore_ascii_case("discharging") {
-                            on_battery = true;
-                        }
+                    if let Ok(status_str) = std::fs::read_to_string(path.join("status"))
+                        && status_str.trim().eq_ignore_ascii_case("discharging")
+                    {
+                        on_battery = true;
                     }
                 }
             }
         }
 
-        if let Some(ac) = ac_online {
-            if !ac && has_battery {
-                on_battery = true;
-            }
+        if let Some(ac) = ac_online
+            && !ac
+            && has_battery
+        {
+            on_battery = true;
         }
 
         let pct = battery_capacity.unwrap_or(100);
