@@ -1,5 +1,5 @@
 [Desktop Entry]
-Version=1.5
+Version=1.0
 Type=Application
 Name=Ferrite DM
 GenericName=Download Manager
@@ -31,5 +31,4 @@ Icon=ferrite-dm
 [Desktop Action CLIStatus]
 Name=Check Status (CLI)
 Exec=ferrite-dm status
-Terminal=true
 Icon=ferrite-dm

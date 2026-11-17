@@ -52,6 +52,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-11-17">
+      <description>
+        <p>Full native Linux GPUI support (Wayland/X11), multi-distro packaging (.deb, .rpm, AppImage, AUR, Flatpak), Linux OS integration, and workspace-wide stability improvements.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-17">
       <description>
         <p>Comprehensive multi-distribution Linux GUI support and packaging release.</p>

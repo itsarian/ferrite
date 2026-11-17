@@ -1,5 +1,5 @@
 Name:           ferrite-dm
-Version:        0.1.1
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        High-performance, multi-protocol download manager and accelerator
 
@@ -84,5 +84,7 @@ fi
 %{_datadir}/icons/hicolor/*/apps/ferrite-dm.*
 
 %changelog
+* Tue Nov 17 2026 Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm> - 0.2.0-1
+- Release 0.2.0: Full Linux GUI (Wayland/X11), multi-distro packaging, OS integration, and comprehensive code audit fixes
 * Tue Nov 17 2026 Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm> - 0.1.1-1
 - Release 0.1.1: Full Linux GUI and distribution packaging integration

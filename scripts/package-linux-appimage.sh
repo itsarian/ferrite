@@ -194,8 +194,9 @@ elif [ -x "$ROOT_DIR/appimagetool" ]; then
     TOOL="$ROOT_DIR/appimagetool"
 elif [ "$(uname -s)" = "Linux" ]; then
     echo "==> Downloading appimagetool for $ARCH..."
-    TOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage"
-    if curl -fsSL -o "$ROOT_DIR/appimagetool" "$TOOL_URL" 2>/dev/null; then
+    TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+    FALLBACK_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+    if curl -fsSL -o "$ROOT_DIR/appimagetool" "$TOOL_URL" || curl -fsSL -o "$ROOT_DIR/appimagetool" "$FALLBACK_URL"; then
         chmod +x "$ROOT_DIR/appimagetool"
         TOOL="$ROOT_DIR/appimagetool"
     fi
@@ -203,12 +204,18 @@ fi
 
 if [ -n "$TOOL" ]; then
     echo "==> Packaging AppImage using $TOOL..."
-    ARCH="$ARCH" "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUTPUT_APPIMAGE" 2>/dev/null || \
-    ARCH="$ARCH" "$TOOL" "$APPDIR" "$OUTPUT_APPIMAGE"
+    if ! APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" "$APPDIR" "$OUTPUT_APPIMAGE"; then
+        echo "==> Retrying AppImage build with --no-appstream..."
+        APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" --no-appstream "$APPDIR" "$OUTPUT_APPIMAGE"
+    fi
 
     echo "==> Successfully created AppImage: $OUTPUT_APPIMAGE"
     ls -lh "$OUTPUT_APPIMAGE"
 else
+    if [ "$(uname -s)" = "Linux" ]; then
+        echo "Error: Failed to acquire appimagetool on Linux."
+        exit 1
+    fi
     echo "==> Notice: appimagetool not found on current host."
     echo "==> Fully structured AppDir prepared at: $APPDIR"
     echo "==> To generate final AppImage on Linux: appimagetool $APPDIR $OUTPUT_APPIMAGE"
