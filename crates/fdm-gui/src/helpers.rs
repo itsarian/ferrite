@@ -655,7 +655,7 @@ pub fn open_path_os(path: &Path) -> anyhow::Result<()> {
         if Command::new("xdg-open")
             .arg(path)
             .status()
-            .map_or(false, |s| s.success())
+            .is_ok_and(|s| s.success())
         {
             return Ok(());
         }
@@ -664,7 +664,7 @@ pub fn open_path_os(path: &Path) -> anyhow::Result<()> {
             .args(["open"])
             .arg(path)
             .status()
-            .map_or(false, |s| s.success())
+            .is_ok_and(|s| s.success())
         {
             return Ok(());
         }
@@ -673,7 +673,7 @@ pub fn open_path_os(path: &Path) -> anyhow::Result<()> {
             if Command::new(opener)
                 .arg(path)
                 .status()
-                .map_or(false, |s| s.success())
+                .is_ok_and(|s| s.success())
             {
                 return Ok(());
             }
@@ -733,7 +733,7 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                     "string:",
                 ])
                 .status()
-                .map_or(false, |s| s.success())
+                .is_ok_and(|s| s.success())
             {
                 return Ok(());
             }
@@ -753,7 +753,7 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                     "",
                 ])
                 .status()
-                .map_or(false, |s| s.success())
+                .is_ok_and(|s| s.success())
             {
                 return Ok(());
             }
@@ -774,7 +774,7 @@ pub fn reveal_path_os(path: &Path) -> anyhow::Result<()> {
                     "",
                 ])
                 .status()
-                .map_or(false, |s| s.success())
+                .is_ok_and(|s| s.success())
             {
                 return Ok(());
             }
