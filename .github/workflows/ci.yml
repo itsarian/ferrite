@@ -44,7 +44,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libssl-dev
+          sudo apt-get install -y cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -55,7 +55,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --workspace --exclude fdm-gui --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
     name: Documentation Check
@@ -69,7 +69,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libssl-dev
+          sudo apt-get install -y cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -78,7 +78,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build documentation
-        run: cargo doc --workspace --exclude fdm-gui --no-deps
+        run: cargo doc --workspace --no-deps
 
   test:
     name: Test (${{ matrix.name }})
@@ -93,9 +93,9 @@ jobs:
             os: macos-latest
             workspace_scope: "--workspace"
             is_macos: true
-          - name: Linux (Cross-Platform Crates)
+          - name: Linux (Full Workspace & Packaging)
             os: ubuntu-latest
-            workspace_scope: "--workspace --exclude fdm-gui"
+            workspace_scope: "--workspace"
             is_macos: false
     steps:
       - name: Checkout repository
@@ -105,7 +105,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libssl-dev
+          sudo apt-get install -y cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -139,3 +139,13 @@ jobs:
           test -x scripts/package-macos.sh
           test -x scripts/install-cli.sh
           test -x scripts/uninstall-cli.sh
+
+      - name: Verify Linux Packaging Assets & Scripts
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x scripts/*.sh
+          test -f resources/linux/ferrite-dm.desktop
+          test -f resources/linux/io.ferrite_dm.FerriteDM.metainfo.xml
+          test -x scripts/package-linux-deb.sh
+          test -x scripts/package-linux-rpm.sh
+          test -x scripts/package-linux-appimage.sh

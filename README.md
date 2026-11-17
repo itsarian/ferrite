@@ -10,7 +10,6 @@
   [![Security Audit](https://img.shields.io/github/actions/workflow/status/itsarian/ferrite-dm/audit.yml?branch=main&label=Security%20Audit&style=flat-square)](https://github.com/itsarian/ferrite-dm/actions/workflows/audit.yml)
   [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](#license)
   [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square)](#prerequisites)
-
   <br />
 
   <a href="#quick-start">Quick Start</a> •
@@ -131,15 +130,55 @@ Or install via terminal script:
 curl -fsSL https://raw.githubusercontent.com/itsarian/ferrite-dm/main/scripts/install-cli.sh | bash
 ```
 
-### Linux (CLI & Background Daemon)
+### Linux (GUI & CLI)
 
-Download `ferrite-dm-<version>-linux-x86_64.tar.gz` from [GitHub Releases](https://github.com/itsarian/ferrite-dm/releases):
+Download the appropriate package from [GitHub Releases](https://github.com/itsarian/ferrite-dm/releases):
 
+#### Debian / Ubuntu (`.deb`)
 ```bash
-tar -xzf ferrite-dm-*-linux-x86_64.tar.gz
-cd ferrite-dm-*
-./install.sh   # Installs ferrite-dm and ferrite-native-host into ~/.local/bin
+sudo dpkg -i ferrite-dm-<version>-linux-x86_64.deb
+# Or with automatic dependency resolution:
+sudo apt install ./ferrite-dm-<version>-linux-x86_64.deb
 ```
+
+#### Fedora / RHEL / openSUSE (`.rpm`)
+```bash
+# Fedora / RHEL (dnf):
+sudo dnf install ferrite-dm-<version>-linux-x86_64.rpm
+# openSUSE (zypper):
+sudo zypper install ferrite-dm-<version>-linux-x86_64.rpm
+```
+
+#### Universal Linux AppImage (`.AppImage`)
+```bash
+chmod +x ferrite-dm-<version>-linux-x86_64.AppImage
+./ferrite-dm-<version>-linux-x86_64.AppImage
+```
+No installation required. Runs on any x86_64 Linux with glibc ≥ 2.31.
+
+#### Arch Linux (AUR)
+```bash
+yay -S ferrite-dm
+```
+
+#### Standalone Tarball (`.tar.gz`)
+```bash
+tar -xzf ferrite-dm-<version>-linux-x86_64.tar.gz
+cd ferrite-dm-*/
+./install.sh   # Installs fdm-gui, ferrite-dm, and ferrite-native-host into ~/.local/bin
+```
+
+#### Linux Runtime Dependencies
+
+The GUI (`fdm-gui`) requires the following native libraries at runtime:
+
+| Distro | Install Command |
+| :--- | :--- |
+| **Debian / Ubuntu** | `sudo apt install libx11-6 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libfontconfig1 libasound2 libpulse0` |
+| **Fedora / RHEL** | `sudo dnf install libX11 libxkbcommon libxkbcommon-x11 wayland-libs fontconfig alsa-lib pulseaudio-libs` |
+| **Arch** | `sudo pacman -Sy libx11 libxkbcommon wayland fontconfig alsa-lib libpulse` |
+
+The `.deb` and `.rpm` packages declare these as package-manager dependencies and install them automatically.
 
 ### Building from Source
 
@@ -149,6 +188,12 @@ Requires Rust Edition 2024 (`rustc >= 1.85`), a C compiler (`clang` or `gcc`), a
 # Clone the repository
 git clone https://github.com/itsarian/ferrite-dm.git
 cd ferrite-dm
+
+# Linux only: install GUI native libraries before building
+# Debian / Ubuntu:
+sudo apt-get install -y cmake pkg-config libssl-dev \
+  libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+  libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
 
 # Build all workspace binaries in release mode
 cargo build --release --workspace
@@ -167,7 +212,7 @@ Compiled binaries in `target/release/`:
 ## Prerequisites
 
 - **macOS:** macOS 11+ (Big Sur or newer). Universal support for Apple Silicon (`arm64`) and Intel (`x86_64`).
-- **Linux:** x86_64 Linux distribution with glibc 2.31+.
+- **Linux:** x86_64 Linux distribution with glibc 2.31+. The GUI (`fdm-gui`) requires X11 or Wayland display server and native libraries (automatically handled by `.deb`/`.rpm` packages; see [Linux Runtime Dependencies](#linux-runtime-dependencies) for other install methods).
 - **Optional Dependencies:** [FFmpeg](https://ffmpeg.org/) (for audio/video conversion) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) (for extended media URL resolution).
 
 ---

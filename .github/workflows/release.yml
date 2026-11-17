@@ -150,7 +150,7 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build Linux CLI (x86_64)
+    name: Build Linux GUI & CLI (x86_64)
     needs: metadata
     runs-on: ubuntu-latest
     permissions:
@@ -163,7 +163,13 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libssl-dev
+          sudo apt-get install -y \
+            cmake pkg-config libssl-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libfontconfig1-dev \
+            libasound2-dev libpulse-dev \
+            dpkg-dev fakeroot rpm appstream \
+            wget file
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -176,10 +182,10 @@ jobs:
         with:
           shared-key: "linux-release"
 
-      - name: Build Linux CLI Binaries
+      - name: Build Linux Binaries (GUI + CLI + Native Host)
         shell: bash
         run: |
-          cargo build --release -p fdm-cli -p fdm-native-host
+          cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
 
       - name: Package Linux Standalone Tarball
         shell: bash
@@ -189,6 +195,7 @@ jobs:
           STAGE="dist/linux-stage/ferrite-dm-${VERSION}"
           mkdir -p "$STAGE" dist
 
+          cp target/release/fdm-gui "$STAGE/"
           cp target/release/ferrite-dm "$STAGE/"
           cp target/release/ferrite-native-host "$STAGE/"
           cp scripts/install-cli.sh "$STAGE/install.sh"
@@ -198,16 +205,48 @@ jobs:
           cp README.md "$STAGE/" 2>/dev/null || true
           cp LICENSE* "$STAGE/" 2>/dev/null || true
 
-          chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/install-cli.sh" "$STAGE/uninstall-cli.sh" "$STAGE/ferrite-dm" "$STAGE/ferrite-native-host"
+          chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/install-cli.sh" "$STAGE/uninstall-cli.sh" \
+                   "$STAGE/fdm-gui" "$STAGE/ferrite-dm" "$STAGE/ferrite-native-host"
 
           TAR_NAME="ferrite-dm-${VERSION}-linux-x86_64.tar.gz"
           tar -czf "dist/$TAR_NAME" -C dist/linux-stage "ferrite-dm-${VERSION}"
+
+      - name: Package Linux .deb (Debian/Ubuntu)
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-linux-deb.sh
+          ./scripts/package-linux-deb.sh
+
+      - name: Package Linux .rpm (Fedora/RHEL/openSUSE)
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-linux-rpm.sh
+          ./scripts/package-linux-rpm.sh
+
+      - name: Package Linux .AppImage (Universal)
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-linux-appimage.sh
+          ./scripts/package-linux-appimage.sh
 
       - name: Upload Linux Release Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
-          path: dist/ferrite-dm-*-linux-x86_64.tar.gz
+          path: |
+            dist/ferrite-dm-*-linux-x86_64.tar.gz
+            dist/ferrite-dm-*-linux-x86_64.deb
+            dist/ferrite-dm-*-linux-x86_64.rpm
+            dist/ferrite-dm-*-linux-x86_64.AppImage
           retention-days: 1
           if-no-files-found: error
 
@@ -280,7 +319,11 @@ jobs:
             ### Package Assets
             - **macOS (Apple Silicon)**: `.dmg` installer, `.pkg` installer, `.zip` app bundle, `.tar.gz` CLI bundle
             - **macOS (Universal)**: `.dmg` installer, `.pkg` installer, `.zip` app bundle, `.tar.gz` CLI bundle (runs natively on Apple Silicon & Intel)
-            - **Linux (x86_64)**: Standalone `.tar.gz` archive containing `ferrite-dm` CLI, `ferrite-native-host`, and installer
+            - **Linux (x86_64)**:
+              - `.deb` package — Debian/Ubuntu (dpkg, apt)
+              - `.rpm` package — Fedora/RHEL/openSUSE (rpm, dnf, zypper)
+              - `.AppImage` — Universal self-contained executable (runs on any x86_64 Linux)
+              - `.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
             - **Windows (x86_64)**: Standalone `.zip` archive containing `ferrite-dm.exe`, `ferrite-native-host.exe`, and PowerShell / batch installer
             - **Checksums**: `SHA256SUMS.txt` containing SHA256 digests for all published assets
 

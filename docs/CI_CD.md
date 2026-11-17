@@ -57,7 +57,7 @@ flowchart TD
         DOC["Doc Verification (cargo doc)"]
         MAC_TEST["macOS: Full Workspace & GPUI Test"]
         PKG_CHECK["Packaging Assets Validation"]
-        LNX_TEST["Linux: Cross-Platform Crates Test"]
+        LNX_TEST["Linux: Full Workspace (fdm-gui + GUI deps)"]
     end
 
     subgraph Audit ["Security Audit (.github/workflows/audit.yml)"]
@@ -67,7 +67,7 @@ flowchart TD
     subgraph Release ["Release Pipeline (.github/workflows/release.yml)"]
         META["metadata: Compute tag, version, draft/dry-run flags"]
         REL_MAC["build-macos: Apple Silicon & Universal DMG/PKG/Zip/Tarball"]
-        REL_LNX["build-linux: x86_64 Standalone Tarball + scripts"]
+        REL_LNX["build-linux: x86_64 GUI+CLI .deb/.rpm/.AppImage/.tar.gz"]
         REL_WIN["build-windows: x86_64 Standalone Zip + scripts"]
         SUMS["publish-release: Consolidate & SHA256SUMS.txt Generation"]
         GH_REL["GitHub Release Publication (action-gh-release@v2)"]
@@ -130,14 +130,16 @@ The primary quality gate defined in [.github/workflows/ci.yml](file:///.github/w
 - **Goal:** Ensures zero whitespace or style drift across all 10 workspace crates.
 
 #### 2. Static Analysis & Linting (`clippy`)
-- **Runner:** `macos-latest`
+- **Runner:** `ubuntu-latest`
+- **Linux GUI Deps Installed:** `cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev`
 - **Command:** `cargo clippy --workspace --all-targets -- -D warnings`
-- **Goal:** Catches common anti-patterns, redundant clones, logic issues, and performance regressions across 100% of workspace targets (including the GPUI desktop application). Any compiler or linter warning fails the job.
+- **Goal:** Catches common anti-patterns, redundant clones, logic issues, and performance regressions across 100% of workspace targets (including the GPUI desktop application on Linux). Any compiler or linter warning fails the job.
 
 #### 3. Documentation Build (`doc`)
-- **Runner:** `macos-latest`
+- **Runner:** `ubuntu-latest`
+- **Linux GUI Deps Installed:** Same as above.
 - **Command:** `cargo doc --workspace --no-deps`
-- **Goal:** Verifies that internal rustdoc comments compile cleanly without broken intra-doc links or syntax errors.
+- **Goal:** Verifies that internal rustdoc comments compile cleanly without broken intra-doc links or syntax errors. Includes `fdm-gui` on Linux with GUI native library headers present.
 
 #### 4. Multi-Platform Testing Matrix (`test`)
 The test matrix accommodates crate-specific platform dependencies:
@@ -147,11 +149,23 @@ The test matrix accommodates crate-specific platform dependencies:
   - Exercises the native GPUI desktop application (`crates/fdm-gui`), macOS sleep prevention APIs (`IOPMAssertionCreateWithName`), and Unix socket IPC.
   - **Packaging Assets Verification:** Validates script permissions (`chmod +x`), compiles the icon generator via `swift scripts/generate-icon.swift resources`, and verifies that [resources/Ferrite.icns](file:///resources/Ferrite.icns) and [resources/Info.plist](file:///resources/Info.plist) exist and are structurally sound.
 - **Linux (`ubuntu-latest`):**
-  - Installs required Linux native libraries: `cmake pkg-config libssl-dev`.
-  - Runs compilation check and tests for all cross-platform headless crates:
+  - Installs required Linux GUI native libraries:
+    ```
+    cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev
+    libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
+    ```
+  - Runs full workspace compilation check and tests including `fdm-gui`:
     ```bash
-    cargo check --workspace --exclude fdm-gui
-    cargo test --workspace --exclude fdm-gui
+    cargo check --workspace
+    cargo test --workspace
+    ```
+  - **Linux Packaging Assets Verification:** Checks that all required files from `packager` are present and scripts are executable:
+    ```bash
+    test -f resources/linux/ferrite-dm.desktop
+    test -f resources/linux/io.ferrite_dm.FerriteDM.metainfo.xml
+    test -x scripts/package-linux-deb.sh
+    test -x scripts/package-linux-rpm.sh
+    test -x scripts/package-linux-appimage.sh
     ```
 - **Windows:** Deferred / roadmap; cross-platform OS integration abstraction layer prepared in `fdm-core` and `fdm-ipc` for future enablement.
 
@@ -183,7 +197,7 @@ The production release workflow in [.github/workflows/release.yml](file:///.gith
 | :--- | :--- | :--- | :--- |
 | **macOS (Apple Silicon)** | `arm64` | `aarch64-apple-darwin` | `Ferrite-DM-<ver>-macos-arm64.{dmg,pkg,zip}`, `ferrite-dm-<ver>-macos-arm64.tar.gz` |
 | **macOS (Universal)** | `arm64` + `x86_64` | `aarch64-apple-darwin`, `x86_64-apple-darwin` | `Ferrite-DM-<ver>-macos-universal.{dmg,pkg,zip}`, `ferrite-dm-<ver>-macos-universal.tar.gz` |
-| **Linux** | `x86_64` | `x86_64-unknown-linux-gnu` | `ferrite-dm-<ver>-linux-x86_64.tar.gz` |
+| **Linux** | `x86_64` | `x86_64-unknown-linux-gnu` | `ferrite-dm-<ver>-linux-x86_64.{tar.gz,.deb,.rpm,.AppImage}` |
 | **Windows** | `x86_64` | `x86_64-pc-windows-msvc` | `ferrite-dm-<ver>-windows-x86_64.zip` |
 
 #### Pipeline Stages
@@ -204,8 +218,13 @@ The production release workflow in [.github/workflows/release.yml](file:///.gith
      - Packages `.pkg` flat installer with postinstall script via `pkgbuild`.
      - Bundles standalone `.zip` and CLI portable `.tar.gz` with [scripts/install-cli.sh](file:///scripts/install-cli.sh).
    - **Linux Builder (`build-linux`)**:
-     - Compiles `fdm-cli` and `fdm-native-host` with Linux build dependencies (`cmake pkg-config libssl-dev`).
-     - Packages standalone tarball with binaries, `install.sh`, `uninstall.sh`, README, and licenses.
+     - Installs required Linux GUI native libraries: `cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev`.
+     - Compiles all three binaries: `fdm-gui` (GPUI desktop app), `ferrite-dm` (CLI/daemon), and `ferrite-native-host`.
+     - Runs four parallel packaging steps via dedicated scripts:
+       - **`.deb`** via `scripts/package-linux-deb.sh`: Debian-compliant archive targeting `amd64` with `DEBIAN/control` metadata, `libc6`, `libssl3`, `libx11-6`, `libwayland-client0`, `libxkbcommon0` dependencies, desktop entry, hicolor icon hierarchy, and `postinst`/`postrm` hooks running `update-desktop-database` and `gtk-update-icon-cache`.
+       - **`.rpm`** via `scripts/package-linux-rpm.sh`: Builds from [resources/linux/ferrite-dm.spec](file:///resources/linux/ferrite-dm.spec) with Fedora/RHEL/openSUSE-compatible `BuildRequires`, runtime `Requires`, and `%post`/`%postun` scriptlets.
+       - **`.AppImage`** via `scripts/package-linux-appimage.sh`: Self-contained universal executable bundling the application, desktop entry, and icon hierarchy in AppDir format, deployable on any x86_64 Linux.
+       - **Standalone `.tar.gz`**: Contains `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses for direct extraction and manual install.
    - **Windows Builder (`build-windows`)**:
      - Compiles `fdm-cli` and `fdm-native-host` on `windows-latest` via MSVC.
      - Packages standalone ZIP archive with PowerShell installers (`install.ps1`, `uninstall.ps1`), Command Prompt wrappers (`install.bat`, `uninstall.bat`), README, and licenses.
@@ -245,6 +264,35 @@ cargo test --workspace
 
 # 5. Verify rustdoc generation
 cargo doc --workspace --no-deps
+```
+
+### Linux GUI Build Prerequisites
+
+To build, lint, and test the full workspace (including `fdm-gui`) on Linux, install the following native packages:
+
+#### Debian / Ubuntu
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  cmake pkg-config libssl-dev \
+  libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+  libwayland-dev libfontconfig1-dev \
+  libasound2-dev libpulse-dev
+```
+
+#### Fedora / RHEL
+```bash
+sudo dnf install -y \
+  cmake pkgconf-pkg-config openssl-devel \
+  libX11-devel libxkbcommon-devel libxkbcommon-x11-devel \
+  wayland-devel fontconfig-devel \
+  alsa-lib-devel pulseaudio-libs-devel
+```
+
+#### Arch Linux
+```bash
+sudo pacman -Sy cmake pkgconf openssl \
+  libx11 libxkbcommon wayland fontconfig alsa-lib libpulse
 ```
 
 ### Dependency Audit Check
@@ -362,7 +410,10 @@ Every official release produces the following assets:
 | `Ferrite-DM-<version>-macos-universal.pkg` | macOS (Universal) | Universal flat installer package for system-wide deployment. |
 | `Ferrite-DM-<version>-macos-universal.zip` | macOS (Universal) | Universal compressed `Ferrite DM.app` bundle. |
 | `ferrite-dm-<version>-macos-universal.tar.gz` | macOS (Universal) | Universal portable CLI & GUI archive. |
-| `ferrite-dm-<version>-linux-x86_64.tar.gz` | Linux (x86_64) | Standalone tarball with CLI binary, daemon, native host, `install.sh`, and `uninstall.sh`. |
+| `ferrite-dm-<version>-linux-x86_64.tar.gz` | Linux (x86_64) | Standalone tarball with `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses. |
+| `ferrite-dm-<version>-linux-x86_64.deb` | Linux / Debian & Ubuntu | Native `.deb` package installable via `dpkg -i` or `apt install`. Includes desktop entry, AppStream metadata, hicolor icons, and `postinst`/`postrm` hooks. |
+| `ferrite-dm-<version>-linux-x86_64.rpm` | Linux / Fedora, RHEL, openSUSE | Native `.rpm` package installable via `dnf`, `yum`, or `zypper`. Built from the RPM spec at `resources/linux/ferrite-dm.spec`. |
+| `ferrite-dm-<version>-linux-x86_64.AppImage` | Linux (Universal x86_64) | Self-contained executable running on any x86_64 Linux with FUSE or AppImage runtime (glibc ≥ 2.31). No installation required. |
 | `ferrite-dm-<version>-windows-x86_64.zip` | Windows (x86_64) | Standalone archive with `ferrite-dm.exe`, `ferrite-native-host.exe`, and PowerShell / Batch installers. |
 | `SHA256SUMS.txt` | All | Master cryptographic checksum manifest containing SHA-256 hashes of all release files. |
 
@@ -444,9 +495,42 @@ tar -xzf ferrite-dm-*-linux-x86_64.tar.gz
 cd ferrite-dm-*
 sudo ./install.sh
 ```
-This installs `ferrite-dm` and `ferrite-native-host` into `/usr/local/bin` (or `~/.local/bin` if non-root).
+This installs `fdm-gui`, `ferrite-dm`, and `ferrite-native-host` into `/usr/local/bin` (or `~/.local/bin` if non-root).
 
-#### 4. Windows Standalone Archive (`.zip`)
+#### 4. Linux Debian/Ubuntu Package (`.deb`)
+```bash
+sudo dpkg -i ferrite-dm-*-linux-x86_64.deb
+# Or via apt for automatic dependency resolution:
+sudo apt install ./ferrite-dm-*-linux-x86_64.deb
+```
+
+#### 5. Linux Fedora/RHEL/openSUSE Package (`.rpm`)
+```bash
+# Fedora / RHEL (dnf):
+sudo dnf install ferrite-dm-*-linux-x86_64.rpm
+
+# openSUSE (zypper):
+sudo zypper install ferrite-dm-*-linux-x86_64.rpm
+```
+
+#### 6. Linux Universal AppImage (`.AppImage`)
+```bash
+chmod +x ferrite-dm-*-linux-x86_64.AppImage
+./ferrite-dm-*-linux-x86_64.AppImage
+```
+No installation required. Runs on any x86_64 Linux with glibc ≥ 2.31. For persistent desktop integration, copy to `~/.local/bin` and register the `.desktop` file manually.
+
+#### 7. Arch Linux (AUR)
+Install from the AUR using an AUR helper:
+```bash
+yay -S ferrite-dm
+# Or manually using the PKGBUILD:
+git clone https://aur.archlinux.org/ferrite-dm.git
+cd ferrite-dm
+makepkg -si
+```
+
+#### 8. Windows Standalone Archive (`.zip`)
 Extract the ZIP archive and run the installer:
 - **Using PowerShell:**
   ```powershell
@@ -460,7 +544,7 @@ Extract the ZIP archive and run the installer:
   ```
 This places the executables into `%LOCALAPPDATA%\FerriteDM\bin` (or `~/.ferrite-dm/bin`) and appends the directory to your User `PATH`.
 
-#### 5. Register Browser Integration
+#### 9. Register Browser Integration
 After installing the binaries, register the WebExtension Native Messaging host for your installed browsers:
 ```bash
 ferrite-dm native-host-install --browser all
