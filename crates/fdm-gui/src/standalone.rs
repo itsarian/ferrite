@@ -1245,9 +1245,11 @@ impl Render for StandaloneDownloadWindow {
                                 p.bg_300,
                                 cx,
                                 move |_, _, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                    crate::helpers::write_clipboard_text(
                                         url_for_copy.clone(),
-                                    ));
+                                        true,
+                                        cx,
+                                    );
                                 },
                             ))
                             .child(action_btn(
