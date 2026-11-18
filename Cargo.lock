@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-batch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "regex",
@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-bt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2430,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-hls"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-http"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-ipc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "fdm-core",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-media"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "boa_engine",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "fdm-native-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "directories",

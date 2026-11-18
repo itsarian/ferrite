@@ -52,6 +52,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-11-18">
+      <description>
+        <p>Added native Linux ARM64 (aarch64) support and unified release asset naming across macOS and Linux, alongside fixes for Linux clipboard copy/paste and HTTP 403 download failures.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-17">
       <description>
         <p>Full native Linux GPUI support (Wayland/X11), multi-distro packaging (.deb, .rpm, AppImage, AUR, Flatpak), Linux OS integration, and workspace-wide stability improvements.</p>

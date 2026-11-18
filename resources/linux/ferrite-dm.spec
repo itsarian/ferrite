@@ -1,5 +1,5 @@
 Name:           ferrite-dm
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        High-performance, multi-protocol download manager and accelerator
 
@@ -84,6 +84,8 @@ fi
 %{_datadir}/icons/hicolor/*/apps/ferrite-dm.*
 
 %changelog
+* Wed Nov 18 2026 Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm> - 0.3.0-1
+- Release 0.3.0: Native Linux ARM64 (aarch64) support, unified release asset naming, Linux copy/paste fixes, and Linux HTTP 403 download fixes
 * Tue Nov 17 2026 Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm> - 0.2.0-1
 - Release 0.2.0: Full Linux GUI (Wayland/X11), multi-distro packaging, OS integration, and comprehensive code audit fixes
 * Tue Nov 17 2026 Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm> - 0.1.1-1
