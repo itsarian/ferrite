@@ -120,51 +120,61 @@ ferrite-dm native-host-install --browser all
 
 ### macOS (Apple Silicon & Intel)
 
-Download pre-built installers from [GitHub Releases](https://github.com/itsarian/ferrite-dm/releases):
+Download pre-built installers from [GitHub Releases](https://github.com/itsarian/ferrite-dm/releases) (`arm64` for Apple Silicon or `x86_64` for Intel):
 
-- **Disk Image (`.dmg`):** Open `Ferrite-DM-<version>-macos-<arch>.dmg` and drag **Ferrite DM.app** to `/Applications`.
-- **Installer Package (`.pkg`):** Run `Ferrite-DM-<version>-macos-<arch>.pkg` to install the desktop app and configure CLI symlinks (`fdm-gui`, `ferrite-dm`, and `ferrite-native-host`) in `/usr/local/bin`.
+- **Disk Image (`.dmg`):** Open `ferrite-dm-<version>-macos-arm64.dmg` (Apple Silicon) or `ferrite-dm-<version>-macos-x86_64.dmg` (Intel) and drag **Ferrite DM.app** to `/Applications`.
+- **Installer Package (`.pkg`):** Run `ferrite-dm-<version>-macos-arm64.pkg` or `ferrite-dm-<version>-macos-x86_64.pkg` to install the desktop app and configure CLI symlinks (`fdm-gui`, `ferrite-dm`, and `ferrite-native-host`) in `/usr/local/bin`.
+- **Standalone Archives (`.zip` / `.tar.gz`):** Compressed `Ferrite DM.app` bundle (`ferrite-dm-<version>-macos-<arch>.zip`) and portable CLI & GUI bundle (`ferrite-dm-<version>-macos-<arch>.tar.gz`).
 
 Or install via terminal script:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/itsarian/ferrite-dm/main/scripts/install-cli.sh | bash
 ```
 
-### Linux (GUI & CLI)
+### Linux (GUI & CLI — x86_64 & ARM64)
 
-Download the appropriate package from [GitHub Releases](https://github.com/itsarian/ferrite-dm/releases):
+Download the appropriate package for your architecture (`x86_64` or `arm64`) from [GitHub Releases](https://github.com/itsarian/ferrite-dm/releases):
 
 #### Debian / Ubuntu (`.deb`)
 ```bash
-sudo dpkg -i ferrite-dm-<version>-linux-x86_64.deb
-# Or with automatic dependency resolution:
+# x86_64 (amd64)
 sudo apt install ./ferrite-dm-<version>-linux-x86_64.deb
+
+# ARM64 (aarch64)
+sudo apt install ./ferrite-dm-<version>-linux-arm64.deb
 ```
 
 #### Fedora / RHEL / openSUSE (`.rpm`)
 ```bash
-# Fedora / RHEL (dnf):
-sudo dnf install ferrite-dm-<version>-linux-x86_64.rpm
-# openSUSE (zypper):
-sudo zypper install ferrite-dm-<version>-linux-x86_64.rpm
+# Fedora / RHEL (dnf) — replace <arch> with x86_64 or arm64
+sudo dnf install ./ferrite-dm-<version>-linux-<arch>.rpm
+
+# openSUSE (zypper) — replace <arch> with x86_64 or arm64
+sudo zypper install ./ferrite-dm-<version>-linux-<arch>.rpm
 ```
 
-#### Universal Linux AppImage (`.AppImage`)
+#### Portable Linux AppImage (`.AppImage`)
 ```bash
+# x86_64
 chmod +x ferrite-dm-<version>-linux-x86_64.AppImage
 ./ferrite-dm-<version>-linux-x86_64.AppImage
-```
-No installation required. Runs on any x86_64 Linux with glibc ≥ 2.31.
 
-#### Arch Linux (AUR)
+# ARM64 (aarch64)
+chmod +x ferrite-dm-<version>-linux-arm64.AppImage
+./ferrite-dm-<version>-linux-arm64.AppImage
+```
+No installation required. Runs on x86_64 and ARM64 (`aarch64`) Linux with glibc ≥ 2.31.
+
+#### Arch Linux (AUR — `x86_64` & `aarch64`)
 ```bash
 yay -S ferrite-dm
 ```
 
 #### Standalone Tarball (`.tar.gz`)
 ```bash
-tar -xzf ferrite-dm-<version>-linux-x86_64.tar.gz
-cd ferrite-dm-*/
+# Replace <arch> with x86_64 or arm64
+tar -xzf ferrite-dm-<version>-linux-<arch>.tar.gz
+cd ferrite-dm-<version>-linux-<arch>/
 ./install.sh   # Installs fdm-gui, ferrite-dm, and ferrite-native-host into ~/.local/bin
 ```
 
@@ -211,8 +221,8 @@ Compiled binaries in `target/release/`:
 
 ## Prerequisites
 
-- **macOS:** macOS 11+ (Big Sur or newer). Universal support for Apple Silicon (`arm64`) and Intel (`x86_64`).
-- **Linux:** x86_64 Linux distribution with glibc 2.31+. The GUI (`fdm-gui`) requires X11 or Wayland display server and native libraries (automatically handled by `.deb`/`.rpm` packages; see [Linux Runtime Dependencies](#linux-runtime-dependencies) for other install methods).
+- **macOS:** macOS 11+ (Big Sur or newer). Native builds for Apple Silicon (`arm64`) and Intel (`x86_64`).
+- **Linux:** `x86_64` or ARM64 (`aarch64`) Linux distribution with glibc 2.31+. The GUI (`fdm-gui`) requires an X11 or Wayland display server and native libraries (automatically handled by `.deb`/`.rpm` packages; see [Linux Runtime Dependencies](#linux-runtime-dependencies) for other install methods).
 - **Optional Dependencies:** [FFmpeg](https://ffmpeg.org/) (for audio/video conversion) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) (for extended media URL resolution).
 
 ---
@@ -357,7 +367,7 @@ Ferrite DM is structured as a modular Cargo workspace across 10 focused crates:
 | [`crates/fdm-gui`](crates/fdm-gui) | Native GPUI desktop application interface (`fdm-gui` / `Ferrite DM.app`) |
 | [`docs/ARCHITECTURE_BLUEPRINT.md`](docs/ARCHITECTURE_BLUEPRINT.md) | Reverse engineering analysis, FDM architectural mappings, and protocol specifications |
 | [`docs/CI_CD.md`](docs/CI_CD.md) | Continuous Integration, security audit, release pipelines, and contributor pre-flight guide |
-| [`scripts/`](scripts/) | Packaging scripts (`package-macos.sh`), CLI installers, and icon generation |
+| [`scripts/`](scripts/) | Packaging scripts (`package-macos.sh`, `package-linux-*.sh`), installers, `PKGBUILD`, and icon generation |
 | [`resources/`](resources/) | Application icon (`Ferrite-1024.png`, `Ferrite.icns`), screenshots, and `Info.plist` |
 
 ---

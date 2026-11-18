@@ -57,7 +57,8 @@ flowchart TD
         DOC["Doc Verification (cargo doc)"]
         MAC_TEST["macOS: Full Workspace & GPUI Test"]
         PKG_CHECK["Packaging Assets Validation"]
-        LNX_TEST["Linux: Full Workspace (fdm-gui + GUI deps)"]
+        LNX_X64_TEST["Linux x86_64: Full Workspace & Packaging"]
+        LNX_ARM_TEST["Linux ARM64: Full Workspace & Packaging"]
     end
 
     subgraph Audit ["Security Audit (.github/workflows/audit.yml)"]
@@ -66,28 +67,27 @@ flowchart TD
 
     subgraph Release ["Release Pipeline (.github/workflows/release.yml)"]
         META["metadata: Compute tag, version, draft/dry-run flags"]
-        REL_MAC["build-macos: Apple Silicon & Universal DMG/PKG/Zip/Tarball"]
-        REL_LNX["build-linux: x86_64 GUI+CLI .deb/.rpm/.AppImage/.tar.gz"]
-        REL_WIN["build-windows: x86_64 Standalone Zip + scripts"]
-        SUMS["publish-release: Consolidate & SHA256SUMS.txt Generation"]
+        REL_MAC["build-macos: arm64 & x86_64 DMG/PKG/Zip/Tarball"]
+        REL_LNX["build-linux: x86_64 & arm64 GUI+CLI .deb/.rpm/.AppImage/.tar.gz"]
+        SUMS["publish-release: Validate Names & SHA256SUMS.txt Generation"]
         GH_REL["GitHub Release Publication (action-gh-release@v2)"]
     end
 
-    P --> FMT & CLIPPY & DOC & MAC_TEST & LNX_TEST & WIN_TEST & PKG_CHECK
-    PR --> FMT & CLIPPY & DOC & MAC_TEST & LNX_TEST & WIN_TEST & PKG_CHECK
+    P --> FMT & CLIPPY & DOC & MAC_TEST & LNX_X64_TEST & LNX_ARM_TEST & PKG_CHECK
+    PR --> FMT & CLIPPY & DOC & MAC_TEST & LNX_X64_TEST & LNX_ARM_TEST & PKG_CHECK
     PR --> SEC
     CRON --> SEC
     T --> META
     WD --> META
-    META --> REL_MAC & REL_LNX & REL_WIN
-    REL_MAC & REL_LNX & REL_WIN --> SUMS --> GH_REL
+    META --> REL_MAC & REL_LNX
+    REL_MAC & REL_LNX --> SUMS --> GH_REL
 ```
 
 | Pipeline | Trigger Events | Purpose | Execution Scope |
 | :--- | :--- | :--- | :--- |
-| **CI** (`ci.yml`) | `push` to `main`, `pull_request` against `main`, manual dispatch | Quality gate: formatting, linting, tests, documentation, packaging sanity | Multi-platform matrix (`macos-latest`, `ubuntu-latest`, `windows-latest`) |
+| **CI** (`ci.yml`) | `push` to `main`, `pull_request` against `main`, manual dispatch | Quality gate: formatting, linting, tests, documentation, packaging sanity | Multi-platform matrix (`macos-latest`, `ubuntu-latest`, `ubuntu-24.04-arm`) |
 | **Security Audit** (`audit.yml`) | Weekly cron schedule (`0 0 * * 0`), `pull_request` modifying `Cargo.*`, pushes, manual dispatch | Supply-chain security: scans dependencies against RustSec Advisory Database | `ubuntu-latest` running `rustsec/audit-check@v2` |
-| **Release** (`release.yml`) | `push` of tags matching `v*`, manual `workflow_dispatch` (with dry-run/draft/prerelease flags) | Production builds: compiles binaries, packages installers, calculates unified SHA256, drafts release | Decoupled matrix (`macos-latest`, `ubuntu-latest`, `windows-latest`) |
+| **Release** (`release.yml`) | `push` of tags matching `v*`, manual `workflow_dispatch` (with dry-run/draft/prerelease flags) | Production builds: compiles binaries, packages installers, validates canonical names, calculates unified SHA256, publishes release | Decoupled matrix (`macos-latest` for `arm64` & `x86_64`, `ubuntu-latest` for Linux `x86_64`, `ubuntu-24.04-arm` for Linux `arm64`) |
 
 ### Concurrency Management
 
@@ -148,24 +148,26 @@ The test matrix accommodates crate-specific platform dependencies:
   - Runs full workspace verification: `cargo check --workspace` and `cargo test --workspace`.
   - Exercises the native GPUI desktop application (`crates/fdm-gui`), macOS sleep prevention APIs (`IOPMAssertionCreateWithName`), and Unix socket IPC.
   - **Packaging Assets Verification:** Validates script permissions (`chmod +x`), compiles the icon generator via `swift scripts/generate-icon.swift resources`, and verifies that [resources/Ferrite.icns](file:///resources/Ferrite.icns) and [resources/Info.plist](file:///resources/Info.plist) exist and are structurally sound.
-- **Linux (`ubuntu-latest`):**
+- **Linux x86_64 (`ubuntu-latest`) & Linux ARM64 (`ubuntu-24.04-arm`):**
   - Installs required Linux GUI native libraries:
     ```
     cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev
     libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
     ```
-  - Runs full workspace compilation check and tests including `fdm-gui`:
+  - Runs full workspace compilation check and tests natively on both `x86_64` and `aarch64` including `fdm-gui`:
     ```bash
     cargo check --workspace
     cargo test --workspace
     ```
-  - **Linux Packaging Assets Verification:** Checks that all required files from `packager` are present and scripts are executable:
+  - **Linux Packaging Assets & Script Verification:** Checks that all required desktop/AppStream assets exist, packaging scripts are executable, and shell syntax passes `bash -n`:
     ```bash
     test -f resources/linux/ferrite-dm.desktop
     test -f resources/linux/io.ferrite_dm.FerriteDM.metainfo.xml
     test -x scripts/package-linux-deb.sh
     test -x scripts/package-linux-rpm.sh
     test -x scripts/package-linux-appimage.sh
+    test -x scripts/package-linux-tarball.sh
+    bash -n scripts/package-linux-*.sh scripts/install-linux.sh scripts/uninstall-linux.sh
     ```
 - **Windows:** Deferred / roadmap; cross-platform OS integration abstraction layer prepared in `fdm-core` and `fdm-ipc` for future enablement.
 
@@ -191,14 +193,16 @@ Supply chain security is managed by [.github/workflows/audit.yml](file:///.githu
 
 The production release workflow in [.github/workflows/release.yml](file:///.github/workflows/release.yml) is structured as a decoupled multi-stage deployment pipeline: `metadata` -> parallel multi-platform compilation & packaging -> consolidated checksum generation & `publish-release`.
 
-#### Matrix Target Matrix
+#### Release Build Matrix
 
-| Operating System | Target Architecture | Compiler Target(s) | Artifacts Produced |
-| :--- | :--- | :--- | :--- |
-| **macOS (Apple Silicon)** | `arm64` | `aarch64-apple-darwin` | `Ferrite-DM-<ver>-macos-arm64.{dmg,pkg,zip}`, `ferrite-dm-<ver>-macos-arm64.tar.gz` |
-| **macOS (Universal)** | `arm64` + `x86_64` | `aarch64-apple-darwin`, `x86_64-apple-darwin` | `Ferrite-DM-<ver>-macos-universal.{dmg,pkg,zip}`, `ferrite-dm-<ver>-macos-universal.tar.gz` |
-| **Linux** | `x86_64` | `x86_64-unknown-linux-gnu` | `ferrite-dm-<ver>-linux-x86_64.{tar.gz,.deb,.rpm,.AppImage}` |
-| **Windows** | `x86_64` | `x86_64-pc-windows-msvc` | `ferrite-dm-<ver>-windows-x86_64.zip` |
+Every release asset follows the canonical naming format `ferrite-dm-<version>-<os>-<arch>.<ext>` (lowercase prefix, semver without leading `v`, `<os>` in `{linux, macos}`, `<arch>` in `{arm64, x86_64}`):
+
+| Operating System | Target Architecture | Compiler Target | Runner | Artifacts Produced |
+| :--- | :--- | :--- | :--- | :--- |
+| **macOS (Apple Silicon)** | `arm64` | `aarch64-apple-darwin` | `macos-latest` | `ferrite-dm-<ver>-macos-arm64.{dmg,pkg,tar.gz,zip}` |
+| **macOS (Intel)** | `x86_64` | `x86_64-apple-darwin` | `macos-latest` | `ferrite-dm-<ver>-macos-x86_64.{dmg,pkg,tar.gz,zip}` |
+| **Linux (x86_64)** | `x86_64` | `x86_64-unknown-linux-gnu` | `ubuntu-latest` | `ferrite-dm-<ver>-linux-x86_64.{AppImage,deb,rpm,tar.gz}` |
+| **Linux (ARM64)** | `arm64` | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `ferrite-dm-<ver>-linux-arm64.{AppImage,deb,rpm,tar.gz}` |
 
 #### Pipeline Stages
 
@@ -210,31 +214,30 @@ The production release workflow in [.github/workflows/release.yml](file:///.gith
 
 2. **Stage 2: Parallel Multi-Platform Compilation & Packaging**
    - **macOS Matrix (`build-macos`)**:
-     - Builds native release binaries: `fdm-gui` (GPUI app), `ferrite-dm` (CLI/daemon), and `ferrite-native-host`.
-     - Supports both Apple Silicon native and Universal (`lipo` multi-architecture binary consolidation).
+     - Builds separate native Apple Silicon (`--arch arm64` -> `aarch64-apple-darwin`) and Intel (`--arch x86_64` -> `x86_64-apple-darwin`) release binaries: `fdm-gui` (GPUI app), `ferrite-dm` (CLI/daemon), and `ferrite-native-host`.
      - Generates icon sets via [scripts/generate-icon.swift](file:///scripts/generate-icon.swift).
      - Assembles `Ferrite DM.app` with ad-hoc codesigning (`codesign --force --deep --sign -`).
      - Packages `.dmg` drag-and-drop disk image via `hdiutil`.
      - Packages `.pkg` flat installer with postinstall script via `pkgbuild`.
-     - Bundles standalone `.zip` and CLI portable `.tar.gz` with [scripts/install-cli.sh](file:///scripts/install-cli.sh).
-   - **Linux Builder (`build-linux`)**:
+     - Bundles standalone `.zip` app archive and portable `.tar.gz` with [scripts/install-cli.sh](file:///scripts/install-cli.sh).
+   - **Linux Matrix (`build-linux`)**:
+     - Runs natively across two matrix runners with isolated `rust-cache` keys: `ubuntu-latest` (`x86_64-unknown-linux-gnu`, `--arch x86_64`) and `ubuntu-24.04-arm` (`aarch64-unknown-linux-gnu`, `--arch arm64`).
      - Installs required Linux GUI native libraries: `cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev`.
      - Compiles all three binaries: `fdm-gui` (GPUI desktop app), `ferrite-dm` (CLI/daemon), and `ferrite-native-host`.
-     - Runs four parallel packaging steps via dedicated scripts:
-       - **`.deb`** via `scripts/package-linux-deb.sh`: Debian-compliant archive targeting `amd64` with `DEBIAN/control` metadata, `libc6`, `libssl3`, `libx11-6`, `libwayland-client0`, `libxkbcommon0` dependencies, desktop entry, hicolor icon hierarchy, and `postinst`/`postrm` hooks running `update-desktop-database` and `gtk-update-icon-cache`.
-       - **`.rpm`** via `scripts/package-linux-rpm.sh`: Builds from [resources/linux/ferrite-dm.spec](file:///resources/linux/ferrite-dm.spec) with Fedora/RHEL/openSUSE-compatible `BuildRequires`, runtime `Requires`, and `%post`/`%postun` scriptlets.
-       - **`.AppImage`** via `scripts/package-linux-appimage.sh`: Self-contained universal executable bundling the application, desktop entry, and icon hierarchy in AppDir format, deployable on any x86_64 Linux.
-       - **Standalone `.tar.gz`**: Contains `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses for direct extraction and manual install.
-   - **Windows Builder (`build-windows`)**:
-     - Compiles `fdm-cli` and `fdm-native-host` on `windows-latest` via MSVC.
-     - Packages standalone ZIP archive with PowerShell installers (`install.ps1`, `uninstall.ps1`), Command Prompt wrappers (`install.bat`, `uninstall.bat`), README, and licenses.
+     - Runs four packaging steps via dedicated scripts (each accepting `--arch <x86_64|arm64> --skip-build`):
+       - **`.deb`** via `scripts/package-linux-deb.sh`: Debian-compliant archive with `DEBIAN/control` `Architecture:` set to `amd64` (for `x86_64`) or `arm64` (for ARM64), runtime dependencies, desktop entry, hicolor icon hierarchy, and `postinst`/`postrm` hooks running `update-desktop-database` and `gtk-update-icon-cache`. Output: `ferrite-dm-<version>-linux-<arch>.deb`.
+       - **`.rpm`** via `scripts/package-linux-rpm.sh`: Builds from [resources/linux/ferrite-dm.spec](file:///resources/linux/ferrite-dm.spec) targeting `x86_64` or `aarch64` with Fedora/RHEL/openSUSE runtime `Requires` and `%post`/`%postun` scriptlets. Output: `ferrite-dm-<version>-linux-<arch>.rpm`.
+       - **`.AppImage`** via `scripts/package-linux-appimage.sh`: Self-contained executable built with matching `ARCH=x86_64` / `ARCH=aarch64` and `appimagetool-{x86_64,aarch64}.AppImage`, bundling the application, desktop entry, and icon hierarchy in AppDir format. Output: `ferrite-dm-<version>-linux-<arch>.AppImage`.
+       - **Standalone `.tar.gz`** via `scripts/package-linux-tarball.sh`: Contains `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses. Output: `ferrite-dm-<version>-linux-<arch>.tar.gz`.
+   - **Windows:** Deferred / roadmap (not currently built in `release.yml`).
 
-3. **Stage 3: Unified Checksums & Publication (`publish-release`)**
-   - Uses `actions/download-artifact@v4` with `merge-multiple: true` to consolidate all platform assets into a unified directory.
-   - Computes a master `SHA256SUMS.txt` cryptographic manifest across all release files.
+3. **Stage 3: Asset Validation, Unified Checksums & Publication (`publish-release`)**
+   - Uses `actions/download-artifact@v4` with `merge-multiple: true` to consolidate all 16 platform assets into a unified directory.
+   - Validates that every downloaded filename matches `^ferrite-dm-[0-9A-Za-z.+-]+-(linux|macos)-(x86_64|arm64)\.(dmg|pkg|zip|tar\.gz|deb|rpm|AppImage)$` and fails loudly if any unexpected or misnamed file appears.
+   - Computes a deterministic sorted `SHA256SUMS.txt` cryptographic manifest (`LC_ALL=C`) across all 16 release assets.
    - Performs self-verification via `sha256sum -c SHA256SUMS.txt`.
    - **Dry Run Handling:** If `dry_run: true` was selected, prints the complete release manifest and skips publishing.
-   - **Publishing:** Publishes via `softprops/action-gh-release@v2` with automated release notes and checksum verification instructions.
+   - **Publishing:** Publishes all 17 files (16 assets + `SHA256SUMS.txt`) via `softprops/action-gh-release@v2` with automated release notes and checksum verification instructions.
 
 ---
 
@@ -316,9 +319,19 @@ On macOS, you can test the packaging pipeline locally without performing a full 
 chmod +x scripts/*.sh scripts/*.swift resources/pkg-scripts/*
 swift scripts/generate-icon.swift resources
 
-# Test packaging with pre-existing release binaries
+# Test packaging with pre-existing release binaries (use --arch arm64 or --arch x86_64)
 cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
 ./scripts/package-macos.sh --skip-build
+```
+
+On Linux (`x86_64` or `aarch64`), all four packaging scripts auto-detect the host architecture or accept `--arch <x86_64|arm64>`:
+
+```bash
+cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+./scripts/package-linux-tarball.sh --skip-build
+./scripts/package-linux-deb.sh --skip-build
+./scripts/package-linux-rpm.sh --skip-build
+./scripts/package-linux-appimage.sh --skip-build
 ```
 
 ### Automated Pre-Commit Hooks
@@ -398,24 +411,27 @@ gh workflow run release.yml \
 
 ### Release Asset Specifications
 
-Every official release produces the following assets:
+Every official release publishes 16 platform assets following the unified lowercase naming contract `ferrite-dm-<version>-<os>-<arch>.<ext>`, plus `SHA256SUMS.txt` (17 files total):
 
 | Artifact Name | Platform | Description |
 | :--- | :--- | :--- |
-| `Ferrite-DM-<version>-macos-arm64.dmg` | macOS (Apple Silicon) | Drag-and-drop Disk Image containing `Ferrite DM.app` and `/Applications` link. |
-| `Ferrite-DM-<version>-macos-arm64.pkg` | macOS (Apple Silicon) | Flat installer package deploying to `/Applications` with postinstall permissions setup. |
-| `Ferrite-DM-<version>-macos-arm64.zip` | macOS (Apple Silicon) | Compressed `Ferrite DM.app` bundle for direct extraction. |
+| `ferrite-dm-<version>-macos-arm64.dmg` | macOS (Apple Silicon) | Drag-and-drop Disk Image containing `Ferrite DM.app` and `/Applications` link. |
+| `ferrite-dm-<version>-macos-arm64.pkg` | macOS (Apple Silicon) | Flat installer package deploying to `/Applications` with postinstall CLI symlinks and permissions setup. |
+| `ferrite-dm-<version>-macos-arm64.zip` | macOS (Apple Silicon) | Compressed `Ferrite DM.app` bundle for direct extraction. |
 | `ferrite-dm-<version>-macos-arm64.tar.gz` | macOS (Apple Silicon) | Portable archive with `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, and installation scripts. |
-| `Ferrite-DM-<version>-macos-universal.dmg` | macOS (Universal) | Universal Disk Image (runs natively on Apple Silicon & Intel x86_64). |
-| `Ferrite-DM-<version>-macos-universal.pkg` | macOS (Universal) | Universal flat installer package for system-wide deployment. |
-| `Ferrite-DM-<version>-macos-universal.zip` | macOS (Universal) | Universal compressed `Ferrite DM.app` bundle. |
-| `ferrite-dm-<version>-macos-universal.tar.gz` | macOS (Universal) | Universal portable CLI & GUI archive. |
-| `ferrite-dm-<version>-linux-x86_64.tar.gz` | Linux (x86_64) | Standalone tarball with `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses. |
-| `ferrite-dm-<version>-linux-x86_64.deb` | Linux / Debian & Ubuntu | Native `.deb` package installable via `dpkg -i` or `apt install`. Includes desktop entry, AppStream metadata, hicolor icons, and `postinst`/`postrm` hooks. |
-| `ferrite-dm-<version>-linux-x86_64.rpm` | Linux / Fedora, RHEL, openSUSE | Native `.rpm` package installable via `dnf`, `yum`, or `zypper`. Built from the RPM spec at `resources/linux/ferrite-dm.spec`. |
-| `ferrite-dm-<version>-linux-x86_64.AppImage` | Linux (Universal x86_64) | Self-contained executable running on any x86_64 Linux with FUSE or AppImage runtime (glibc ≥ 2.31). No installation required. |
-| `ferrite-dm-<version>-windows-x86_64.zip` | Windows (x86_64) | Standalone archive with `ferrite-dm.exe`, `ferrite-native-host.exe`, and PowerShell / Batch installers. |
-| `SHA256SUMS.txt` | All | Master cryptographic checksum manifest containing SHA-256 hashes of all release files. |
+| `ferrite-dm-<version>-macos-x86_64.dmg` | macOS (Intel) | Drag-and-drop Disk Image containing `Ferrite DM.app` and `/Applications` link (`x86_64-apple-darwin`). |
+| `ferrite-dm-<version>-macos-x86_64.pkg` | macOS (Intel) | Flat installer package deploying to `/Applications` for Intel Macs. |
+| `ferrite-dm-<version>-macos-x86_64.zip` | macOS (Intel) | Compressed `Ferrite DM.app` bundle for Intel Macs. |
+| `ferrite-dm-<version>-macos-x86_64.tar.gz` | macOS (Intel) | Portable CLI & GUI archive for Intel Macs. |
+| `ferrite-dm-<version>-linux-x86_64.tar.gz` | Linux (`x86_64`) | Standalone tarball with `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses. |
+| `ferrite-dm-<version>-linux-x86_64.deb` | Linux / Debian & Ubuntu (`amd64`) | Native `.deb` package installable via `dpkg -i` or `apt install`. Includes desktop entry, AppStream metadata, hicolor icons, and `postinst`/`postrm` hooks. |
+| `ferrite-dm-<version>-linux-x86_64.rpm` | Linux / Fedora, RHEL, openSUSE (`x86_64`) | Native `.rpm` package installable via `dnf`, `yum`, or `zypper`. Built from the RPM spec at `resources/linux/ferrite-dm.spec`. |
+| `ferrite-dm-<version>-linux-x86_64.AppImage` | Linux (`x86_64`) | Self-contained executable running on `x86_64` Linux with FUSE or AppImage runtime (glibc ≥ 2.31). No installation required. |
+| `ferrite-dm-<version>-linux-arm64.tar.gz` | Linux (`arm64` / `aarch64`) | Standalone tarball with `fdm-gui`, `ferrite-dm`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses. |
+| `ferrite-dm-<version>-linux-arm64.deb` | Linux / Debian & Ubuntu (`arm64`) | Native `.deb` package (`Architecture: arm64`) installable via `dpkg -i` or `apt install`. Includes desktop entry, AppStream metadata, hicolor icons, and `postinst`/`postrm` hooks. |
+| `ferrite-dm-<version>-linux-arm64.rpm` | Linux / Fedora, RHEL, openSUSE (`aarch64`) | Native `.rpm` package (`--target aarch64`) installable via `dnf`, `yum`, or `zypper`. Built from the RPM spec at `resources/linux/ferrite-dm.spec`. |
+| `ferrite-dm-<version>-linux-arm64.AppImage` | Linux (`arm64` / `aarch64`) | Self-contained executable running on ARM64 (`aarch64`) Linux with FUSE or AppImage runtime (glibc ≥ 2.31). No installation required. |
+| `SHA256SUMS.txt` | All | Master cryptographic checksum manifest containing sorted SHA-256 hashes of all 16 release assets. |
 
 ---
 
@@ -432,19 +448,14 @@ Always verify the integrity and authenticity of downloaded binaries before execu
    # On macOS
    shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 
-   # On Linux
+   # On Linux (x86_64 or arm64)
    sha256sum --check SHA256SUMS.txt --ignore-missing
    ```
 3. Ensure the output confirms `OK`:
    ```text
-   Ferrite-DM-0.1.1-macos-arm64.dmg: OK
+   ferrite-dm-0.2.0-macos-arm64.dmg: OK
+   ferrite-dm-0.2.0-linux-arm64.deb: OK
    ```
-
-#### Windows (PowerShell)
-```powershell
-Get-FileHash -Algorithm SHA256 .\ferrite-dm-0.1.1-windows-x86_64.zip
-```
-Compare the resulting hash with the corresponding entry in `SHA256SUMS.txt`.
 
 ---
 
@@ -480,47 +491,50 @@ Signature=adhoc
 ### Installation Procedures
 
 #### 1. macOS Disk Image (`.dmg`)
-- Double-click the downloaded `.dmg` file (`Ferrite-DM-<version>-macos-arm64.dmg` or `universal.dmg`).
+- Double-click the downloaded `.dmg` file (`ferrite-dm-<version>-macos-arm64.dmg` for Apple Silicon or `ferrite-dm-<version>-macos-x86_64.dmg` for Intel).
 - Drag `Ferrite DM.app` into the `Applications` folder shortcut.
 - Launch Ferrite DM from Spotlight or Launchpad.
 
 #### 2. macOS Installer Package (`.pkg`)
-- Double-click `Ferrite-DM-<version>-macos-*.pkg`.
-- Follow the on-screen installer prompts. The postinstall script handles application placement and permissions.
+- Double-click `ferrite-dm-<version>-macos-arm64.pkg` (Apple Silicon) or `ferrite-dm-<version>-macos-x86_64.pkg` (Intel).
+- Follow the on-screen installer prompts. The postinstall script handles application placement, CLI symlinks, and permissions.
 
-#### 3. Linux Standalone Archive (`.tar.gz`)
-Extract and execute the embedded installer script:
+#### 3. Linux Standalone Archive (`.tar.gz` — `x86_64` & `arm64`)
+Extract and execute the embedded installer script (replace `<arch>` with `x86_64` or `arm64`):
 ```bash
-tar -xzf ferrite-dm-*-linux-x86_64.tar.gz
-cd ferrite-dm-*
+tar -xzf ferrite-dm-*-linux-<arch>.tar.gz
+cd ferrite-dm-*-linux-<arch>
 sudo ./install.sh
 ```
 This installs `fdm-gui`, `ferrite-dm`, and `ferrite-native-host` into `/usr/local/bin` (or `~/.local/bin` if non-root).
 
-#### 4. Linux Debian/Ubuntu Package (`.deb`)
+#### 4. Linux Debian/Ubuntu Package (`.deb` — `x86_64` & `arm64`)
 ```bash
-sudo dpkg -i ferrite-dm-*-linux-x86_64.deb
-# Or via apt for automatic dependency resolution:
+# x86_64 (amd64)
 sudo apt install ./ferrite-dm-*-linux-x86_64.deb
+
+# ARM64 (aarch64)
+sudo apt install ./ferrite-dm-*-linux-arm64.deb
 ```
 
-#### 5. Linux Fedora/RHEL/openSUSE Package (`.rpm`)
+#### 5. Linux Fedora/RHEL/openSUSE Package (`.rpm` — `x86_64` & `arm64`)
 ```bash
-# Fedora / RHEL (dnf):
-sudo dnf install ferrite-dm-*-linux-x86_64.rpm
+# Fedora / RHEL (dnf) — replace <arch> with x86_64 or arm64
+sudo dnf install ./ferrite-dm-*-linux-<arch>.rpm
 
-# openSUSE (zypper):
-sudo zypper install ferrite-dm-*-linux-x86_64.rpm
+# openSUSE (zypper) — replace <arch> with x86_64 or arm64
+sudo zypper install ./ferrite-dm-*-linux-<arch>.rpm
 ```
 
-#### 6. Linux Universal AppImage (`.AppImage`)
+#### 6. Linux Portable AppImage (`.AppImage` — `x86_64` & `arm64`)
 ```bash
-chmod +x ferrite-dm-*-linux-x86_64.AppImage
-./ferrite-dm-*-linux-x86_64.AppImage
+# Replace <arch> with x86_64 or arm64
+chmod +x ferrite-dm-*-linux-<arch>.AppImage
+./ferrite-dm-*-linux-<arch>.AppImage
 ```
-No installation required. Runs on any x86_64 Linux with glibc ≥ 2.31. For persistent desktop integration, copy to `~/.local/bin` and register the `.desktop` file manually.
+No installation required. Runs on `x86_64` and ARM64 (`aarch64`) Linux with glibc ≥ 2.31. For persistent desktop integration, copy to `~/.local/bin` and register the `.desktop` file manually.
 
-#### 7. Arch Linux (AUR)
+#### 7. Arch Linux (AUR — `x86_64` & `aarch64`)
 Install from the AUR using an AUR helper:
 ```bash
 yay -S ferrite-dm
@@ -530,21 +544,7 @@ cd ferrite-dm
 makepkg -si
 ```
 
-#### 8. Windows Standalone Archive (`.zip`)
-Extract the ZIP archive and run the installer:
-- **Using PowerShell:**
-  ```powershell
-  Expand-Archive .\ferrite-dm-*-windows-x86_64.zip -DestinationPath .
-  cd ferrite-dm-*
-  .\install.ps1
-  ```
-- **Using Command Prompt:**
-  ```cmd
-  install.bat
-  ```
-This places the executables into `%LOCALAPPDATA%\FerriteDM\bin` (or `~/.ferrite-dm/bin`) and appends the directory to your User `PATH`.
-
-#### 9. Register Browser Integration
+#### 8. Register Browser Integration
 After installing the binaries, register the WebExtension Native Messaging host for your installed browsers:
 ```bash
 ferrite-dm native-host-install --browser all

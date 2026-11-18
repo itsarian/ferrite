@@ -130,10 +130,16 @@ pub fn has_sufficient_disk_space(path: &Path, min_bytes: u64, min_percent: f32) 
     bytes_ok && pct_ok
 }
 
-/// Build a standards-compliant browser-style User-Agent string for the given OS identifier.
-pub fn format_system_user_agent(os: &str, macos_version: Option<&str>) -> String {
+/// Build a standards-compliant browser-style User-Agent string for the given OS and architecture identifiers.
+pub fn format_system_user_agent_for_arch(
+    os: &str,
+    arch: &str,
+    macos_version: Option<&str>,
+) -> String {
     match os {
         "macos" => {
+            // Note: Modern Safari and Chromium on macOS (including Apple Silicon) intentionally
+            // freeze the UA platform token to `Intel Mac OS X` per WebKit/Chromium specs.
             let os_ver = macos_version
                 .map(|s| s.trim().replace('.', "_"))
                 .filter(|s| !s.is_empty())
@@ -147,10 +153,24 @@ pub fn format_system_user_agent(os: &str, macos_version: Option<&str>) -> String
                 .to_string()
         }
         _ => {
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-                .to_string()
+            let linux_arch = match arch {
+                "aarch64" | "arm64" => "aarch64",
+                "x86_64" | "amd64" => "x86_64",
+                "arm" => "armv7l",
+                other if !other.is_empty() => other,
+                _ => "x86_64",
+            };
+            format!(
+                "Mozilla/5.0 (X11; Linux {linux_arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+            )
         }
     }
+}
+
+/// Build a standards-compliant browser-style User-Agent string for the given OS identifier
+/// using the current host architecture.
+pub fn format_system_user_agent(os: &str, macos_version: Option<&str>) -> String {
+    format_system_user_agent_for_arch(os, std::env::consts::ARCH, macos_version)
 }
 
 /// Cached OS-native browser-style User-Agent string when `use_system_default_user_agent` is enabled.
@@ -166,7 +186,11 @@ pub fn system_default_user_agent() -> &'static str {
         #[cfg(not(target_os = "macos"))]
         let macos_ver: Option<String> = None;
 
-        format_system_user_agent(std::env::consts::OS, macos_ver.as_deref())
+        format_system_user_agent_for_arch(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            macos_ver.as_deref(),
+        )
     })
 }
 
@@ -843,15 +867,28 @@ mod tests {
     }
 
     #[test]
-    fn format_system_user_agent_uses_standard_os_tokens() {
-        let linux_ua = format_system_user_agent("linux", None);
-        assert!(linux_ua.contains("(X11; Linux x86_64)"));
-        assert!(!linux_ua.contains("linux;"));
+    fn format_system_user_agent_uses_standard_os_and_arch_tokens() {
+        let linux_x64 = format_system_user_agent_for_arch("linux", "x86_64", None);
+        assert!(linux_x64.contains("(X11; Linux x86_64)"));
+        assert!(!linux_x64.contains("linux;"));
 
-        let win_ua = format_system_user_agent("windows", None);
+        let linux_aarch64 = format_system_user_agent_for_arch("linux", "aarch64", None);
+        assert!(linux_aarch64.contains("(X11; Linux aarch64)"));
+        assert!(!linux_aarch64.contains("x86_64"));
+
+        let linux_arm64_alias = format_system_user_agent_for_arch("linux", "arm64", None);
+        assert_eq!(linux_arm64_alias, linux_aarch64);
+
+        let win_ua = format_system_user_agent_for_arch("windows", "x86_64", None);
         assert!(win_ua.contains("(Windows NT 10.0; Win64; x64)"));
 
-        let mac_ua = format_system_user_agent("macos", Some("15.2"));
-        assert!(mac_ua.contains("(Macintosh; Intel Mac OS X 15_2)"));
+        let mac_arm_ua = format_system_user_agent_for_arch("macos", "aarch64", Some("15.2"));
+        assert!(mac_arm_ua.contains("(Macintosh; Intel Mac OS X 15_2)"));
+
+        let mac_x64_ua = format_system_user_agent_for_arch("macos", "x86_64", Some("15.2"));
+        assert_eq!(mac_x64_ua, mac_arm_ua);
+
+        let host_linux_ua = format_system_user_agent("linux", None);
+        assert!(host_linux_ua.contains("(X11; Linux "));
     }
 }

@@ -1762,13 +1762,12 @@ impl DownloadEngine {
                 val.get("assets")
                     .and_then(|a| a.as_array())
                     .and_then(|arr| {
-                        arr.iter()
-                            .filter_map(|item| {
-                                item.get("browser_download_url").and_then(|u| u.as_str())
-                            })
-                            .next()
+                        select_release_asset_url_for_target(
+                            arr,
+                            std::env::consts::OS,
+                            std::env::consts::ARCH,
+                        )
                     })
-                    .map(str::to_string)
             })
             .or_else(|| {
                 val.get("html_url")
@@ -3496,6 +3495,58 @@ impl DownloadEngine {
     }
 }
 
+fn select_release_asset_url_for_target(
+    assets: &[serde_json::Value],
+    os: &str,
+    arch: &str,
+) -> Option<String> {
+    let target_os = os;
+    let target_arch = match arch {
+        "aarch64" | "arm64" => "arm64",
+        "x86_64" | "amd64" => "x86_64",
+        other => other,
+    };
+    let target_token = format!("-{target_os}-{target_arch}.");
+
+    let preferred_exts: &[&str] = match target_os {
+        "macos" => &[".pkg", ".dmg", ".zip", ".tar.gz"],
+        "linux" => &[".AppImage", ".deb", ".rpm", ".tar.gz"],
+        "windows" => &[".zip", ".msi", ".exe"],
+        _ => &[".tar.gz", ".zip"],
+    };
+
+    let urls: Vec<&str> = assets
+        .iter()
+        .filter_map(|item| item.get("browser_download_url").and_then(|u| u.as_str()))
+        .collect();
+
+    let is_checksum_asset = |url: &str| {
+        let lower = url.to_ascii_lowercase();
+        lower.ends_with("sha256sums.txt") || lower.ends_with(".sha256")
+    };
+
+    for ext in preferred_exts {
+        if let Some(found) = urls
+            .iter()
+            .find(|u| !is_checksum_asset(u) && u.contains(&target_token) && u.ends_with(ext))
+        {
+            return Some((*found).to_string());
+        }
+    }
+
+    if let Some(found) = urls
+        .iter()
+        .find(|u| !is_checksum_asset(u) && u.contains(&target_token))
+    {
+        return Some((*found).to_string());
+    }
+
+    urls.iter()
+        .find(|u| !is_checksum_asset(u))
+        .or_else(|| urls.first())
+        .map(|u| (*u).to_string())
+}
+
 impl Drop for DownloadEngine {
     fn drop(&mut self) {
         if let Some(jh) = self
@@ -4070,6 +4121,50 @@ mod tests {
                 .get("X-Custom-Token")
                 .map(String::as_str),
             Some("tok-99")
+        );
+    }
+
+    #[test]
+    fn selects_canonical_release_asset_for_target_os_and_arch() {
+        let base = "https://github.com/itsarian/ferrite-dm/releases/download/v0.2.0";
+        let assets: Vec<serde_json::Value> = [
+            "SHA256SUMS.txt",
+            "ferrite-dm-0.2.0-linux-arm64.AppImage",
+            "ferrite-dm-0.2.0-linux-arm64.deb",
+            "ferrite-dm-0.2.0-linux-arm64.rpm",
+            "ferrite-dm-0.2.0-linux-arm64.tar.gz",
+            "ferrite-dm-0.2.0-linux-x86_64.AppImage",
+            "ferrite-dm-0.2.0-linux-x86_64.deb",
+            "ferrite-dm-0.2.0-linux-x86_64.rpm",
+            "ferrite-dm-0.2.0-linux-x86_64.tar.gz",
+            "ferrite-dm-0.2.0-macos-arm64.dmg",
+            "ferrite-dm-0.2.0-macos-arm64.pkg",
+            "ferrite-dm-0.2.0-macos-arm64.tar.gz",
+            "ferrite-dm-0.2.0-macos-arm64.zip",
+            "ferrite-dm-0.2.0-macos-x86_64.dmg",
+            "ferrite-dm-0.2.0-macos-x86_64.pkg",
+            "ferrite-dm-0.2.0-macos-x86_64.tar.gz",
+            "ferrite-dm-0.2.0-macos-x86_64.zip",
+        ]
+        .into_iter()
+        .map(|name| serde_json::json!({ "browser_download_url": format!("{base}/{name}") }))
+        .collect();
+
+        assert_eq!(
+            select_release_asset_url_for_target(&assets, "linux", "aarch64").as_deref(),
+            Some(format!("{base}/ferrite-dm-0.2.0-linux-arm64.AppImage").as_str())
+        );
+        assert_eq!(
+            select_release_asset_url_for_target(&assets, "linux", "x86_64").as_deref(),
+            Some(format!("{base}/ferrite-dm-0.2.0-linux-x86_64.AppImage").as_str())
+        );
+        assert_eq!(
+            select_release_asset_url_for_target(&assets, "macos", "aarch64").as_deref(),
+            Some(format!("{base}/ferrite-dm-0.2.0-macos-arm64.pkg").as_str())
+        );
+        assert_eq!(
+            select_release_asset_url_for_target(&assets, "macos", "x86_64").as_deref(),
+            Some(format!("{base}/ferrite-dm-0.2.0-macos-x86_64.pkg").as_str())
         );
     }
 }
