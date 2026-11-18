@@ -1,11 +1,11 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
-    fill, point, prelude::*, px, relative, rgba, size,
+    App, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
+    point, prelude::*, px, relative, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -29,23 +29,44 @@ actions!(
     ]
 );
 
-pub fn bind_text_input_keys(cx: &mut App) {
-    cx.bind_keys([
+pub(crate) fn text_input_key_bindings() -> Vec<KeyBinding> {
+    let bindings = vec![
         KeyBinding::new("backspace", InputBackspace, Some("FerriteInput")),
         KeyBinding::new("delete", InputDelete, Some("FerriteInput")),
         KeyBinding::new("left", InputLeft, Some("FerriteInput")),
         KeyBinding::new("right", InputRight, Some("FerriteInput")),
         KeyBinding::new("shift-left", InputSelectLeft, Some("FerriteInput")),
         KeyBinding::new("shift-right", InputSelectRight, Some("FerriteInput")),
-        KeyBinding::new("cmd-a", InputSelectAll, Some("FerriteInput")),
-        KeyBinding::new("cmd-v", InputPaste, Some("FerriteInput")),
-        KeyBinding::new("cmd-c", InputCopy, Some("FerriteInput")),
-        KeyBinding::new("cmd-x", InputCut, Some("FerriteInput")),
-        KeyBinding::new("cmd-z", InputUndo, Some("FerriteInput")),
-        KeyBinding::new("cmd-shift-z", InputRedo, Some("FerriteInput")),
+        KeyBinding::new("secondary-a", InputSelectAll, Some("FerriteInput")),
+        KeyBinding::new("secondary-v", InputPaste, Some("FerriteInput")),
+        KeyBinding::new("secondary-c", InputCopy, Some("FerriteInput")),
+        KeyBinding::new("secondary-x", InputCut, Some("FerriteInput")),
+        KeyBinding::new("secondary-z", InputUndo, Some("FerriteInput")),
+        KeyBinding::new("secondary-shift-z", InputRedo, Some("FerriteInput")),
         KeyBinding::new("home", InputHome, Some("FerriteInput")),
         KeyBinding::new("end", InputEnd, Some("FerriteInput")),
-    ]);
+    ];
+
+    #[cfg(not(target_os = "macos"))]
+    let bindings = {
+        let mut bindings = bindings;
+        bindings.extend([
+            KeyBinding::new("ctrl-y", InputRedo, Some("FerriteInput")),
+            KeyBinding::new("ctrl-insert", InputCopy, Some("FerriteInput")),
+            KeyBinding::new("shift-insert", InputPaste, Some("FerriteInput")),
+            KeyBinding::new("shift-delete", InputCut, Some("FerriteInput")),
+            KeyBinding::new("copy", InputCopy, Some("FerriteInput")),
+            KeyBinding::new("paste", InputPaste, Some("FerriteInput")),
+            KeyBinding::new("cut", InputCut, Some("FerriteInput")),
+        ]);
+        bindings
+    };
+
+    bindings
+}
+
+pub fn bind_text_input_keys(cx: &mut App) {
+    cx.bind_keys(text_input_key_bindings());
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +128,45 @@ fn visual_byte_to_content_byte(content: &str, visual_byte: usize, masked: bool) 
         .nth(char_idx)
         .map(|(i, _)| i)
         .unwrap_or(content.len())
+}
+
+fn sanitize_single_line_paste(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n'])
+        .replace('\r', "")
+        .replace('\n', " ")
+}
+
+fn word_selection_range(content: &str, byte_offset: usize) -> Range<usize> {
+    if content.is_empty() {
+        return 0..0;
+    }
+    let mut idx = byte_offset.min(content.len());
+    while idx > 0 && !content.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    if idx == content.len()
+        && let Some((last_idx, _)) = content.char_indices().next_back()
+    {
+        idx = last_idx;
+    }
+    let target_ws = content[idx..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace);
+    let start = content[..idx]
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| ch.is_whitespace() == target_ws)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(idx);
+    let end = content[idx..]
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_whitespace() == target_ws)
+        .last()
+        .map(|(i, ch)| idx + i + ch.len_utf8())
+        .unwrap_or(idx);
+    start..end
 }
 
 impl TextInput {
@@ -290,29 +350,44 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &InputPaste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let single = text.replace('\r', "").replace('\n', " ");
+        if let Some(text) = crate::helpers::read_clipboard_text(cx) {
+            let single = sanitize_single_line_paste(&text);
             self.replace_text_in_range(None, &single, window, cx);
         }
     }
 
     fn copy(&mut self, _: &InputCopy, _: &mut Window, cx: &mut Context<Self>) {
         if !self.masked && !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
+            crate::helpers::write_clipboard_text(
                 self.content[self.selected_range.clone()].to_string(),
-            ));
+                false,
+                cx,
+            );
         }
     }
 
     fn cut(&mut self, _: &InputCut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.masked && !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
+            crate::helpers::write_clipboard_text(
                 self.content[self.selected_range.clone()].to_string(),
-            ));
+                false,
+                cx,
+            );
             self.replace_text_in_range(None, "", window, cx);
         } else if self.masked && !self.selected_range.is_empty() {
             self.replace_text_in_range(None, "", window, cx);
         }
+    }
+
+    fn sync_primary_selection(&self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        if !self.masked && !self.selected_range.is_empty() {
+            cx.write_to_primary(gpui::ClipboardItem::new_string(
+                self.content[self.selected_range.clone()].to_string(),
+            ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = cx;
     }
 
     fn on_mouse_down(
@@ -322,6 +397,23 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window);
+        if event.click_count >= 3 {
+            self.is_selecting = false;
+            self.selection_reversed = false;
+            self.selected_range = 0..self.content.len();
+            self.sync_primary_selection(cx);
+            cx.notify();
+            return;
+        }
+        if event.click_count == 2 {
+            self.is_selecting = false;
+            self.selection_reversed = false;
+            let idx = self.index_for_mouse_position(event.position);
+            self.selected_range = word_selection_range(&self.content, idx);
+            self.sync_primary_selection(cx);
+            cx.notify();
+            return;
+        }
         self.is_selecting = true;
         if event.modifiers.shift {
             self.select_to(self.index_for_mouse_position(event.position), cx);
@@ -330,8 +422,29 @@ impl TextInput {
         }
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
-        self.is_selecting = false;
+    #[cfg(target_os = "linux")]
+    fn on_middle_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window);
+        let idx = self.index_for_mouse_position(event.position);
+        self.move_to(idx, cx);
+        if let Some(text) = crate::helpers::read_primary_selection_text(cx) {
+            let single = sanitize_single_line_paste(&text);
+            if !single.is_empty() {
+                self.replace_text_in_range(None, &single, window, cx);
+            }
+        }
+    }
+
+    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_selecting {
+            self.is_selecting = false;
+            self.sync_primary_selection(cx);
+        }
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -753,7 +866,8 @@ impl Render for TextInput {
         }
         let font_sz = (13.0 * self.font_scale).round();
         let line_h = (font_sz * 1.54).round().max(18.0);
-        root.key_context("FerriteInput")
+        let el = root
+            .key_context("FerriteInput")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -773,8 +887,10 @@ impl Render for TextInput {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .line_height(px(line_h))
+            .on_mouse_move(cx.listener(Self::on_mouse_move));
+        #[cfg(target_os = "linux")]
+        let el = el.on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_mouse_down));
+        el.line_height(px(line_h))
             .text_size(px(font_sz))
             .overflow_hidden()
             .child(InputTextElement { input: cx.entity() })
@@ -828,5 +944,98 @@ mod tests {
         redo.push(popped.clone());
         assert_eq!(popped.selected_range, 69..69);
         assert_eq!(redo.pop().unwrap(), popped);
+    }
+
+    #[test]
+    fn sanitizes_single_line_paste_text() {
+        assert_eq!(
+            sanitize_single_line_paste("https://example.com/file.iso\r\n"),
+            "https://example.com/file.iso"
+        );
+        assert_eq!(
+            sanitize_single_line_paste("https://a.test/1\nhttps://a.test/2\n"),
+            "https://a.test/1 https://a.test/2"
+        );
+        assert_eq!(sanitize_single_line_paste("plain text"), "plain text");
+    }
+
+    #[test]
+    fn word_selection_handles_urls_spaces_and_utf8() {
+        let url = "https://cdn.example.com/archive.tar.gz";
+        assert_eq!(word_selection_range(url, 8), 0..url.len());
+        assert_eq!(word_selection_range(url, url.len()), 0..url.len());
+
+        let words = "hello world foo";
+        assert_eq!(word_selection_range(words, 7), 6..11);
+        assert_eq!(word_selection_range(words, 5), 5..6);
+
+        let utf8 = "päss word";
+        assert_eq!(word_selection_range(utf8, 2), 0..5);
+        assert_eq!(word_selection_range("", 0), 0..0);
+    }
+
+    #[test]
+    fn text_input_key_bindings_match_platform_clipboard_shortcuts() {
+        let keymap = gpui::Keymap::new(text_input_key_bindings());
+        let mut ctx = gpui::KeyContext::new_with_defaults();
+        ctx.add("FerriteInput");
+        let contexts = [ctx];
+
+        let primary_mod = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+
+        let cases = [
+            (format!("{primary_mod}-c"), "ferrite_input::InputCopy"),
+            (format!("{primary_mod}-v"), "ferrite_input::InputPaste"),
+            (format!("{primary_mod}-x"), "ferrite_input::InputCut"),
+            (format!("{primary_mod}-a"), "ferrite_input::InputSelectAll"),
+            (format!("{primary_mod}-z"), "ferrite_input::InputUndo"),
+            (format!("{primary_mod}-shift-z"), "ferrite_input::InputRedo"),
+        ];
+
+        for (stroke_str, expected_action) in cases {
+            let stroke = gpui::Keystroke::parse(&stroke_str).expect("valid keystroke");
+            let (bindings, _) = keymap.bindings_for_input(&[stroke], &contexts);
+            assert!(
+                bindings
+                    .iter()
+                    .any(|b| b.action().name() == expected_action),
+                "expected {stroke_str} to bind {expected_action}, got {:?}",
+                bindings
+                    .iter()
+                    .map(|b| b.action().name())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            for (stroke_str, expected_action) in [
+                ("ctrl-y", "ferrite_input::InputRedo"),
+                ("ctrl-insert", "ferrite_input::InputCopy"),
+                ("shift-insert", "ferrite_input::InputPaste"),
+                ("shift-delete", "ferrite_input::InputCut"),
+                ("copy", "ferrite_input::InputCopy"),
+                ("paste", "ferrite_input::InputPaste"),
+                ("cut", "ferrite_input::InputCut"),
+            ] {
+                let stroke = gpui::Keystroke::parse(stroke_str).expect("valid keystroke");
+                let (bindings, _) = keymap.bindings_for_input(&[stroke], &contexts);
+                assert!(
+                    bindings
+                        .iter()
+                        .any(|b| b.action().name() == expected_action),
+                    "expected {stroke_str} to bind {expected_action}"
+                );
+            }
+
+            // Ensure Super/cmd-v is NOT the primary paste binding on Linux.
+            let super_v = gpui::Keystroke::parse("cmd-v").expect("valid keystroke");
+            let (bindings, _) = keymap.bindings_for_input(&[super_v], &contexts);
+            assert!(bindings.is_empty());
+        }
     }
 }

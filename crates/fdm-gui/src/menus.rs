@@ -1,5 +1,8 @@
 use crate::app::{ActivePage, ActivePopover, FerriteApp, SettingsTab};
-use crate::helpers::{count_by_state_filter, format_speed, sort_field_label, state_filter_label};
+use crate::helpers::{
+    count_by_state_filter, format_speed, platform_shortcut_label, sort_field_label,
+    state_filter_label,
+};
 use crate::i18n;
 use crate::theme::{ThemePalette, parse_hex_color};
 use crate::ui_widgets::{badge_themed, chip_toggle, ellipsis_text, svg_icon};
@@ -627,7 +630,7 @@ fn render_main_menu(
                     "mm-add",
                     "icons/plus.svg",
                     s.menu_add_url,
-                    Some("⌘N"),
+                    Some(platform_shortcut_label("⌘N", "Ctrl+N")),
                     false,
                     false,
                     p,
@@ -641,7 +644,7 @@ fn render_main_menu(
                     "mm-batch",
                     "icons/batch.svg",
                     s.menu_batch,
-                    Some("⌘B"),
+                    Some(platform_shortcut_label("⌘B", "Ctrl+B")),
                     false,
                     false,
                     p,
@@ -655,7 +658,7 @@ fn render_main_menu(
                     "mm-paste",
                     "icons/clipboard.svg",
                     s.menu_paste_clipboard,
-                    Some("⇧⌘V"),
+                    Some(platform_shortcut_label("⇧⌘V", "Ctrl+Shift+V")),
                     false,
                     false,
                     p,
@@ -845,7 +848,7 @@ fn render_main_menu(
                     "mm-prefs",
                     "icons/settings.svg",
                     s.menu_preferences,
-                    Some("⌘,"),
+                    Some(platform_shortcut_label("⌘,", "Ctrl+,")),
                     matches!(app.active_page, ActivePage::Settings(_)),
                     false,
                     p,
@@ -955,7 +958,7 @@ fn render_main_menu(
                     "mm-quit",
                     "icons/close.svg",
                     s.menu_quit,
-                    Some("⌘Q"),
+                    Some(platform_shortcut_label("⌘Q", "Ctrl+Q")),
                     false,
                     true,
                     p,

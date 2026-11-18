@@ -10,8 +10,8 @@ use crate::ui_widgets::{
 use fdm_batch::{expand_batch_pattern, parse_batch_text_input};
 use fdm_core::{DownloadId, DownloadPriority, FileExistsAction, HashAlgorithm};
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, ClipboardItem, Context, FontWeight, MouseButton,
-    SharedString, Window, div, ease_out_quint, prelude::*, px,
+    Animation, AnimationExt as _, AnyElement, Context, FontWeight, MouseButton, SharedString,
+    Window, div, ease_out_quint, prelude::*, px,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -896,9 +896,7 @@ fn render_hash_modal(
                         false,
                         cx,
                         move |this, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(dig_copy.clone()));
-                            this.set_toast("Copied hash digest", false);
-                            cx.notify();
+                            this.copy_to_clipboard(dig_copy.clone(), "Copied hash digest", cx);
                         },
                     )),
             )

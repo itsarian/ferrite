@@ -293,6 +293,142 @@ pub fn extract_first_download_url(clipboard: &str) -> Option<String> {
     None
 }
 
+pub fn platform_shortcut_label(macos: &'static str, non_macos: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        macos
+    } else {
+        non_macos
+    }
+}
+
+pub fn format_platform_shortcuts(text: &str) -> String {
+    format_shortcuts_for_os(text, cfg!(target_os = "macos"))
+}
+
+pub(crate) fn format_shortcuts_for_os(text: &str, is_macos: bool) -> String {
+    if is_macos {
+        text.to_string()
+    } else {
+        text.replace("⇧⌘", "Ctrl+Shift+").replace('⌘', "Ctrl+")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_clipboard_reader(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?.replace("\r\n", "\n");
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_clipboard_fallback(primary: bool) -> Option<String> {
+    let wayland_args: &[&str] = if primary {
+        &["--primary", "--no-newline", "--type", "text"]
+    } else {
+        &["--no-newline", "--type", "text"]
+    };
+    if std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && let Some(text) = run_clipboard_reader("wl-paste", wayland_args)
+    {
+        return Some(text);
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        let selection = if primary { "primary" } else { "clipboard" };
+        if let Some(text) = run_clipboard_reader("xclip", &["-o", "-selection", selection]) {
+            return Some(text);
+        }
+        let xsel_flag = if primary { "--primary" } else { "--clipboard" };
+        if let Some(text) = run_clipboard_reader("xsel", &[xsel_flag, "--output"]) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn write_wayland_clipboard_fallback(text: String) {
+    if text.is_empty() || std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return;
+    }
+    std::thread::spawn(move || {
+        use std::io::Write;
+        use std::process::Stdio;
+        if let Ok(mut child) = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+        }
+    });
+}
+
+/// Read UTF-8 text from the platform clipboard, with a Linux CLI fallback
+/// (`wl-paste --type text` / `xclip` / `xsel`) when GPUI's native backend
+/// returns `None` (for instance on Wayland when the source only offers
+/// `text/plain`).
+pub fn read_clipboard_text(cx: &gpui::App) -> Option<String> {
+    if let Some(item) = cx.read_from_clipboard() {
+        return item.text();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        read_linux_clipboard_fallback(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Read UTF-8 text from the Linux PRIMARY selection buffer (middle-click paste),
+/// falling back to `wl-paste --primary --type text` / `xclip` / `xsel` if needed.
+#[cfg(target_os = "linux")]
+pub fn read_primary_selection_text(cx: &gpui::App) -> Option<String> {
+    if let Some(item) = cx.read_from_primary() {
+        return item.text();
+    }
+    read_linux_clipboard_fallback(true)
+}
+
+/// Write UTF-8 text to the platform clipboard.
+///
+/// On Linux Wayland, GPUI 0.2.2 passes `SerialKind::KeyPress` to
+/// `wl_data_device::set_selection`, which can be `0` or stale when a copy is
+/// triggered by a mouse click (such as a context menu or Copy button), causing
+/// Wayland compositors to reject the selection update. When `pointer_triggered`
+/// is true under Wayland, mirror the write to `wl-copy` (if available) via stdin
+/// on a background thread.
+pub fn write_clipboard_text(text: String, pointer_triggered: bool, cx: &gpui::App) {
+    #[cfg(target_os = "linux")]
+    let wayland_copy = if pointer_triggered && !text.is_empty() {
+        Some(text.clone())
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = pointer_triggered;
+
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+
+    #[cfg(target_os = "linux")]
+    if let Some(copy) = wayland_copy {
+        write_wayland_clipboard_fallback(copy);
+    }
+}
+
 pub fn compact_speed_label(bps: u64) -> String {
     if bps >= 1_073_741_824 {
         format!("{:.1}G", bps as f64 / 1_073_741_824.0)
@@ -1200,5 +1336,30 @@ mod tests {
             Some("magnet:?xt=urn:btih:0123456789abcdef".to_string())
         );
         assert_eq!(extract_first_download_url("just some plain text"), None);
+    }
+
+    #[test]
+    fn formats_platform_shortcut_hints_for_macos_and_linux() {
+        let hint = "Add URL (⌘N) · Batch generator (⌘B) · Paste from clipboard (⇧⌘V)";
+        assert_eq!(format_shortcuts_for_os(hint, true), hint);
+        assert_eq!(
+            format_shortcuts_for_os(hint, false),
+            "Add URL (Ctrl+N) · Batch generator (Ctrl+B) · Paste from clipboard (Ctrl+Shift+V)"
+        );
+        assert_eq!(
+            format_shortcuts_for_os("Search... (⌘F)", false),
+            "Search... (Ctrl+F)"
+        );
+        assert_eq!(
+            format_shortcuts_for_os("Search... (⌘F)", true),
+            "Search... (⌘F)"
+        );
+
+        let expected = if cfg!(target_os = "macos") {
+            "⌘V"
+        } else {
+            "Ctrl+V"
+        };
+        assert_eq!(platform_shortcut_label("⌘V", "Ctrl+V"), expected);
     }
 }

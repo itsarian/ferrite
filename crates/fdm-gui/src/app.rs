@@ -3,11 +3,12 @@ use crate::helpers::{
     LaunchOptions, UiAsyncMsg, UiMsgQueue, browser_display_name, detect_lan_ip,
     download_icon_and_color, extract_domain_label, extract_first_download_url,
     format_added_timestamp, format_bytes, format_compact_dock_badge, format_eta, format_kb_limit,
-    format_minute_hhmm, format_speed, install_native_host_for_browser, macos_bring_all_to_front,
-    macos_hide_all_windows, macos_restore_windows_and_activate, macos_unhide_all_applications,
-    open_path_os, parse_kb_limit, parse_list_tokens, parse_minute_hhmm, parse_wb_threshold_bytes,
-    preventer_label, reveal_path_os, set_macos_hide_dock_icon, sort_field_short_label,
-    state_badge_info, state_filter_short_label, sync_portable_marker, update_macos_dock_badge,
+    format_minute_hhmm, format_platform_shortcuts, format_speed, install_native_host_for_browser,
+    macos_bring_all_to_front, macos_hide_all_windows, macos_restore_windows_and_activate,
+    macos_unhide_all_applications, open_path_os, parse_kb_limit, parse_list_tokens,
+    parse_minute_hhmm, parse_wb_threshold_bytes, preventer_label, read_clipboard_text,
+    reveal_path_os, set_macos_hide_dock_icon, sort_field_short_label, state_badge_info,
+    state_filter_short_label, sync_portable_marker, update_macos_dock_badge, write_clipboard_text,
     zoom_rem_size_px,
 };
 use crate::i18n;
@@ -206,30 +207,36 @@ pub(crate) fn apply_proxy_inputs_to_settings(
     }
 }
 
-pub fn bind_app_keys_and_menus(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", QuitApp, None),
-        KeyBinding::new("cmd-h", HideAppAction, None),
-        KeyBinding::new("alt-cmd-h", HideOtherAppsAction, None),
-        KeyBinding::new("cmd-w", CloseWindowAction, None),
-        KeyBinding::new("cmd-n", AddUrlAction, None),
-        KeyBinding::new("cmd-b", BatchAddAction, None),
-        KeyBinding::new("cmd-shift-v", PasteUrlAction, None),
+pub(crate) fn app_key_bindings() -> Vec<KeyBinding> {
+    let mut bindings = vec![
+        KeyBinding::new("secondary-q", QuitApp, None),
+        KeyBinding::new("secondary-w", CloseWindowAction, None),
+        KeyBinding::new("secondary-n", AddUrlAction, None),
+        KeyBinding::new("secondary-b", BatchAddAction, None),
+        KeyBinding::new("secondary-shift-v", PasteUrlAction, None),
         KeyBinding::new(
-            "cmd-v",
+            "secondary-v",
             PasteUrlAction,
             Some("FerriteList && !FerriteInput"),
         ),
-        KeyBinding::new("cmd-,", OpenSettingsAction, None),
-        KeyBinding::new("cmd-f", FocusSearchAction, None),
-        KeyBinding::new("cmd-=", ZoomInAction, None),
-        KeyBinding::new("cmd-+", ZoomInAction, None),
-        KeyBinding::new("cmd--", ZoomOutAction, None),
-        KeyBinding::new("cmd-0", ZoomResetAction, None),
-        KeyBinding::new("cmd-i", ToggleInspectorAction, None),
-        KeyBinding::new("ctrl-cmd-f", ToggleFullscreenAction, None),
-        KeyBinding::new("cmd-m", MinimizeWindowAction, None),
-        KeyBinding::new("cmd-shift-a", SelectAllDownloadsAction, None),
+        KeyBinding::new(
+            "secondary-c",
+            InputCopy,
+            Some("FerriteList && !FerriteInput"),
+        ),
+        KeyBinding::new(
+            "secondary-a",
+            InputSelectAll,
+            Some("FerriteList && !FerriteInput"),
+        ),
+        KeyBinding::new("secondary-,", OpenSettingsAction, None),
+        KeyBinding::new("secondary-f", FocusSearchAction, None),
+        KeyBinding::new("secondary-=", ZoomInAction, None),
+        KeyBinding::new("secondary-+", ZoomInAction, None),
+        KeyBinding::new("secondary--", ZoomOutAction, None),
+        KeyBinding::new("secondary-0", ZoomResetAction, None),
+        KeyBinding::new("secondary-i", ToggleInspectorAction, None),
+        KeyBinding::new("secondary-shift-a", SelectAllDownloadsAction, None),
         KeyBinding::new("escape", EscapeModalAction, None),
         KeyBinding::new(
             "space",
@@ -246,7 +253,42 @@ pub fn bind_app_keys_and_menus(cx: &mut App) {
             DeleteSelectedAction,
             Some("FerriteList && !FerriteInput"),
         ),
+    ];
+
+    #[cfg(target_os = "macos")]
+    bindings.extend([
+        KeyBinding::new("cmd-h", HideAppAction, None),
+        KeyBinding::new("alt-cmd-h", HideOtherAppsAction, None),
+        KeyBinding::new("ctrl-cmd-f", ToggleFullscreenAction, None),
+        KeyBinding::new("cmd-m", MinimizeWindowAction, None),
     ]);
+
+    #[cfg(not(target_os = "macos"))]
+    bindings.extend([
+        KeyBinding::new("f11", ToggleFullscreenAction, None),
+        KeyBinding::new(
+            "ctrl-insert",
+            InputCopy,
+            Some("FerriteList && !FerriteInput"),
+        ),
+        KeyBinding::new(
+            "shift-insert",
+            PasteUrlAction,
+            Some("FerriteList && !FerriteInput"),
+        ),
+        KeyBinding::new("copy", InputCopy, Some("FerriteList && !FerriteInput")),
+        KeyBinding::new(
+            "paste",
+            PasteUrlAction,
+            Some("FerriteList && !FerriteInput"),
+        ),
+    ]);
+
+    bindings
+}
+
+pub fn bind_app_keys_and_menus(cx: &mut App) {
+    cx.bind_keys(app_key_bindings());
 
     cx.set_menus(vec![
         Menu {
@@ -1122,7 +1164,7 @@ impl FerriteApp {
         );
 
         let search_input = cx.new(|cx| {
-            let mut t = TextInput::new(cx, loc.search_placeholder, "");
+            let mut t = TextInput::new(cx, format_platform_shortcuts(loc.search_placeholder), "");
             t.borderless = true;
             t.apply_colors(
                 theme.bg_surface,
@@ -1923,7 +1965,7 @@ impl FerriteApp {
         let p = self.theme;
         let loc = i18n::l(&self.settings_cfg.app.locale_name);
         self.search_input.update(cx, |inp, cx| {
-            inp.placeholder = loc.search_placeholder.into();
+            inp.placeholder = format_platform_shortcuts(loc.search_placeholder).into();
             inp.apply_colors(
                 p.bg_surface,
                 p.border,
@@ -2354,10 +2396,7 @@ impl FerriteApp {
     }
 
     pub(crate) fn paste_from_clipboard_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let clip = cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-            .unwrap_or_default();
+        let clip = read_clipboard_text(cx).unwrap_or_default();
         self.active_popover = ActivePopover::None;
         if let Some(url) = extract_first_download_url(&clip) {
             let standalone = self
@@ -2771,7 +2810,18 @@ impl FerriteApp {
         toast_msg: &str,
         cx: &mut Context<Self>,
     ) {
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        write_clipboard_text(text, true, cx);
+        self.set_toast(toast_msg, false);
+        cx.notify();
+    }
+
+    pub(crate) fn copy_to_clipboard_from_keyboard(
+        &mut self,
+        text: String,
+        toast_msg: &str,
+        cx: &mut Context<Self>,
+    ) {
+        write_clipboard_text(text, false, cx);
         self.set_toast(toast_msg, false);
         cx.notify();
     }
@@ -5147,7 +5197,7 @@ impl FerriteApp {
                     div()
                         .text_size(p.fpx(12.))
                         .text_color(p.text_muted)
-                        .child(s.empty_hint),
+                        .child(format_platform_shortcuts(s.empty_hint)),
                 )
                 .child(
                     div()
@@ -6366,7 +6416,7 @@ impl Render for FerriteApp {
                     && let Some(id) = this.selected_id
                     && let Some(rec) = this.all_downloads.iter().find(|d| d.id == id).cloned()
                 {
-                    this.copy_to_clipboard(rec.url, "Copied download URL", cx);
+                    this.copy_to_clipboard_from_keyboard(rec.url, "Copied download URL", cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &InputPaste, w, cx| {
@@ -6544,5 +6594,87 @@ mod tests {
         assert_eq!(cfg.core.unacceptably_slow_interval_secs, 60);
         assert_eq!(cfg.core.low_disk_space_min_bytes, 256 * 1024 * 1024);
         assert!((cfg.core.low_disk_space_min_percent - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn app_and_input_keymaps_dispatch_clipboard_actions_by_context() {
+        let mut bindings = crate::text_input::text_input_key_bindings();
+        bindings.extend(app_key_bindings());
+        let keymap = gpui::Keymap::new(bindings);
+
+        let primary_mod = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+
+        let mut list_ctx = gpui::KeyContext::new_with_defaults();
+        list_ctx.add("FerriteList");
+        let list_only = [list_ctx.clone()];
+
+        let mut input_ctx = gpui::KeyContext::new_with_defaults();
+        input_ctx.add("FerriteInput");
+        let list_with_input = [list_ctx, input_ctx];
+
+        // Inside a focused TextInput, primary+V/C/A dispatch to TextInput actions,
+        // NOT to list-level PasteUrlAction.
+        for (key, expected) in [
+            ("v", "ferrite_input::InputPaste"),
+            ("c", "ferrite_input::InputCopy"),
+            ("x", "ferrite_input::InputCut"),
+            ("a", "ferrite_input::InputSelectAll"),
+        ] {
+            let stroke =
+                gpui::Keystroke::parse(&format!("{primary_mod}-{key}")).expect("valid keystroke");
+            let (matched, _) = keymap.bindings_for_input(&[stroke], &list_with_input);
+            assert_eq!(
+                matched.first().map(|b| b.action().name()),
+                Some(expected),
+                "expected {primary_mod}-{key} in FerriteInput to dispatch {expected}, got {:?}",
+                matched
+                    .iter()
+                    .map(|b| b.action().name())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // In the download list (outside any TextInput), primary+V pastes URL,
+        // primary+C copies selected download URL, primary+A selects all downloads.
+        for (key, expected) in [
+            ("v", "ferrite_dm::PasteUrlAction"),
+            ("c", "ferrite_input::InputCopy"),
+            ("a", "ferrite_input::InputSelectAll"),
+            ("shift-v", "ferrite_dm::PasteUrlAction"),
+            ("f", "ferrite_dm::FocusSearchAction"),
+            ("n", "ferrite_dm::AddUrlAction"),
+        ] {
+            let stroke =
+                gpui::Keystroke::parse(&format!("{primary_mod}-{key}")).expect("valid keystroke");
+            let (matched, _) = keymap.bindings_for_input(&[stroke], &list_only);
+            assert!(
+                matched.iter().any(|b| b.action().name() == expected),
+                "expected {primary_mod}-{key} in FerriteList to dispatch {expected}, got {:?}",
+                matched
+                    .iter()
+                    .map(|b| b.action().name())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            for (stroke_str, expected) in [
+                ("ctrl-insert", "ferrite_input::InputCopy"),
+                ("shift-insert", "ferrite_dm::PasteUrlAction"),
+                ("f11", "ferrite_dm::ToggleFullscreenAction"),
+            ] {
+                let stroke = gpui::Keystroke::parse(stroke_str).expect("valid keystroke");
+                let (matched, _) = keymap.bindings_for_input(&[stroke], &list_only);
+                assert!(
+                    matched.iter().any(|b| b.action().name() == expected),
+                    "expected {stroke_str} in FerriteList to dispatch {expected}"
+                );
+            }
+        }
     }
 }
