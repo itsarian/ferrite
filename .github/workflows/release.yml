@@ -107,12 +107,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target-name: Apple Silicon
-            package-args: ""
+          - target-name: Apple Silicon (arm64)
+            arch: arm64
+            rust-target: aarch64-apple-darwin
             artifact-name: macos-arm64
-          - target-name: Universal
-            package-args: "--universal"
-            artifact-name: macos-universal
+            cache-key: macos-arm64-release
+          - target-name: Intel (x86_64)
+            arch: x86_64
+            rust-target: x86_64-apple-darwin
+            artifact-name: macos-x86_64
+            cache-key: macos-x86_64-release
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -121,12 +125,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          targets: aarch64-apple-darwin x86_64-apple-darwin
+          targets: ${{ matrix.rust-target }}
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "macos-release"
+          shared-key: ${{ matrix.cache-key }}
 
       - name: Build and Package macOS Installers
         shell: bash
@@ -135,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/*.sh scripts/*.swift resources/pkg-scripts/*
-          ./scripts/package-macos.sh ${{ matrix.package-args }}
+          ./scripts/package-macos.sh --arch ${{ matrix.arch }}
 
       - name: Upload macOS Release Artifacts
         uses: actions/upload-artifact@v4
@@ -150,11 +154,25 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build Linux GUI & CLI (x86_64)
+    name: Build Linux GUI & CLI (${{ matrix.arch }})
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            artifact-name: linux-x86_64
+            cache-key: linux-x86_64-release
+          - runs-on: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+            arch: arm64
+            artifact-name: linux-arm64
+            cache-key: linux-arm64-release
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -175,12 +193,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.rust-target }}
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "linux-release"
+          shared-key: ${{ matrix.cache-key }}
 
       - name: Build Linux Binaries (GUI + CLI + Native Host)
         shell: bash
@@ -194,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/*.sh
-          ./scripts/package-linux-tarball.sh --skip-build
+          ./scripts/package-linux-tarball.sh --arch ${{ matrix.arch }} --skip-build
 
       - name: Package Linux .deb (Debian/Ubuntu)
         shell: bash
@@ -203,7 +221,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/*.sh
-          ./scripts/package-linux-deb.sh --skip-build
+          ./scripts/package-linux-deb.sh --arch ${{ matrix.arch }} --skip-build
 
       - name: Package Linux .rpm (Fedora/RHEL/openSUSE)
         shell: bash
@@ -212,21 +230,21 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/*.sh
-          ./scripts/package-linux-rpm.sh --skip-build
+          ./scripts/package-linux-rpm.sh --arch ${{ matrix.arch }} --skip-build
 
-      - name: Package Linux .AppImage (Universal)
+      - name: Package Linux .AppImage (Portable)
         shell: bash
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           chmod +x scripts/*.sh
-          ./scripts/package-linux-appimage.sh --skip-build
+          ./scripts/package-linux-appimage.sh --arch ${{ matrix.arch }} --skip-build
 
       - name: Upload Linux Release Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-x86_64
+          name: ${{ matrix.artifact-name }}
           path: |
             dist/*.tar.gz
             dist/*.deb
@@ -251,15 +269,85 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Compute unified SHA256 checksums
+      - name: Validate release asset names and compute unified SHA256 checksums
         shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           cd release-assets
           rm -f SHA256SUMS.txt *.sha256
 
-          echo "==> Computing SHA256 checksums for all release assets..."
-          sha256sum * > SHA256SUMS.txt
+          echo "==> Validating canonical release asset names..."
+          CANONICAL_REGEX='^ferrite-dm-[0-9A-Za-z.+-]+-(linux|macos)-(x86_64|arm64)\.(dmg|pkg|zip|tar\.gz|deb|rpm|AppImage)$'
+          shopt -s nullglob
+          ASSETS=(*)
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            echo "ERROR: No release assets found in release-assets/."
+            exit 1
+          fi
+
+          INVALID=0
+          for asset in "${ASSETS[@]}"; do
+            if [ ! -f "$asset" ]; then
+              echo "ERROR: Unexpected non-file entry in release-assets/: $asset"
+              INVALID=1
+            elif [[ ! "$asset" =~ $CANONICAL_REGEX ]]; then
+              echo "ERROR: Release asset does not match canonical naming contract: $asset"
+              INVALID=1
+            fi
+          done
+
+          if [ "$INVALID" -ne 0 ]; then
+            echo "Expected pattern: $CANONICAL_REGEX"
+            exit 1
+          fi
+
+          EXPECTED_ASSETS=(
+            "ferrite-dm-${VERSION}-macos-arm64.dmg"
+            "ferrite-dm-${VERSION}-macos-arm64.pkg"
+            "ferrite-dm-${VERSION}-macos-arm64.tar.gz"
+            "ferrite-dm-${VERSION}-macos-arm64.zip"
+            "ferrite-dm-${VERSION}-macos-x86_64.dmg"
+            "ferrite-dm-${VERSION}-macos-x86_64.pkg"
+            "ferrite-dm-${VERSION}-macos-x86_64.tar.gz"
+            "ferrite-dm-${VERSION}-macos-x86_64.zip"
+            "ferrite-dm-${VERSION}-linux-arm64.AppImage"
+            "ferrite-dm-${VERSION}-linux-arm64.deb"
+            "ferrite-dm-${VERSION}-linux-arm64.rpm"
+            "ferrite-dm-${VERSION}-linux-arm64.tar.gz"
+            "ferrite-dm-${VERSION}-linux-x86_64.AppImage"
+            "ferrite-dm-${VERSION}-linux-x86_64.deb"
+            "ferrite-dm-${VERSION}-linux-x86_64.rpm"
+            "ferrite-dm-${VERSION}-linux-x86_64.tar.gz"
+          )
+
+          MISSING=0
+          for expected in "${EXPECTED_ASSETS[@]}"; do
+            if [ ! -f "$expected" ]; then
+              echo "ERROR: Missing expected release asset: $expected"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" -ne 0 ]; then
+            exit 1
+          fi
+
+          if [ "${#ASSETS[@]}" -ne "${#EXPECTED_ASSETS[@]}" ]; then
+            echo "ERROR: Expected ${#EXPECTED_ASSETS[@]} release assets, found ${#ASSETS[@]}."
+            printf '  %s\n' "${ASSETS[@]}"
+            exit 1
+          fi
+
+          echo "==> All ${#ASSETS[@]} release assets match canonical naming."
+          echo "==> Computing sorted SHA256 checksums for all release assets..."
+          SORTED_ASSETS=()
+          while IFS= read -r asset; do
+            SORTED_ASSETS+=("$asset")
+          done < <(printf '%s\n' "${ASSETS[@]}" | LC_ALL=C sort)
+
+          LC_ALL=C sha256sum "${SORTED_ASSETS[@]}" > SHA256SUMS.txt
 
           echo "=========================================================="
           echo " Generated SHA256SUMS.txt:"
@@ -299,26 +387,43 @@ jobs:
           body: |
             ## Ferrite DM ${{ needs.metadata.outputs.tag_name }}
 
-            Ferrite DM is a high-performance, modular, modern download manager for macOS, Linux, and Windows.
+            Ferrite DM is a high-performance, modular, modern download manager for macOS and Linux.
+
+            ### Naming Convention
+            All release assets follow the canonical format `ferrite-dm-<version>-<os>-<arch>.<ext>`.
 
             ### Package Assets
-            - **macOS (Apple Silicon)**: `.dmg` installer, `.pkg` installer, `.zip` app bundle, `.tar.gz` CLI bundle
-            - **macOS (Universal)**: `.dmg` installer, `.pkg` installer, `.zip` app bundle, `.tar.gz` CLI bundle (runs natively on Apple Silicon & Intel)
-            - **Linux (x86_64)**:
-              - `.deb` package — Debian/Ubuntu (dpkg, apt)
-              - `.rpm` package — Fedora/RHEL/openSUSE (rpm, dnf, zypper)
-              - `.AppImage` — Universal self-contained executable (runs on any x86_64 Linux)
-              - `.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
-            - **Windows (x86_64)**: Standalone `.zip` archive containing `ferrite-dm.exe`, `ferrite-native-host.exe`, and PowerShell / batch installer
-            - **Checksums**: `SHA256SUMS.txt` containing SHA256 digests for all published assets
+            - **macOS (`arm64` — Apple Silicon)**:
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.dmg` — Disk image installer
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.pkg` — Native macOS installer package
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.zip` — Standalone `Ferrite DM.app` bundle
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.tar.gz` — Portable CLI & GUI archive
+            - **macOS (`x86_64` — Intel)**:
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.dmg` — Disk image installer
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.pkg` — Native macOS installer package
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.zip` — Standalone `Ferrite DM.app` bundle
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.tar.gz` — Portable CLI & GUI archive
+            - **Linux (`x86_64`)**:
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.deb` — Debian/Ubuntu package (`dpkg`, `apt`)
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.rpm` — Fedora/RHEL/openSUSE package (`rpm`, `dnf`, `zypper`)
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.AppImage` — Portable self-contained executable
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
+            - **Linux (`arm64` / `aarch64`)**:
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.deb` — Debian/Ubuntu package (`dpkg`, `apt`)
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.rpm` — Fedora/RHEL/openSUSE package (`rpm`, `dnf`, `zypper`)
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.AppImage` — Portable self-contained executable
+              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
+            - **Checksums**: `SHA256SUMS.txt` containing SHA256 digests for all 16 published assets
+
+            > **Note:** Pre-built Windows release binaries are not yet published by CI.
 
             ### Verifying Release Assets
             To verify the integrity of your download using `SHA256SUMS.txt`:
-            - **macOS / Linux**:
+            - **macOS**:
               ```bash
               shasum -a 256 -c SHA256SUMS.txt --ignore-missing
               ```
-            - **Windows (PowerShell)**:
-              ```powershell
-              Get-FileHash <filename> -Algorithm SHA256
+            - **Linux**:
+              ```bash
+              sha256sum -c SHA256SUMS.txt --ignore-missing
               ```

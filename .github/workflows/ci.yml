@@ -93,8 +93,12 @@ jobs:
             os: macos-latest
             workspace_scope: "--workspace"
             is_macos: true
-          - name: Linux (Full Workspace & Packaging)
+          - name: Linux x86_64 (Full Workspace & Packaging)
             os: ubuntu-latest
+            workspace_scope: "--workspace"
+            is_macos: false
+          - name: Linux ARM64 (Full Workspace & Packaging)
+            os: ubuntu-24.04-arm
             workspace_scope: "--workspace"
             is_macos: false
     steps:
@@ -114,6 +118,8 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-test-${{ runner.os }}-${{ runner.arch }}"
 
       - name: Workspace check
         run: cargo check ${{ matrix.workspace_scope }}
@@ -139,6 +145,7 @@ jobs:
           test -x scripts/package-macos.sh
           test -x scripts/install-cli.sh
           test -x scripts/uninstall-cli.sh
+          bash -n scripts/package-macos.sh scripts/install-cli.sh scripts/uninstall-cli.sh
 
       - name: Verify Linux Packaging Assets & Scripts
         if: runner.os == 'Linux'
@@ -150,3 +157,4 @@ jobs:
           test -x scripts/package-linux-rpm.sh
           test -x scripts/package-linux-appimage.sh
           test -x scripts/package-linux-tarball.sh
+          bash -n scripts/package-linux-*.sh scripts/install-linux.sh scripts/uninstall-linux.sh

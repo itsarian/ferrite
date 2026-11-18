@@ -2,19 +2,44 @@
 set -euo pipefail
 
 # Ferrite DM macOS Packaging Script
-# Builds Ferrite DM.app, .dmg installer, .pkg installer, and CLI tarball.
+# Builds Ferrite DM.app, .dmg installer, .pkg installer, .zip bundle, and CLI tarball
+# for macOS arm64 (Apple Silicon) or x86_64 (Intel).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 RESOURCES_DIR="$ROOT_DIR/resources"
 
-RAW_VERSION="${VERSION:-${GITHUB_REF_NAME:-0.1.0}}"
+if [ -n "${VERSION:-}" ]; then
+    RAW_VERSION="$VERSION"
+elif [[ "${GITHUB_REF_NAME:-}" == v* ]]; then
+    RAW_VERSION="$GITHUB_REF_NAME"
+else
+    RAW_VERSION="$(grep -m1 '^version = ' "$ROOT_DIR/Cargo.toml" | cut -d '"' -f2 || true)"
+    RAW_VERSION="${RAW_VERSION:-0.1.0}"
+fi
 VERSION="${RAW_VERSION#v}"
-ARCH="${ARCH:-$(uname -m)}"
+
+HOST_ARCH_RAW="$(uname -m)"
+case "$HOST_ARCH_RAW" in
+    arm64|aarch64)
+        HOST_ARCH="arm64"
+        ;;
+    x86_64|amd64)
+        HOST_ARCH="x86_64"
+        ;;
+    *)
+        HOST_ARCH="$HOST_ARCH_RAW"
+        ;;
+esac
+
+ARCH="${ARCH:-$HOST_ARCH}"
 SKIP_BUILD=false
 CLEAN=false
-UNIVERSAL=false
+
+usage() {
+    echo "Usage: $0 [--skip-build] [--clean] [--arch <arm64|x86_64>] [--version <version>]"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -26,12 +51,12 @@ while [[ $# -gt 0 ]]; do
             CLEAN=true
             shift
             ;;
-        --universal)
-            UNIVERSAL=true
-            ARCH="universal"
-            shift
-            ;;
         --arch)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --arch requires an argument."
+                usage
+                exit 1
+            fi
             ARCH="$2"
             shift 2
             ;;
@@ -39,13 +64,46 @@ while [[ $# -gt 0 ]]; do
             ARCH="${1#*=}"
             shift
             ;;
+        --version)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --version requires an argument."
+                usage
+                exit 1
+            fi
+            VERSION="${2#v}"
+            shift 2
+            ;;
+        --version=*)
+            VERSION="${1#*=}"
+            VERSION="${VERSION#v}"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--clean] [--universal] [--arch <arch>]"
+            usage
             exit 1
             ;;
     esac
 done
+
+case "$ARCH" in
+    arm64|aarch64)
+        ARCH_LABEL="arm64"
+        RUST_TARGET="aarch64-apple-darwin"
+        ;;
+    x86_64|amd64)
+        ARCH_LABEL="x86_64"
+        RUST_TARGET="x86_64-apple-darwin"
+        ;;
+    *)
+        echo "Error: Unsupported macOS architecture '$ARCH'. Expected arm64 or x86_64."
+        exit 1
+        ;;
+esac
 
 cd "$ROOT_DIR"
 
@@ -56,35 +114,40 @@ fi
 
 mkdir -p "$DIST_DIR" "$RESOURCES_DIR"
 
+# Remove any stale legacy-named macOS artifacts in dist/
+rm -f "$DIST_DIR"/Ferrite-DM-*.dmg "$DIST_DIR"/Ferrite-DM-*.pkg "$DIST_DIR"/Ferrite-DM-*.zip
+
 # 1. Build release binaries
 if [ "$SKIP_BUILD" = false ]; then
-    if [ "$UNIVERSAL" = true ]; then
-        echo "==> Building universal macOS binaries (aarch64-apple-darwin + x86_64-apple-darwin)..."
-        rustup target add aarch64-apple-darwin x86_64-apple-darwin
-        cargo build --release --target aarch64-apple-darwin -p fdm-gui -p fdm-cli -p fdm-native-host
-        cargo build --release --target x86_64-apple-darwin -p fdm-gui -p fdm-cli -p fdm-native-host
-        mkdir -p target/release
-        for bin in fdm-gui ferrite-dm ferrite-native-host; do
-            lipo -create \
-                "target/aarch64-apple-darwin/release/$bin" \
-                "target/x86_64-apple-darwin/release/$bin" \
-                -output "target/release/$bin"
-        done
-    else
-        echo "==> Building release binaries with cargo..."
-        cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+    echo "==> Building macOS release binaries for $ARCH_LABEL ($RUST_TARGET)..."
+    if command -v rustup >/dev/null 2>&1; then
+        rustup target add "$RUST_TARGET"
     fi
+    cargo build --release --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
 else
-    echo "==> Skipping cargo build (using existing target/release binaries)..."
+    echo "==> Skipping cargo build (using existing release binaries for $ARCH_LABEL)..."
 fi
 
-# Verify binaries exist
-for bin in fdm-gui ferrite-dm ferrite-native-host; do
-    if [ ! -f "target/release/$bin" ]; then
-        echo "Error: target/release/$bin does not exist. Run without --skip-build."
-        exit 1
+# Locate and verify binaries
+BIN_SRC_DIR=""
+if [ -f "target/$RUST_TARGET/release/fdm-gui" ] && [ -f "target/$RUST_TARGET/release/ferrite-dm" ] && [ -f "target/$RUST_TARGET/release/ferrite-native-host" ]; then
+    BIN_SRC_DIR="target/$RUST_TARGET/release"
+elif [ "$ARCH_LABEL" = "$HOST_ARCH" ] && [ -f "target/release/fdm-gui" ] && [ -f "target/release/ferrite-dm" ] && [ -f "target/release/ferrite-native-host" ]; then
+    BIN_SRC_DIR="target/release"
+fi
+
+if [ -z "$BIN_SRC_DIR" ]; then
+    echo "Error: Release binaries for $ARCH_LABEL ($RUST_TARGET) not found."
+    if [ "$ARCH_LABEL" = "$HOST_ARCH" ]; then
+        echo "Expected binaries in target/$RUST_TARGET/release or target/release."
+    else
+        echo "Expected binaries in target/$RUST_TARGET/release."
     fi
-done
+    echo "Run without --skip-build or build with: cargo build --release --target $RUST_TARGET -p fdm-gui -p fdm-cli -p fdm-native-host"
+    exit 1
+fi
+
+echo "==> Using release binaries from $BIN_SRC_DIR"
 
 # 2. Generate Apple Icon (.icns) if needed
 if [ ! -f "$RESOURCES_DIR/Ferrite.icns" ]; then
@@ -99,7 +162,7 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RES_DIR="$CONTENTS_DIR/Resources"
 
-echo "==> Assembling $APP_NAME..."
+echo "==> Assembling $APP_NAME ($ARCH_LABEL)..."
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
@@ -108,9 +171,9 @@ cp "$RESOURCES_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$RESOURCES_DIR/Ferrite.icns" "$RES_DIR/Ferrite.icns"
 
 # Copy binaries
-cp "target/release/fdm-gui" "$MACOS_DIR/fdm-gui"
-cp "target/release/ferrite-dm" "$MACOS_DIR/ferrite-dm"
-cp "target/release/ferrite-native-host" "$MACOS_DIR/ferrite-native-host"
+cp "$BIN_SRC_DIR/fdm-gui" "$MACOS_DIR/fdm-gui"
+cp "$BIN_SRC_DIR/ferrite-dm" "$MACOS_DIR/ferrite-dm"
+cp "$BIN_SRC_DIR/ferrite-native-host" "$MACOS_DIR/ferrite-native-host"
 
 chmod +x "$MACOS_DIR/"*
 
@@ -119,7 +182,7 @@ echo "==> Code signing $APP_NAME (ad-hoc)..."
 codesign --force --deep --sign - "$APP_DIR"
 
 # 5. Build .dmg disk image
-DMG_NAME="Ferrite-DM-${VERSION}-macos-${ARCH}.dmg"
+DMG_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.dmg"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 DMG_STAGE="$DIST_DIR/dmg-stage"
 
@@ -139,7 +202,7 @@ hdiutil create \
 rm -rf "$DMG_STAGE"
 
 # 6. Build .pkg installer package
-PKG_NAME="Ferrite-DM-${VERSION}-macos-${ARCH}.pkg"
+PKG_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.pkg"
 PKG_PATH="$DIST_DIR/$PKG_NAME"
 PKG_STAGE="$DIST_DIR/pkg-stage"
 
@@ -161,7 +224,7 @@ pkgbuild \
 rm -rf "$PKG_STAGE"
 
 # 7. Build standalone App Bundle Zip
-ZIP_NAME="Ferrite-DM-${VERSION}-macos-${ARCH}.zip"
+ZIP_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.zip"
 ZIP_PATH="$DIST_DIR/$ZIP_NAME"
 
 echo "==> Building App Bundle Zip ($ZIP_NAME)..."
@@ -169,17 +232,18 @@ rm -f "$ZIP_PATH"
 ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"
 
 # 8. Build standalone CLI / portable tarball
-TAR_NAME="ferrite-dm-${VERSION}-macos-${ARCH}.tar.gz"
+TAR_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.tar.gz"
 TAR_PATH="$DIST_DIR/$TAR_NAME"
-TAR_STAGE="$DIST_DIR/tar-stage/ferrite-dm-${VERSION}"
+TAR_STAGE_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}"
+TAR_STAGE="$DIST_DIR/tar-stage/$TAR_STAGE_NAME"
 
 echo "==> Building Standalone Tarball ($TAR_NAME)..."
 rm -rf "$DIST_DIR/tar-stage" "$TAR_PATH"
 mkdir -p "$TAR_STAGE"
 
-cp "target/release/fdm-gui" "$TAR_STAGE/"
-cp "target/release/ferrite-dm" "$TAR_STAGE/"
-cp "target/release/ferrite-native-host" "$TAR_STAGE/"
+cp "$BIN_SRC_DIR/fdm-gui" "$TAR_STAGE/"
+cp "$BIN_SRC_DIR/ferrite-dm" "$TAR_STAGE/"
+cp "$BIN_SRC_DIR/ferrite-native-host" "$TAR_STAGE/"
 cp "$SCRIPT_DIR/install-cli.sh" "$TAR_STAGE/install.sh"
 cp "$SCRIPT_DIR/uninstall-cli.sh" "$TAR_STAGE/uninstall.sh"
 cp "$SCRIPT_DIR/install-cli.sh" "$TAR_STAGE/install-cli.sh"
@@ -189,13 +253,13 @@ cp "$ROOT_DIR"/LICENSE* "$TAR_STAGE/" 2>/dev/null || true
 
 chmod +x "$TAR_STAGE/install.sh" "$TAR_STAGE/uninstall.sh" "$TAR_STAGE/install-cli.sh" "$TAR_STAGE/uninstall-cli.sh" "$TAR_STAGE/fdm-gui" "$TAR_STAGE/ferrite-dm" "$TAR_STAGE/ferrite-native-host"
 
-tar -czf "$TAR_PATH" -C "$DIST_DIR/tar-stage" "ferrite-dm-${VERSION}"
+tar -czf "$TAR_PATH" -C "$DIST_DIR/tar-stage" "$TAR_STAGE_NAME"
 rm -rf "$DIST_DIR/tar-stage"
 
 # 9. Compute Checksums
 echo "==> Generating SHA256 checksums..."
 cd "$DIST_DIR"
-shasum -a 256 "$DMG_NAME" "$PKG_NAME" "$ZIP_NAME" "$TAR_NAME" > SHA256SUMS.txt
+LC_ALL=C shasum -a 256 "$DMG_NAME" "$PKG_NAME" "$TAR_NAME" "$ZIP_NAME" > SHA256SUMS.txt
 cd "$ROOT_DIR"
 
 echo ""
