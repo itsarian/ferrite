@@ -395,7 +395,7 @@ impl Default for DmCoreSettings {
             enable_scheduler_for_new_downloads: false,
             default_schedule: ScheduleRule::default(),
             detect_unwanted_errors: true,
-            use_system_default_user_agent: false,
+            use_system_default_user_agent: true,
             set_mark_of_the_web: true,
             detect_unacceptably_slow: false,
             unacceptably_slow_speed_bps: 16 * 1024,

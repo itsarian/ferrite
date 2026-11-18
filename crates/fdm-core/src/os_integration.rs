@@ -130,32 +130,43 @@ pub fn has_sufficient_disk_space(path: &Path, min_bytes: u64, min_percent: f32) 
     bytes_ok && pct_ok
 }
 
+/// Build a standards-compliant browser-style User-Agent string for the given OS identifier.
+pub fn format_system_user_agent(os: &str, macos_version: Option<&str>) -> String {
+    match os {
+        "macos" => {
+            let os_ver = macos_version
+                .map(|s| s.trim().replace('.', "_"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "15_0".into());
+            format!(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X {os_ver}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+            )
+        }
+        "windows" => {
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+                .to_string()
+        }
+        _ => {
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+                .to_string()
+        }
+    }
+}
+
 /// Cached OS-native browser-style User-Agent string when `use_system_default_user_agent` is enabled.
 pub fn system_default_user_agent() -> &'static str {
     static UA: OnceLock<String> = OnceLock::new();
     UA.get_or_init(|| {
         #[cfg(target_os = "macos")]
-        {
-            let os_ver = std::process::Command::new("sw_vers")
-                .arg("-productVersion")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().replace('.', "_"))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "15_0".into());
-            format!(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X {}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-                os_ver
-            )
-        }
+        let macos_ver = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok());
         #[cfg(not(target_os = "macos"))]
-        {
-            format!(
-                "Mozilla/5.0 (X11; {}; x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                std::env::consts::OS
-            )
-        }
+        let macos_ver: Option<String> = None;
+
+        format_system_user_agent(std::env::consts::OS, macos_ver.as_deref())
     })
 }
 
@@ -825,5 +836,22 @@ mod tests {
     fn system_default_user_agent_is_non_empty() {
         let ua = system_default_user_agent();
         assert!(ua.contains("Mozilla/5.0"));
+        assert!(
+            !ua.contains("linux;"),
+            "Linux UA must not be malformed: {ua}"
+        );
+    }
+
+    #[test]
+    fn format_system_user_agent_uses_standard_os_tokens() {
+        let linux_ua = format_system_user_agent("linux", None);
+        assert!(linux_ua.contains("(X11; Linux x86_64)"));
+        assert!(!linux_ua.contains("linux;"));
+
+        let win_ua = format_system_user_agent("windows", None);
+        assert!(win_ua.contains("(Windows NT 10.0; Win64; x64)"));
+
+        let mac_ua = format_system_user_agent("macos", Some("15.2"));
+        assert!(mac_ua.contains("(Macintosh; Intel Mac OS X 15_2)"));
     }
 }

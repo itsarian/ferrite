@@ -4,9 +4,10 @@ use fdm_core::{
     BandwidthLimiter, DownloadAbortReason, DownloadFileEntry, DownloadPriority, DownloadRecord,
     DownloadState, FdmConfig, SegmentProgress, SegmentState, os_integration::set_mark_of_the_web,
 };
-use fdm_http::{ControlCommand, build_http_client};
+use fdm_http::{ControlCommand, build_http_client, build_request_headers};
 use m3u8_rs::{MasterPlaylist, MediaPlaylist, Playlist};
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, PROXY_AUTHORIZATION};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -46,6 +47,26 @@ struct HlsSegmentJob {
     key_uri: Option<String>,
     key_iv: Option<[u8; 16]>,
     seq_num: u64,
+}
+
+fn headers_for_url(origin_url: &str, target_url: &str, base_headers: &HeaderMap) -> HeaderMap {
+    let mut headers = base_headers.clone();
+    let same_origin = match (Url::parse(origin_url).ok(), Url::parse(target_url).ok()) {
+        (Some(a), Some(b)) => {
+            a.scheme().eq_ignore_ascii_case(b.scheme())
+                && a.host_str()
+                    .zip(b.host_str())
+                    .is_some_and(|(ha, hb)| ha.eq_ignore_ascii_case(hb))
+                && a.port_or_known_default() == b.port_or_known_default()
+        }
+        _ => true,
+    };
+    if !same_origin {
+        headers.remove(COOKIE);
+        headers.remove(AUTHORIZATION);
+        headers.remove(PROXY_AUTHORIZATION);
+    }
+    headers
 }
 
 fn resolve_url(base: &Url, rel: &str) -> Result<String> {
@@ -286,8 +307,10 @@ async fn run_hls_inner<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
+    let base_headers = build_request_headers(record, None);
     let raw = client
         .get(&record.url)
+        .headers(base_headers.clone())
         .send()
         .await?
         .error_for_status()?
@@ -320,6 +343,7 @@ where
     let outcome = download_media_playlist_to_file(
         client,
         &media_url,
+        &base_headers,
         &video_raw_path,
         &work_dir.join("v"),
         record,
@@ -345,6 +369,7 @@ where
         let a_outcome = download_media_playlist_to_file(
             client,
             &aud_url,
+            &base_headers,
             &audio_raw_path,
             &work_dir.join("a"),
             record,
@@ -398,6 +423,7 @@ where
 async fn download_media_playlist_to_file<F>(
     client: &Client,
     playlist_url: &str,
+    base_headers: &HeaderMap,
     dest_file: &Path,
     seg_dir: &Path,
     record: &mut DownloadRecord,
@@ -427,6 +453,7 @@ where
     loop {
         let pl_bytes = client
             .get(playlist_url)
+            .headers(headers_for_url(&record.url, playlist_url, base_headers))
             .send()
             .await?
             .error_for_status()?
@@ -461,6 +488,7 @@ where
                     let map_path = seg_dir.join("000000_init.mp4");
                     let b = client
                         .get(&map_url)
+                        .headers(headers_for_url(&record.url, &map_url, base_headers))
                         .send()
                         .await?
                         .error_for_status()?
@@ -522,6 +550,7 @@ where
             let cancel_flag = Arc::new(AtomicBool::new(false));
             let pause_flag = Arc::new(AtomicBool::new(false));
             let err_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let origin_url = Arc::new(record.url.clone());
 
             let mut handles = Vec::new();
             for _ in 0..workers {
@@ -535,6 +564,8 @@ where
                 let cancel_flag = Arc::clone(&cancel_flag);
                 let pause_flag = Arc::clone(&pause_flag);
                 let err_slot = Arc::clone(&err_slot);
+                let base_headers = base_headers.clone();
+                let origin_url = Arc::clone(&origin_url);
                 let offset_base = seq_files.len();
 
                 handles.push(tokio::spawn(async move {
@@ -551,7 +582,11 @@ where
                         let part_path = seg_dir.join(format!("{:06}.ts", job.seq_num));
 
                         if !part_path.exists() {
-                            let mut req = client.get(&job.url);
+                            let mut req = client.get(&job.url).headers(headers_for_url(
+                                &origin_url,
+                                &job.url,
+                                &base_headers,
+                            ));
                             if let Some((off, len)) = job.byte_range {
                                 req = req.header(
                                     reqwest::header::RANGE,
@@ -582,7 +617,16 @@ where
                                 let cached = key_cache.lock().unwrap().get(key_url).copied();
                                 let key = match cached {
                                     Some(k) => k,
-                                    None => match client.get(key_url).send().await {
+                                    None => match client
+                                        .get(key_url)
+                                        .headers(headers_for_url(
+                                            &origin_url,
+                                            key_url,
+                                            &base_headers,
+                                        ))
+                                        .send()
+                                        .await
+                                    {
                                         Ok(r) => match r.bytes().await {
                                             Ok(kb) if kb.len() == 16 => {
                                                 let mut arr = [0u8; 16];
@@ -892,9 +936,22 @@ where
     record.state = DownloadState::Starting;
     on_progress(&record);
 
-    let xml = match client.get(&record.url).send().await {
-        Ok(r) => match r.text().await {
-            Ok(t) => t,
+    let base_headers = build_request_headers(&record, None);
+    let xml = match client
+        .get(&record.url)
+        .headers(base_headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) => match r.error_for_status() {
+            Ok(ok_r) => match ok_r.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    record.state = DownloadState::Error;
+                    record.last_error = Some(e.to_string());
+                    return record;
+                }
+            },
             Err(e) => {
                 record.state = DownloadState::Error;
                 record.last_error = Some(e.to_string());
@@ -946,6 +1003,8 @@ where
     if let Some(ref vr) = best_video {
         if let Err(e) = fetch_dash_rep(
             &client,
+            &record.url,
+            &base_headers,
             vr,
             &video_path,
             &limiter,
@@ -970,6 +1029,8 @@ where
         if best_video.as_ref().map(|v| v.id != ar.id).unwrap_or(true) {
             if let Err(e) = fetch_dash_rep(
                 &client,
+                &record.url,
+                &base_headers,
                 ar,
                 &audio_path,
                 &limiter,
@@ -1027,8 +1088,11 @@ where
     record
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_dash_rep(
     client: &Client,
+    origin_url: &str,
+    base_headers: &HeaderMap,
     rep: &DashRepresentationInfo,
     out_path: &Path,
     limiter: &BandwidthLimiter,
@@ -1039,6 +1103,7 @@ async fn fetch_dash_rep(
     if let Some(ref init_u) = rep.init_url {
         let b = client
             .get(init_u)
+            .headers(headers_for_url(origin_url, init_u, base_headers))
             .send()
             .await?
             .error_for_status()?
@@ -1057,6 +1122,7 @@ async fn fetch_dash_rep(
         }
         let b = client
             .get(u)
+            .headers(headers_for_url(origin_url, u, base_headers))
             .send()
             .await?
             .error_for_status()?
@@ -1250,5 +1316,133 @@ mod tests {
                 "https://cdn.example.com/live/chunk-v720-2.m4s",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn hls_propagates_referer_and_cookies_avoiding_403() {
+        let seg_payload = b"HLS-PROTECTED-SEGMENT-BYTES".to_vec();
+        let seg_srv = Arc::new(seg_payload.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let seg_data = Arc::clone(&seg_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let has_ref = req.lines().any(|l| {
+                        l.to_ascii_lowercase().starts_with("referer:")
+                            && l.contains("https://player.example.com/")
+                    });
+                    let has_cookie = req.lines().any(|l| {
+                        l.to_ascii_lowercase().starts_with("cookie:")
+                            && l.contains("hls_auth=secret")
+                    });
+                    if !has_ref || !has_cookie {
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let (ctype, body): (&str, Vec<u8>) = match path {
+                        "/media.m3u8" => (
+                            "application/vnd.apple.mpegurl",
+                            b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\n/seg0.ts\n#EXT-X-ENDLIST\n".to_vec(),
+                        ),
+                        "/seg0.ts" => ("video/mp2t", (*seg_data).clone()),
+                        _ => ("text/plain", b"missing".to_vec()),
+                    };
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_hls_403_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.delete_service_files_when_finished = true;
+
+        let url = format!("http://{addr}/media.m3u8");
+        let rec = DownloadRecord {
+            id: 3,
+            uuid: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            children_ids: vec![],
+            order_index: 3,
+            download_type: DownloadType::HlsM3u8,
+            state: DownloadState::Queued,
+            priority: DownloadPriority::Normal,
+            resume_support: ResumeSupport::Present,
+            flags: DownloadFlags::default(),
+            title: "protected.ts".into(),
+            url: url.clone(),
+            target_dir: dir.clone(),
+            file_name: "protected.ts".into(),
+            partial_suffix: ".fdmdownload".into(),
+            total_bytes: None,
+            downloaded_bytes: 0,
+            uploaded_bytes: 0,
+            download_speed_bps: 0,
+            upload_speed_bps: 0,
+            eta_secs: None,
+            connections_active: 0,
+            etag: None,
+            last_modified: None,
+            file_type: fdm_core::FileType::Video,
+            http: HttpRequestOptions {
+                url,
+                referrer: Some("https://player.example.com/".into()),
+                cookies: Some("hls_auth=secret".into()),
+                ..Default::default()
+            },
+            torrent_info_hash: None,
+            torrent_source: None,
+            tags: vec![],
+            files: vec![],
+            segments: vec![],
+            peers: vec![],
+            trackers: vec![],
+            schedule: None,
+            retry_count: 0,
+            forbid_auto_retry_count: 0,
+            last_error: None,
+            abort_reason: DownloadAbortReason::None,
+            preview_path: None,
+            module_data: serde_json::Value::Null,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            completed_at: None,
+        };
+
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done = download_hls_stream(rec, &cfg, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(
+            std::fs::read(dir.join("protected.ts")).unwrap(),
+            seg_payload
+        );
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

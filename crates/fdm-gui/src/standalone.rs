@@ -302,6 +302,21 @@ impl StandaloneAddWindow {
                     if var.audio_url.is_none() {
                         source_url = var.url.clone();
                         req = NewDownloadRequest::from_url(source_url.clone());
+                        for (k, v) in &var.http_headers {
+                            let kl = k.to_ascii_lowercase();
+                            if kl == "accept-encoding" {
+                                continue;
+                            }
+                            if kl == "user-agent" {
+                                req.http.user_agent = Some(v.clone());
+                            } else if kl == "referer" || kl == "referrer" {
+                                req.http.referrer = Some(v.clone());
+                            } else if kl == "cookie" {
+                                req.http.cookies = Some(v.clone());
+                            } else {
+                                req.http.custom_headers.insert(k.clone(), v.clone());
+                            }
+                        }
                         chosen_type = if source_url.to_ascii_lowercase().contains(".m3u8") {
                             Some(DownloadType::HlsM3u8)
                         } else {

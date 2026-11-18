@@ -10,8 +10,11 @@ use fdm_core::{
 };
 use futures::StreamExt;
 use regex::Regex;
-use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, RANGE, REFERER, USER_AGENT};
-use reqwest::{Client, Proxy, StatusCode};
+use reqwest::header::{
+    ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, AUTHORIZATION, COOKIE, HeaderMap, HeaderName,
+    HeaderValue, LOCATION, PROXY_AUTHORIZATION, RANGE, REFERER, SET_COOKIE, USER_AGENT,
+};
+use reqwest::{Client, Method, Proxy, StatusCode};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
@@ -156,25 +159,47 @@ fn build_rustls_client_config(ssl_exceptions: &[SslException]) -> Option<rustls:
     Some(cfg)
 }
 
-pub fn build_http_client(
-    config: &FdmConfig,
-    ssl_exceptions: &[SslException],
-    user_agent_override: Option<&str>,
-) -> Result<Client> {
-    ensure_crypto_provider();
-    let mut builder = Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .connect_timeout(std::time::Duration::from_secs(20));
+pub const DEFAULT_CLIENT_USER_AGENT: &str = concat!("FerriteDM/", env!("CARGO_PKG_VERSION"));
 
-    let ua = user_agent_override
+fn resolve_default_user_agent<'a>(
+    config: &FdmConfig,
+    user_agent_override: Option<&'a str>,
+) -> &'a str {
+    user_agent_override
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             if config.core.use_system_default_user_agent {
                 fdm_core::os_integration::system_default_user_agent()
             } else {
-                "FerriteDM/1.0 (compatible; Free Download Manager 6.34)"
+                DEFAULT_CLIENT_USER_AGENT
             }
-        });
+        })
+}
+
+fn build_http_client_inner(
+    config: &FdmConfig,
+    ssl_exceptions: &[SslException],
+    user_agent_override: Option<&str>,
+    follow_redirects: bool,
+) -> Result<Client> {
+    ensure_crypto_provider();
+    let redirect_policy = if follow_redirects {
+        reqwest::redirect::Policy::limited(10)
+    } else {
+        reqwest::redirect::Policy::none()
+    };
+    let mut default_headers = HeaderMap::new();
+    default_headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+    default_headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+
+    let mut builder = Client::builder()
+        .redirect(redirect_policy)
+        .referer(false)
+        .default_headers(default_headers)
+        .connect_timeout(std::time::Duration::from_secs(20));
+
+    let ua = resolve_default_user_agent(config, user_agent_override);
     builder = builder.user_agent(ua);
 
     if !ssl_exceptions.is_empty()
@@ -185,6 +210,14 @@ pub fn build_http_client(
 
     builder = apply_proxy_settings(builder, &config.app.proxy)?;
     Ok(builder.build()?)
+}
+
+pub fn build_http_client(
+    config: &FdmConfig,
+    ssl_exceptions: &[SslException],
+    user_agent_override: Option<&str>,
+) -> Result<Client> {
+    build_http_client_inner(config, ssl_exceptions, user_agent_override, true)
 }
 
 fn apply_proxy_settings(
@@ -230,20 +263,23 @@ fn apply_proxy_settings(
     Ok(builder)
 }
 
-fn build_request_headers(record: &DownloadRecord, cred: Option<&AuthCredential>) -> HeaderMap {
+pub fn build_request_headers(record: &DownloadRecord, cred: Option<&AuthCredential>) -> HeaderMap {
     let mut map = HeaderMap::new();
     if let Some(ref r) = record.http.referrer
-        && let Ok(v) = HeaderValue::from_str(r)
+        && !r.trim().is_empty()
+        && let Ok(v) = HeaderValue::from_str(r.trim())
     {
         map.insert(REFERER, v);
     }
     if let Some(ref c) = record.http.cookies
-        && let Ok(v) = HeaderValue::from_str(c)
+        && !c.trim().is_empty()
+        && let Ok(v) = HeaderValue::from_str(c.trim())
     {
         map.insert(COOKIE, v);
     }
     if let Some(ref ua) = record.http.user_agent
-        && let Ok(v) = HeaderValue::from_str(ua)
+        && !ua.trim().is_empty()
+        && let Ok(v) = HeaderValue::from_str(ua.trim())
     {
         map.insert(USER_AGENT, v);
     }
@@ -259,10 +295,246 @@ fn build_request_headers(record: &DownloadRecord, cred: Option<&AuthCredential>)
         let token = base64::engine::general_purpose::STANDARD
             .encode(format!("{}:{}", c.username, c.password));
         if let Ok(hv) = HeaderValue::from_str(&format!("Basic {token}")) {
-            map.insert(reqwest::header::AUTHORIZATION, hv);
+            map.insert(AUTHORIZATION, hv);
         }
     }
     map
+}
+
+fn has_custom_header(headers: &std::collections::BTreeMap<String, String>, name: &str) -> bool {
+    headers.keys().any(|k| k.eq_ignore_ascii_case(name))
+}
+
+fn ensure_identity_encoding(headers: &mut HeaderMap) {
+    if !headers.contains_key(ACCEPT_ENCODING) {
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    }
+}
+
+fn origin_key(url: &Url) -> (String, Option<String>, Option<u16>) {
+    (
+        url.scheme().to_ascii_lowercase(),
+        url.host_str().map(|h| h.to_ascii_lowercase()),
+        url.port_or_known_default(),
+    )
+}
+
+fn origin_referer(url_str: &str) -> Option<String> {
+    let parsed = Url::parse(url_str).ok()?;
+    let host = parsed.host_str()?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    match parsed.port() {
+        Some(port) => Some(format!("{scheme}://{host}:{port}/")),
+        None => Some(format!("{scheme}://{host}/")),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CookieEntry {
+    domain: String,
+    include_subdomains: bool,
+    secure: bool,
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RedirectCookieJar {
+    entries: Arc<Mutex<Vec<CookieEntry>>>,
+}
+
+impl RedirectCookieJar {
+    fn store_from_response(&self, url: &Url, headers: &HeaderMap) {
+        let Some(req_host) = url.host_str().map(|h| h.to_ascii_lowercase()) else {
+            return;
+        };
+        for val in headers.get_all(SET_COOKIE) {
+            let Ok(raw) = val.to_str() else {
+                continue;
+            };
+            let mut parts = raw.split(';');
+            let Some(pair) = parts.next() else {
+                continue;
+            };
+            let Some((name, value)) = pair.split_once('=') else {
+                continue;
+            };
+            let name = name.trim();
+            let value = value.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let mut domain = req_host.clone();
+            let mut include_subdomains = false;
+            let mut secure = false;
+            let mut expired = false;
+            for attr in parts {
+                let attr = attr.trim();
+                if attr.eq_ignore_ascii_case("secure") {
+                    secure = true;
+                } else if let Some((k, v)) = attr.split_once('=') {
+                    if k.trim().eq_ignore_ascii_case("domain") {
+                        let d = v.trim().trim_start_matches('.').to_ascii_lowercase();
+                        if !d.is_empty()
+                            && (req_host == d
+                                || (d.contains('.') && req_host.ends_with(&format!(".{d}"))))
+                        {
+                            domain = d;
+                            include_subdomains = true;
+                        }
+                    } else if k.trim().eq_ignore_ascii_case("max-age")
+                        && v.trim().parse::<i64>().is_ok_and(|n| n <= 0)
+                    {
+                        expired = true;
+                    }
+                }
+            }
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            entries.retain(|e| !(e.domain == domain && e.name == name));
+            if !expired {
+                entries.push(CookieEntry {
+                    domain,
+                    include_subdomains,
+                    secure,
+                    name: name.to_string(),
+                    value: value.to_string(),
+                });
+            }
+        }
+    }
+
+    fn cookie_header_for(&self, url: &Url) -> Option<String> {
+        let host = url.host_str()?.to_ascii_lowercase();
+        let is_https = url.scheme().eq_ignore_ascii_case("https");
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let pairs: Vec<String> = entries
+            .iter()
+            .filter(|e| {
+                (!e.secure || is_https)
+                    && (host == e.domain
+                        || (e.include_subdomains && host.ends_with(&format!(".{}", e.domain))))
+            })
+            .map(|e| format!("{}={}", e.name, e.value))
+            .collect();
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(pairs.join("; "))
+        }
+    }
+}
+
+async fn send_with_redirects(
+    client: &Client,
+    method: Method,
+    url: &str,
+    credential_origin_url: &str,
+    base_headers: &HeaderMap,
+    body: Option<String>,
+    jar: Option<&RedirectCookieJar>,
+) -> std::result::Result<(reqwest::Response, String), reqwest::Error> {
+    let Some(jar) = jar else {
+        let mut req_headers = base_headers.clone();
+        if let (Ok(cred_u), Ok(cur_u)) = (Url::parse(credential_origin_url), Url::parse(url))
+            && origin_key(&cred_u) != origin_key(&cur_u)
+        {
+            req_headers.remove(AUTHORIZATION);
+            req_headers.remove(PROXY_AUTHORIZATION);
+            req_headers.remove(COOKIE);
+        }
+        let mut req = client.request(method, url).headers(req_headers);
+        if let Some(b) = body {
+            req = req.body(b);
+        }
+        let resp = req.send().await?;
+        let final_url = resp.url().to_string();
+        return Ok((resp, final_url));
+    };
+
+    const MAX_REDIRECTS: usize = 10;
+    let mut current_url = url.to_string();
+    let mut current_method = method;
+    let mut current_body = body;
+    let initial_origin = Url::parse(credential_origin_url)
+        .ok()
+        .map(|u| origin_key(&u));
+
+    let mut hop = 0usize;
+    loop {
+        let parsed_cur = Url::parse(&current_url).ok();
+        let mut req_headers = base_headers.clone();
+        let same_origin = match (&initial_origin, &parsed_cur) {
+            (Some(init), Some(cur)) => *init == origin_key(cur),
+            _ => true,
+        };
+        if !same_origin {
+            req_headers.remove(AUTHORIZATION);
+            req_headers.remove(PROXY_AUTHORIZATION);
+            req_headers.remove(COOKIE);
+        }
+        if let Some(ref cur_u) = parsed_cur
+            && let Some(jar_cookies) = jar.cookie_header_for(cur_u)
+        {
+            let combined = match req_headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
+                Some(existing) if !existing.trim().is_empty() => {
+                    format!("{}; {jar_cookies}", existing.trim())
+                }
+                _ => jar_cookies,
+            };
+            if let Ok(hv) = HeaderValue::from_str(&combined) {
+                req_headers.insert(COOKIE, hv);
+            }
+        }
+
+        let mut req = client
+            .request(current_method.clone(), &current_url)
+            .headers(req_headers);
+        if let Some(ref b) = current_body {
+            req = req.body(b.clone());
+        }
+        let resp = req.send().await?;
+        if let Some(ref cur_u) = parsed_cur {
+            jar.store_from_response(cur_u, resp.headers());
+        }
+
+        let st = resp.status();
+        if hop < MAX_REDIRECTS
+            && matches!(
+                st,
+                StatusCode::MOVED_PERMANENTLY
+                    | StatusCode::FOUND
+                    | StatusCode::SEE_OTHER
+                    | StatusCode::TEMPORARY_REDIRECT
+                    | StatusCode::PERMANENT_REDIRECT
+            )
+            && let Some(loc_val) = resp.headers().get(LOCATION).and_then(|v| v.to_str().ok())
+        {
+            let next_url = parsed_cur
+                .as_ref()
+                .and_then(|base| base.join(loc_val).ok())
+                .or_else(|| Url::parse(loc_val).ok());
+            if let Some(next) = next_url
+                && matches!(next.scheme(), "http" | "https")
+            {
+                if matches!(
+                    st,
+                    StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::SEE_OTHER
+                ) && current_method == Method::POST
+                {
+                    current_method = Method::GET;
+                    current_body = None;
+                }
+                current_url = next.to_string();
+                hop += 1;
+                continue;
+            }
+        }
+
+        return Ok((resp, current_url));
+    }
 }
 
 static UTF8_EXT_RE: LazyLock<Regex> =
@@ -311,22 +583,31 @@ fn parse_content_range_total(val: &str) -> Option<u64> {
     })
 }
 
-pub async fn probe_http_resource(
+async fn probe_http_resource_inner(
     client: &Client,
     record: &DownloadRecord,
     ssl_exceptions: &[SslException],
     cred: Option<&AuthCredential>,
-) -> Result<ProbeResult> {
+    jar: Option<&RedirectCookieJar>,
+) -> Result<(ProbeResult, Option<&'static str>)> {
     if record.url.starts_with("ftp://") || record.url.starts_with("ftps://") {
-        return probe_ftp_resource(&record.url, ssl_exceptions, cred).await;
+        let p = probe_ftp_resource(&record.url, ssl_exceptions, cred).await?;
+        return Ok((p, None));
     }
 
-    let headers = build_request_headers(record, cred);
-    let head_resp = client
-        .head(&record.url)
-        .headers(headers.clone())
-        .send()
-        .await;
+    let mut headers = build_request_headers(record, cred);
+    ensure_identity_encoding(&mut headers);
+
+    let head_resp = send_with_redirects(
+        client,
+        Method::HEAD,
+        &record.url,
+        &record.url,
+        &headers,
+        None,
+        jar,
+    )
+    .await;
 
     let mut final_url = record.url.clone();
     let mut total_bytes = None;
@@ -335,103 +616,204 @@ pub async fn probe_http_resource(
     let mut last_modified = None;
     let mut content_type = None;
     let mut suggested_filename = None;
+    let mut head_status = None;
+    let mut winning_ua: Option<&'static str> = None;
 
-    if let Ok(resp) = head_resp
-        && resp.status().is_success()
-    {
-        final_url = resp.url().to_string();
-        let h = resp.headers();
-        total_bytes = h
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok());
-        accept_ranges = h
-            .get(reqwest::header::ACCEPT_RANGES)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_ascii_lowercase().contains("bytes"))
-            .unwrap_or(false);
-        etag = h
-            .get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        last_modified = h
-            .get(reqwest::header::LAST_MODIFIED)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        content_type = h
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        suggested_filename = h
-            .get(reqwest::header::CONTENT_DISPOSITION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_disposition_filename);
+    if let Ok((resp, resolved_url)) = head_resp {
+        head_status = Some(resp.status());
+        if resp.status().is_success() {
+            final_url = resolved_url;
+            let h = resp.headers();
+            total_bytes = h
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            accept_ranges = h
+                .get(reqwest::header::ACCEPT_RANGES)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_ascii_lowercase().contains("bytes"))
+                .unwrap_or(false);
+            etag = h
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            last_modified = h
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            content_type = h
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            suggested_filename = h
+                .get(reqwest::header::CONTENT_DISPOSITION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_disposition_filename);
+        }
     }
 
+    let mut range_probe_status = None;
     // Fallback or verify byte-range capability via GET Range: bytes=0-0
     if !accept_ranges || total_bytes.is_none() {
-        let mut h2 = headers;
+        let mut h2 = headers.clone();
         h2.insert(RANGE, HeaderValue::from_static("bytes=0-0"));
-        if let Ok(resp) = client.get(&record.url).headers(h2).send().await {
-            final_url = resp.url().to_string();
+        if let Ok((resp, resolved_url)) = send_with_redirects(
+            client,
+            Method::GET,
+            &record.url,
+            &record.url,
+            &h2,
+            None,
+            jar,
+        )
+        .await
+        {
             let st = resp.status();
-            let h = resp.headers();
-            if etag.is_none() {
-                etag = h
-                    .get(reqwest::header::ETAG)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-            }
-            if last_modified.is_none() {
-                last_modified = h
-                    .get(reqwest::header::LAST_MODIFIED)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-            }
-            if content_type.is_none() {
-                content_type = h
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-            }
-            if suggested_filename.is_none() {
-                suggested_filename = h
-                    .get(reqwest::header::CONTENT_DISPOSITION)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(parse_content_disposition_filename);
-            }
-            if st == StatusCode::PARTIAL_CONTENT {
-                accept_ranges = true;
-                if let Some(cr) = h
-                    .get(reqwest::header::CONTENT_RANGE)
-                    .and_then(|v| v.to_str().ok())
-                    && let Some(tot) = parse_content_range_total(cr)
-                {
-                    total_bytes = Some(tot);
+            range_probe_status = Some(st);
+            if st == StatusCode::PARTIAL_CONTENT || st.is_success() {
+                final_url = resolved_url;
+                let h = resp.headers();
+                if etag.is_none() {
+                    etag = h
+                        .get(reqwest::header::ETAG)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
                 }
-            } else if total_bytes.is_none() {
-                total_bytes = h
-                    .get(reqwest::header::CONTENT_LENGTH)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok());
+                if last_modified.is_none() {
+                    last_modified = h
+                        .get(reqwest::header::LAST_MODIFIED)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                }
+                if content_type.is_none() {
+                    content_type = h
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                }
+                if suggested_filename.is_none() {
+                    suggested_filename = h
+                        .get(reqwest::header::CONTENT_DISPOSITION)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(parse_content_disposition_filename);
+                }
+                if st == StatusCode::PARTIAL_CONTENT {
+                    accept_ranges = true;
+                    if let Some(cr) = h
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        && let Some(tot) = parse_content_range_total(cr)
+                    {
+                        total_bytes = Some(tot);
+                    }
+                } else {
+                    accept_ranges = false;
+                    if total_bytes.is_none() {
+                        total_bytes = h
+                            .get(reqwest::header::CONTENT_LENGTH)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok());
+                    }
+                }
             }
         }
     }
 
-    Ok(ProbeResult {
-        final_url,
-        total_bytes,
-        resume_support: if accept_ranges {
-            ResumeSupport::Present
-        } else {
-            ResumeSupport::Absent
+    // If both HEAD and ranged GET received 403 and no explicit User-Agent was pinned,
+    // probe once with alternate User-Agent profiles (browser UA and non-browser client UA).
+    if head_status == Some(StatusCode::FORBIDDEN)
+        && range_probe_status == Some(StatusCode::FORBIDDEN)
+        && record.http.user_agent.is_none()
+        && !has_custom_header(&record.http.custom_headers, "user-agent")
+    {
+        for fallback_ua in [
+            fdm_core::os_integration::system_default_user_agent(),
+            DEFAULT_CLIENT_USER_AGENT,
+        ] {
+            let mut h_alt = headers.clone();
+            if let Ok(hv) = HeaderValue::from_str(fallback_ua) {
+                h_alt.insert(USER_AGENT, hv);
+            }
+            h_alt.insert(RANGE, HeaderValue::from_static("bytes=0-0"));
+            if let Ok((resp, resolved_url)) = send_with_redirects(
+                client,
+                Method::GET,
+                &record.url,
+                &record.url,
+                &h_alt,
+                None,
+                jar,
+            )
+            .await
+            {
+                let st = resp.status();
+                if st == StatusCode::PARTIAL_CONTENT || st.is_success() {
+                    winning_ua = Some(fallback_ua);
+                    final_url = resolved_url;
+                    let h = resp.headers();
+                    etag = h
+                        .get(reqwest::header::ETAG)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    last_modified = h
+                        .get(reqwest::header::LAST_MODIFIED)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    content_type = h
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    suggested_filename = h
+                        .get(reqwest::header::CONTENT_DISPOSITION)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(parse_content_disposition_filename);
+                    if st == StatusCode::PARTIAL_CONTENT {
+                        accept_ranges = true;
+                        total_bytes = h
+                            .get(reqwest::header::CONTENT_RANGE)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(parse_content_range_total);
+                    } else {
+                        accept_ranges = false;
+                        total_bytes = h
+                            .get(reqwest::header::CONTENT_LENGTH)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok((
+        ProbeResult {
+            final_url,
+            total_bytes,
+            resume_support: if accept_ranges {
+                ResumeSupport::Present
+            } else {
+                ResumeSupport::Absent
+            },
+            etag,
+            last_modified,
+            content_type,
+            suggested_filename,
+            supports_range_split: accept_ranges && total_bytes.unwrap_or(0) >= 256 * 1024,
         },
-        etag,
-        last_modified,
-        content_type,
-        suggested_filename,
-        supports_range_split: accept_ranges && total_bytes.unwrap_or(0) >= 256 * 1024,
-    })
+        winning_ua,
+    ))
+}
+
+pub async fn probe_http_resource(
+    client: &Client,
+    record: &DownloadRecord,
+    ssl_exceptions: &[SslException],
+    cred: Option<&AuthCredential>,
+) -> Result<ProbeResult> {
+    probe_http_resource_inner(client, record, ssl_exceptions, cred, None)
+        .await
+        .map(|(p, _)| p)
 }
 
 pub fn build_initial_segments(
@@ -493,7 +875,9 @@ where
         .await;
     }
 
-    let client = match build_http_client(config, ssl_exceptions, record.http.user_agent.as_deref())
+    let mut active_ua =
+        resolve_default_user_agent(config, record.http.user_agent.as_deref()).to_string();
+    let mut client = match build_http_client_inner(config, ssl_exceptions, Some(&active_ua), false)
     {
         Ok(c) => c,
         Err(e) => {
@@ -503,6 +887,7 @@ where
             return record;
         }
     };
+    let cookie_jar = RedirectCookieJar::default();
 
     record.state = DownloadState::Starting;
     on_progress(&record);
@@ -525,8 +910,15 @@ where
             return record;
         }
 
-        let probe = probe_http_resource(&client, &record, ssl_exceptions, cred.as_ref()).await;
-        let probe = match probe {
+        let probe = probe_http_resource_inner(
+            &client,
+            &record,
+            ssl_exceptions,
+            cred.as_ref(),
+            Some(&cookie_jar),
+        )
+        .await;
+        let (probe, winning_ua) = match probe {
             Ok(p) => p,
             Err(e) => {
                 record.last_error = Some(e.to_string());
@@ -539,6 +931,13 @@ where
                 return record;
             }
         };
+        if let Some(ua) = winning_ua
+            && ua != active_ua
+            && let Ok(switched) = build_http_client_inner(config, ssl_exceptions, Some(ua), false)
+        {
+            client = switched;
+            active_ua = ua.to_string();
+        }
 
         // Detect remote resource change if previously probed
         let remote_changed = record
@@ -587,26 +986,54 @@ where
         }
 
         let partial_path = record.partial_path();
-        let output_path = record.output_path();
         let profile = config.active_profile();
 
-        let result = if probe.supports_range_split
+        let mut used_range_in_single = false;
+        let mut result = if probe.supports_range_split
             && record.http.post_data.is_none()
             && profile.max_connections_per_server > 1
         {
-            download_multi_section(
+            let multi_res = download_multi_section(
                 &client,
                 &mut record,
                 &partial_path,
+                &probe,
                 profile.max_connections_per_server,
                 cred.as_ref(),
                 config,
                 &limiter,
+                &cookie_jar,
                 &mut control_rx,
                 &mut on_progress,
             )
-            .await
+            .await;
+            match multi_res {
+                Err(ref err) if err.status == Some(StatusCode::FORBIDDEN) || err.range_rejected => {
+                    // Multi-section range burst was forbidden or range ignored; fall back to plain single-stream GET.
+                    record.segments.clear();
+                    record.downloaded_bytes = 0;
+                    let _ = std::fs::remove_file(&partial_path);
+                    download_single_stream(
+                        &client,
+                        &mut record,
+                        &partial_path,
+                        &probe,
+                        cred.as_ref(),
+                        config,
+                        &limiter,
+                        &cookie_jar,
+                        false,
+                        None,
+                        &mut control_rx,
+                        &mut on_progress,
+                    )
+                    .await
+                }
+                other => other,
+            }
         } else {
+            used_range_in_single =
+                probe.resume_support == ResumeSupport::Present && partial_path.exists();
             download_single_stream(
                 &client,
                 &mut record,
@@ -615,14 +1042,42 @@ where
                 cred.as_ref(),
                 config,
                 &limiter,
+                &cookie_jar,
+                true,
+                None,
                 &mut control_rx,
                 &mut on_progress,
             )
             .await
         };
 
+        if let Err(err_403) = result {
+            if err_403.status == Some(StatusCode::FORBIDDEN) {
+                result = try_download_403_fallbacks(
+                    &client,
+                    &active_ua,
+                    used_range_in_single,
+                    &mut record,
+                    &partial_path,
+                    &probe,
+                    cred.as_ref(),
+                    config,
+                    ssl_exceptions,
+                    &limiter,
+                    &cookie_jar,
+                    &mut control_rx,
+                    &mut on_progress,
+                    err_403,
+                )
+                .await;
+            } else {
+                result = Err(err_403);
+            }
+        }
+
         match result {
             Ok(Outcome::Completed) => {
+                let output_path = record.output_path();
                 if partial_path != output_path {
                     if output_path.exists() {
                         let _ = std::fs::remove_file(&output_path);
@@ -708,6 +1163,199 @@ struct DownloadFailure {
     message: String,
     reason: DownloadAbortReason,
     unwanted: bool,
+    status: Option<StatusCode>,
+    range_rejected: bool,
+}
+
+impl DownloadFailure {
+    fn network(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: DownloadAbortReason::NetworkError,
+            unwanted: false,
+            status: None,
+            range_rejected: false,
+        }
+    }
+
+    fn slow(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: DownloadAbortReason::SlowDownload,
+            unwanted: false,
+            status: None,
+            range_rejected: false,
+        }
+    }
+
+    fn http_status(st: StatusCode, message: impl Into<String>, detect_unwanted: bool) -> Self {
+        let unwanted = detect_unwanted
+            && matches!(
+                st,
+                StatusCode::UNAUTHORIZED
+                    | StatusCode::FORBIDDEN
+                    | StatusCode::NOT_FOUND
+                    | StatusCode::GONE
+                    | StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS
+            );
+        Self {
+            message: message.into(),
+            reason: if unwanted {
+                DownloadAbortReason::UnwantedError
+            } else {
+                DownloadAbortReason::NetworkError
+            },
+            unwanted,
+            status: Some(st),
+            range_rejected: false,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_download_403_fallbacks<F>(
+    initial_client: &Client,
+    initial_ua: &str,
+    used_range_in_single: bool,
+    record: &mut DownloadRecord,
+    partial_path: &Path,
+    probe: &ProbeResult,
+    cred: Option<&AuthCredential>,
+    config: &FdmConfig,
+    ssl_exceptions: &[SslException],
+    limiter: &BandwidthLimiter,
+    cookie_jar: &RedirectCookieJar,
+    control_rx: &mut watch::Receiver<ControlCommand>,
+    on_progress: &mut F,
+    mut last_err: DownloadFailure,
+) -> std::result::Result<Outcome, DownloadFailure>
+where
+    F: FnMut(&DownloadRecord) + Send,
+{
+    // 1. If the failed single-stream attempt sent a resume Range header, retry plain GET without Range.
+    if used_range_in_single {
+        if matches!(
+            *control_rx.borrow(),
+            ControlCommand::Pause | ControlCommand::Cancel
+        ) {
+            return Err(last_err);
+        }
+        match download_single_stream(
+            initial_client,
+            record,
+            partial_path,
+            probe,
+            cred,
+            config,
+            limiter,
+            cookie_jar,
+            false,
+            None,
+            control_rx,
+            on_progress,
+        )
+        .await
+        {
+            Ok(o) => return Ok(o),
+            Err(e) if e.status != Some(StatusCode::FORBIDDEN) => return Err(e),
+            Err(e) => last_err = e,
+        }
+    }
+
+    let user_pinned_ua = record
+        .http
+        .user_agent
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        || has_custom_header(&record.http.custom_headers, "user-agent");
+
+    // 2. If User-Agent was not explicitly pinned, try the complementary User-Agent profile
+    //    (browser UA <-> non-browser client UA).
+    if !user_pinned_ua {
+        if matches!(
+            *control_rx.borrow(),
+            ControlCommand::Pause | ControlCommand::Cancel
+        ) {
+            return Err(last_err);
+        }
+        let sys_ua = fdm_core::os_integration::system_default_user_agent();
+        let alt_ua = if initial_ua == sys_ua {
+            DEFAULT_CLIENT_USER_AGENT
+        } else {
+            sys_ua
+        };
+        if let Ok(alt_client) = build_http_client_inner(config, ssl_exceptions, Some(alt_ua), false)
+        {
+            match download_single_stream(
+                &alt_client,
+                record,
+                partial_path,
+                probe,
+                cred,
+                config,
+                limiter,
+                cookie_jar,
+                false,
+                None,
+                control_rx,
+                on_progress,
+            )
+            .await
+            {
+                Ok(o) => return Ok(o),
+                Err(e) if e.status != Some(StatusCode::FORBIDDEN) => return Err(e),
+                Err(e) => last_err = e,
+            }
+        }
+    }
+
+    // 3. Hotlink-protected servers often require a same-origin Referer header.
+    let user_pinned_referer = record
+        .http
+        .referrer
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        || has_custom_header(&record.http.custom_headers, "referer");
+    if !user_pinned_referer && let Some(ref_origin) = origin_referer(&record.url) {
+        if matches!(
+            *control_rx.borrow(),
+            ControlCommand::Pause | ControlCommand::Cancel
+        ) {
+            return Err(last_err);
+        }
+        let ref_client = if user_pinned_ua {
+            initial_client.clone()
+        } else {
+            build_http_client_inner(
+                config,
+                ssl_exceptions,
+                Some(fdm_core::os_integration::system_default_user_agent()),
+                false,
+            )
+            .unwrap_or_else(|_| initial_client.clone())
+        };
+        match download_single_stream(
+            &ref_client,
+            record,
+            partial_path,
+            probe,
+            cred,
+            config,
+            limiter,
+            cookie_jar,
+            false,
+            Some(&ref_origin),
+            control_rx,
+            on_progress,
+        )
+        .await
+        {
+            Ok(o) => return Ok(o),
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(last_err)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -715,10 +1363,12 @@ async fn download_multi_section<F>(
     client: &Client,
     record: &mut DownloadRecord,
     partial_path: &Path,
+    probe: &ProbeResult,
     sections_limit: u32,
     cred: Option<&AuthCredential>,
     config: &FdmConfig,
     limiter: &BandwidthLimiter,
+    cookie_jar: &RedirectCookieJar,
     control_rx: &mut watch::Receiver<ControlCommand>,
     on_progress: &mut F,
 ) -> std::result::Result<Outcome, DownloadFailure>
@@ -732,19 +1382,19 @@ where
         .read(true)
         .truncate(false)
         .open(partial_path)
-        .map_err(|e| DownloadFailure {
-            message: format!("Open partial file failed: {e}"),
-            reason: DownloadAbortReason::NetworkError,
-            unwanted: false,
-        })?;
-    file.set_len(total).map_err(|e| DownloadFailure {
-        message: format!("Preallocate {} bytes failed: {e}", total),
-        reason: DownloadAbortReason::NetworkError,
-        unwanted: false,
+        .map_err(|e| DownloadFailure::network(format!("Open partial file failed: {e}")))?;
+    file.set_len(total).map_err(|e| {
+        DownloadFailure::network(format!("Preallocate {} bytes failed: {e}", total))
     })?;
     let file = Arc::new(file);
 
-    let mut urls_pool = vec![record.url.clone()];
+    let primary_url = if !probe.final_url.is_empty() {
+        probe.final_url.clone()
+    } else {
+        record.url.clone()
+    };
+    let original_url = record.url.clone();
+    let mut urls_pool = vec![primary_url];
     urls_pool.extend(record.http.mirrors.clone());
 
     if record.segments.is_empty()
@@ -766,8 +1416,10 @@ where
     let pause_flag = Arc::new(AtomicBool::new(false));
     let failed_err: Arc<Mutex<Option<DownloadFailure>>> = Arc::new(Mutex::new(None));
 
-    let base_headers = build_request_headers(record, cred);
+    let mut base_headers = build_request_headers(record, cred);
+    ensure_identity_encoding(&mut base_headers);
     let urls_pool = Arc::new(urls_pool);
+    let original_url = Arc::new(original_url);
 
     let mut handles = Vec::new();
     let num_workers = record.segments.len();
@@ -782,7 +1434,9 @@ where
         let failed_err = Arc::clone(&failed_err);
         let headers = base_headers.clone();
         let limiter = limiter.clone();
+        let cookie_jar = cookie_jar.clone();
         let urls_pool = Arc::clone(&urls_pool);
+        let original_url = Arc::clone(&original_url);
         let detect_unwanted = config.core.detect_unwanted_errors;
 
         handles.push(tokio::spawn(async move {
@@ -842,15 +1496,19 @@ where
                     break;
                 };
 
-                // Execute HTTP Range GET (fallback to primary URL if mirror fails once)
-                let try_urls = if target_url != urls_pool[0] {
-                    vec![target_url, urls_pool[0].clone()]
-                } else {
-                    vec![target_url]
-                };
+                // Execute HTTP Range GET (fallback to primary URL and original URL if mirror/redirect fails)
+                let mut try_urls = vec![target_url];
+                if try_urls[0] != urls_pool[0] {
+                    try_urls.push(urls_pool[0].clone());
+                }
+                if !try_urls.iter().any(|u| u == original_url.as_str()) {
+                    try_urls.push((*original_url).clone());
+                }
 
                 let mut seg_ok = false;
-                for try_url in try_urls {
+                let last_idx = try_urls.len().saturating_sub(1);
+                for (attempt_i, try_url) in try_urls.into_iter().enumerate() {
+                    let is_last_url = attempt_i == last_idx;
                     let current_end = {
                         let segs = shared_segments.lock().unwrap();
                         segs[seg_idx].end
@@ -865,17 +1523,25 @@ where
                     {
                         h.insert(RANGE, hv);
                     }
-                    let resp = match client.get(&try_url).headers(h).send().await {
-                        Ok(r) => r,
+                    let resp = match send_with_redirects(
+                        &client,
+                        Method::GET,
+                        &try_url,
+                        &original_url,
+                        &h,
+                        None,
+                        Some(&cookie_jar),
+                    )
+                    .await
+                    {
+                        Ok((r, _)) => r,
                         Err(e) => {
-                            if try_url == urls_pool[0] {
+                            if is_last_url {
                                 let mut g = failed_err.lock().unwrap();
                                 if g.is_none() {
-                                    *g = Some(DownloadFailure {
-                                        message: format!("Section {seg_idx} request error: {e}"),
-                                        reason: DownloadAbortReason::NetworkError,
-                                        unwanted: false,
-                                    });
+                                    *g = Some(DownloadFailure::network(format!(
+                                        "Section {seg_idx} request error: {e}"
+                                    )));
                                 }
                             }
                             continue;
@@ -883,33 +1549,39 @@ where
                     };
 
                     let st = resp.status();
+                    if range_start > 0 && st == StatusCode::OK {
+                        let mut g = failed_err.lock().unwrap();
+                        if g.is_none() {
+                            *g = Some(DownloadFailure {
+                                message: format!(
+                                    "Server ignored Range header on section {seg_idx} (HTTP 200)"
+                                ),
+                                reason: DownloadAbortReason::NetworkError,
+                                unwanted: false,
+                                status: Some(st),
+                                range_rejected: true,
+                            });
+                        }
+                        cancel_flag.store(true, Ordering::Relaxed);
+                        break;
+                    }
+
                     if !(st == StatusCode::PARTIAL_CONTENT || st == StatusCode::OK) {
-                        let unwanted = detect_unwanted
-                            && matches!(
-                                st,
-                                StatusCode::UNAUTHORIZED
-                                    | StatusCode::FORBIDDEN
-                                    | StatusCode::NOT_FOUND
-                                    | StatusCode::GONE
-                                    | StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS
-                            );
-                        if unwanted || try_url == urls_pool[0] {
+                        let fail = DownloadFailure::http_status(
+                            st,
+                            format!("HTTP status {} on section {}", st, seg_idx),
+                            detect_unwanted,
+                        );
+                        let is_unwanted = fail.unwanted;
+                        if is_last_url {
                             let mut g = failed_err.lock().unwrap();
                             if g.is_none() {
-                                *g = Some(DownloadFailure {
-                                    message: format!("HTTP status {} on section {}", st, seg_idx),
-                                    reason: if unwanted {
-                                        DownloadAbortReason::UnwantedError
-                                    } else {
-                                        DownloadAbortReason::NetworkError
-                                    },
-                                    unwanted,
-                                });
+                                *g = Some(fail);
                             }
-                        }
-                        if unwanted {
-                            cancel_flag.store(true, Ordering::Relaxed);
-                            break;
+                            if is_unwanted {
+                                cancel_flag.store(true, Ordering::Relaxed);
+                                break;
+                            }
                         }
                         continue;
                     }
@@ -927,11 +1599,9 @@ where
                             Err(e) => {
                                 let mut g = failed_err.lock().unwrap();
                                 if g.is_none() {
-                                    *g = Some(DownloadFailure {
-                                        message: format!("Stream read error: {e}"),
-                                        reason: DownloadAbortReason::NetworkError,
-                                        unwanted: false,
-                                    });
+                                    *g = Some(DownloadFailure::network(format!(
+                                        "Stream read error: {e}"
+                                    )));
                                 }
                                 chunk_err = true;
                                 break;
@@ -953,11 +1623,9 @@ where
                         if let Err(e) = write_at_exact(&file, slice, offset) {
                             let mut g = failed_err.lock().unwrap();
                             if g.is_none() {
-                                *g = Some(DownloadFailure {
-                                    message: format!("Disk write failed: {e}"),
-                                    reason: DownloadAbortReason::NetworkError,
-                                    unwanted: false,
-                                });
+                                *g = Some(DownloadFailure::network(format!(
+                                    "Disk write failed: {e}"
+                                )));
                             }
                             cancel_flag.store(true, Ordering::Relaxed);
                             chunk_err = true;
@@ -1049,15 +1717,11 @@ where
                     for h in handles {
                         let _ = h.await;
                     }
-                    return Err(DownloadFailure {
-                        message: format!(
-                            "Speed dropped below {} B/s for {}s",
-                            config.core.unacceptably_slow_speed_bps,
-                            config.core.unacceptably_slow_interval_secs
-                        ),
-                        reason: DownloadAbortReason::SlowDownload,
-                        unwanted: false,
-                    });
+                    return Err(DownloadFailure::slow(format!(
+                        "Speed dropped below {} B/s for {}s",
+                        config.core.unacceptably_slow_speed_bps,
+                        config.core.unacceptably_slow_interval_secs
+                    )));
                 }
             } else {
                 slow_accum_secs = 0.0;
@@ -1094,11 +1758,7 @@ where
         record.downloaded_bytes = total;
         Ok(Outcome::Completed)
     } else {
-        Err(DownloadFailure {
-            message: "Download ended incomplete".into(),
-            reason: DownloadAbortReason::NetworkError,
-            unwanted: false,
-        })
+        Err(DownloadFailure::network("Download ended incomplete"))
     }
 }
 
@@ -1111,58 +1771,102 @@ async fn download_single_stream<F>(
     cred: Option<&AuthCredential>,
     config: &FdmConfig,
     limiter: &BandwidthLimiter,
+    cookie_jar: &RedirectCookieJar,
+    allow_range: bool,
+    extra_referer: Option<&str>,
     control_rx: &mut watch::Receiver<ControlCommand>,
     on_progress: &mut F,
 ) -> std::result::Result<Outcome, DownloadFailure>
 where
     F: FnMut(&DownloadRecord) + Send,
 {
-    let existing_len = if probe.resume_support == ResumeSupport::Present && partial_path.exists() {
-        std::fs::metadata(partial_path)
-            .map(|m| m.len())
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let existing_len =
+        if allow_range && probe.resume_support == ResumeSupport::Present && partial_path.exists() {
+            std::fs::metadata(partial_path)
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
     let mut headers = build_request_headers(record, cred);
+    ensure_identity_encoding(&mut headers);
+    if let Some(referer_val) = extra_referer
+        && !headers.contains_key(REFERER)
+        && let Ok(hv) = HeaderValue::from_str(referer_val)
+    {
+        headers.insert(REFERER, hv);
+    }
     if existing_len > 0
         && let Ok(hv) = HeaderValue::from_str(&format!("bytes={existing_len}-"))
     {
         headers.insert(RANGE, hv);
     }
 
-    let req = if let Some(ref body) = record.http.post_data {
-        client.post(&record.url).headers(headers).body(body.clone())
+    let (method, body) = if let Some(ref b) = record.http.post_data {
+        (Method::POST, Some(b.clone()))
     } else {
-        client.get(&record.url).headers(headers)
+        (Method::GET, None)
     };
 
-    let resp = req.send().await.map_err(|e| DownloadFailure {
-        message: format!("HTTP request failed: {e}"),
-        reason: DownloadAbortReason::NetworkError,
-        unwanted: false,
-    })?;
+    let (resp, _) = send_with_redirects(
+        client,
+        method,
+        &record.url,
+        &record.url,
+        &headers,
+        body,
+        Some(cookie_jar),
+    )
+    .await
+    .map_err(|e| DownloadFailure::network(format!("HTTP request failed: {e}")))?;
 
     let st = resp.status();
     if !st.is_success() && st != StatusCode::PARTIAL_CONTENT {
-        let unwanted = config.core.detect_unwanted_errors
-            && matches!(
-                st,
-                StatusCode::UNAUTHORIZED
-                    | StatusCode::FORBIDDEN
-                    | StatusCode::NOT_FOUND
-                    | StatusCode::GONE
-            );
-        return Err(DownloadFailure {
-            message: format!("HTTP error status {}", st),
-            reason: if unwanted {
-                DownloadAbortReason::UnwantedError
+        return Err(DownloadFailure::http_status(
+            st,
+            format!("HTTP error status {}", st),
+            config.core.detect_unwanted_errors,
+        ));
+    }
+
+    // Populate metadata from GET response if probe was blocked (e.g. HEAD/Range returned 403).
+    {
+        let h = resp.headers();
+        if record.total_bytes.is_none() {
+            if st == StatusCode::PARTIAL_CONTENT {
+                record.total_bytes = h
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_content_range_total);
             } else {
-                DownloadAbortReason::NetworkError
-            },
-            unwanted,
-        });
+                record.total_bytes = h
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok());
+            }
+        }
+        if record.etag.is_none() {
+            record.etag = h
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+        }
+        if record.last_modified.is_none() {
+            record.last_modified = h
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+        }
+        if (record.file_name.is_empty() || record.file_name == "download.bin")
+            && let Some(name) = h
+                .get(reqwest::header::CONTENT_DISPOSITION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_disposition_filename)
+        {
+            record.file_name = name.clone();
+            record.title = name;
+        }
     }
 
     let append_offset = if st == StatusCode::PARTIAL_CONTENT {
@@ -1180,11 +1884,7 @@ where
     } else {
         File::create(partial_path)
     }
-    .map_err(|e| DownloadFailure {
-        message: format!("Open partial file failed: {e}"),
-        reason: DownloadAbortReason::NetworkError,
-        unwanted: false,
-    })?;
+    .map_err(|e| DownloadFailure::network(format!("Open partial file failed: {e}")))?;
 
     let mut written = append_offset;
     record.state = DownloadState::Downloading;
@@ -1249,15 +1949,11 @@ where
                         if speed < config.core.unacceptably_slow_speed_bps {
                             slow_accum_secs += speed_dt;
                             if slow_accum_secs >= config.core.unacceptably_slow_interval_secs as f64 {
-                                return Err(DownloadFailure {
-                                    message: format!(
-                                        "Speed dropped below {} B/s for {}s",
-                                        config.core.unacceptably_slow_speed_bps,
-                                        config.core.unacceptably_slow_interval_secs
-                                    ),
-                                    reason: DownloadAbortReason::SlowDownload,
-                                    unwanted: false,
-                                });
+                                return Err(DownloadFailure::slow(format!(
+                                    "Speed dropped below {} B/s for {}s",
+                                    config.core.unacceptably_slow_speed_bps,
+                                    config.core.unacceptably_slow_interval_secs
+                                )));
                             }
                         } else {
                             slow_accum_secs = 0.0;
@@ -1294,11 +1990,8 @@ where
                 match next_chunk {
                     Some(Ok(chunk)) => {
                         limiter.acquire(chunk.len()).await;
-                        write_at_exact(&file, &chunk, written).map_err(|e| DownloadFailure {
-                            message: format!("Disk write error: {e}"),
-                            reason: DownloadAbortReason::NetworkError,
-                            unwanted: false,
-                        })?;
+                        write_at_exact(&file, &chunk, written)
+                            .map_err(|e| DownloadFailure::network(format!("Disk write error: {e}")))?;
                         written += chunk.len() as u64;
                         bytes_in_window += chunk.len() as u64;
                         record.downloaded_bytes = written;
@@ -1316,15 +2009,11 @@ where
                                 if speed < config.core.unacceptably_slow_speed_bps {
                                     slow_accum_secs += speed_dt;
                                     if slow_accum_secs >= config.core.unacceptably_slow_interval_secs as f64 {
-                                        return Err(DownloadFailure {
-                                            message: format!(
-                                                "Speed dropped below {} B/s for {}s",
-                                                config.core.unacceptably_slow_speed_bps,
-                                                config.core.unacceptably_slow_interval_secs
-                                            ),
-                                            reason: DownloadAbortReason::SlowDownload,
-                                            unwanted: false,
-                                        });
+                                        return Err(DownloadFailure::slow(format!(
+                                            "Speed dropped below {} B/s for {}s",
+                                            config.core.unacceptably_slow_speed_bps,
+                                            config.core.unacceptably_slow_interval_secs
+                                        )));
                                     }
                                 } else {
                                     slow_accum_secs = 0.0;
@@ -1345,11 +2034,7 @@ where
                         }
                     }
                     Some(Err(e)) => {
-                        return Err(DownloadFailure {
-                            message: format!("Stream read error: {e}"),
-                            reason: DownloadAbortReason::NetworkError,
-                            unwanted: false,
-                        });
+                        return Err(DownloadFailure::network(format!("Stream read error: {e}")));
                     }
                     None => break,
                 }
@@ -2177,6 +2862,722 @@ mod tests {
         .await;
         assert_eq!(slow_done.state, DownloadState::Error);
         assert_eq!(slow_done.abort_reason, DownloadAbortReason::SlowDownload);
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn head_and_range_403_falls_back_to_single_stream_get() {
+        let payload = b"ACTUAL-BINARY-PAYLOAD-AFTER-HEAD-AND-RANGE-403".to_vec();
+        let payload_srv = Arc::new(payload.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let is_head = req.starts_with("HEAD ");
+                    let has_range = req
+                        .lines()
+                        .any(|l| l.to_ascii_lowercase().starts_with("range:"));
+                    if is_head || has_range {
+                        let body = "<html>403 Forbidden</html>";
+                        let resp = format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            if is_head { "" } else { body }
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"actual.bin\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        data.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&data).await;
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!(
+            "ferrite_http_403_head_range_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+
+        let url = format!("http://{addr}/signed-get-only");
+        let rec = make_test_record(url, &dir, "download.bin");
+        let client = build_http_client(&cfg, &[], None).unwrap();
+        let probe = probe_http_resource(&client, &rec, &[], None).await.unwrap();
+        // Probe must NOT pollute metadata with the 403 error HTML response.
+        assert!(probe.total_bytes.is_none());
+        assert!(probe.content_type.is_none());
+        assert_eq!(probe.resume_support, ResumeSupport::Absent);
+
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(done.file_name, "actual.bin");
+        assert_eq!(done.total_bytes, Some(payload.len() as u64));
+        assert_eq!(std::fs::read(done.output_path()).unwrap(), payload);
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn multi_section_403_falls_back_to_single_stream_and_completes() {
+        let payload: Arc<Vec<u8>> = Arc::new((0..(512 * 1024)).map(|i| (i % 239) as u8).collect());
+        let payload_srv = Arc::clone(&payload);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("HEAD ") {
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        return;
+                    }
+                    let has_range = req
+                        .lines()
+                        .any(|l| l.to_ascii_lowercase().starts_with("range:"));
+                    if has_range {
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        data.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&data).await;
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_403_multi_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.current_tum = TrafficUsageMode::Medium;
+
+        let rec = make_test_record(format!("http://{addr}/big.bin"), &dir, "big.bin");
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(std::fs::read(dir.join("big.bin")).unwrap(), *payload);
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn user_agent_403_fallback_works_in_both_directions() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let ua = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string())
+                        .unwrap_or_default();
+                    let has_accept_lang = req
+                        .lines()
+                        .any(|l| l.to_ascii_lowercase().starts_with("accept-language:"));
+
+                    let allowed = match path {
+                        "/browser-only" => ua.starts_with("Mozilla/5.0") && has_accept_lang,
+                        "/client-only" => {
+                            !ua.starts_with("Mozilla/5.0") && ua.contains("FerriteDM")
+                        }
+                        _ => false,
+                    };
+                    if !allowed {
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let body = b"OK-UA-FALLBACK";
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    if !req.starts_with("HEAD ") {
+                        let _ = sock.write_all(body).await;
+                    }
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_403_ua_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Case A: Config disables browser UA, server requires browser UA -> falls back to browser UA.
+        let mut cfg_a = FdmConfig::default();
+        cfg_a.core.use_system_default_user_agent = false;
+        cfg_a.core.set_mark_of_the_web = false;
+        let rec_a = make_test_record(format!("http://{addr}/browser-only"), &dir, "a.bin");
+        let (_tx1, rx1) = watch::channel(ControlCommand::Run);
+        let done_a = download_http_or_ftp(
+            rec_a,
+            &cfg_a,
+            &[],
+            None,
+            BandwidthLimiter::new(0),
+            rx1,
+            |_| {},
+        )
+        .await;
+        assert_eq!(
+            done_a.state,
+            DownloadState::Completed,
+            "browser-only failed: {:?}",
+            done_a.last_error
+        );
+        assert_eq!(std::fs::read(dir.join("a.bin")).unwrap(), b"OK-UA-FALLBACK");
+
+        // Case B: Config enables browser UA (default), server blocks Mozilla/5.0 (like SourceForge) -> falls back to FerriteDM UA.
+        let mut cfg_b = FdmConfig::default();
+        cfg_b.core.use_system_default_user_agent = true;
+        cfg_b.core.set_mark_of_the_web = false;
+        let rec_b = make_test_record(format!("http://{addr}/client-only"), &dir, "b.bin");
+        let (_tx2, rx2) = watch::channel(ControlCommand::Run);
+        let done_b = download_http_or_ftp(
+            rec_b,
+            &cfg_b,
+            &[],
+            None,
+            BandwidthLimiter::new(0),
+            rx2,
+            |_| {},
+        )
+        .await;
+        assert_eq!(
+            done_b.state,
+            DownloadState::Completed,
+            "client-only failed: {:?}",
+            done_b.last_error
+        );
+        assert_eq!(std::fs::read(dir.join("b.bin")).unwrap(), b"OK-UA-FALLBACK");
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hotlink_referer_403_falls_back_to_same_origin_referer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let expected_referer = format!("http://{addr}/");
+        let expected_ref_srv = expected_referer.clone();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let expected = expected_ref_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let ref_hdr = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("referer:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string());
+                    if ref_hdr.as_deref() != Some(expected.as_str()) {
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let body = b"HOTLINK-OK";
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    if !req.starts_with("HEAD ") {
+                        let _ = sock.write_all(body).await;
+                    }
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_403_ref_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+
+        let rec = make_test_record(format!("http://{addr}/protected/img.png"), &dir, "img.png");
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(std::fs::read(dir.join("img.png")).unwrap(), b"HOTLINK-OK");
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn redirect_set_cookie_is_preserved_and_range_uses_identity_encoding() {
+        let seen_encodings = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_enc_srv = Arc::clone(&seen_encodings);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen_enc = Arc::clone(&seen_enc_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    if let Some(ae) = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("accept-encoding:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string())
+                    {
+                        seen_enc.lock().unwrap().push(ae);
+                    }
+                    if path == "/gate" {
+                        let resp = "HTTP/1.1 302 Found\r\nSet-Cookie: dl_gate=allowed42; Path=/\r\nLocation: /payload.bin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let has_cookie = req.lines().any(|l| {
+                        l.to_ascii_lowercase().starts_with("cookie:")
+                            && l.contains("dl_gate=allowed42")
+                    });
+                    if !has_cookie {
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let body = b"COOKIE-GATED-CONTENT";
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    if !req.starts_with("HEAD ") {
+                        let _ = sock.write_all(body).await;
+                    }
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_cookie_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+
+        let rec = make_test_record(format!("http://{addr}/gate"), &dir, "payload.bin");
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(
+            std::fs::read(dir.join("payload.bin")).unwrap(),
+            b"COOKIE-GATED-CONTENT"
+        );
+        let encodings = seen_encodings.lock().unwrap();
+        assert!(!encodings.is_empty());
+        assert!(
+            encodings.iter().all(|e| e == "identity"),
+            "expected identity encoding for binary/range download, got: {encodings:?}"
+        );
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn permanent_403_fails_fast_as_unwanted_error_without_retry_loop() {
+        let hits = Arc::new(AtomicU64::new(0));
+        let hits_srv = Arc::clone(&hits);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let hits = Arc::clone(&hits_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 1024];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET ")
+                        && !req
+                            .lines()
+                            .any(|l| l.to_ascii_lowercase().starts_with("range: bytes=0-0"))
+                    {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let resp =
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_perm403_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.auto_retry_failed = true;
+        cfg.core.max_auto_retries = 5;
+        cfg.core.detect_unwanted_errors = true;
+
+        let rec = make_test_record(
+            format!("http://{addr}/forbidden.zip"),
+            &dir,
+            "forbidden.zip",
+        );
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(done.state, DownloadState::Error);
+        assert_eq!(done.abort_reason, DownloadAbortReason::UnwantedError);
+        assert_eq!(done.retry_count, 1);
+        // Initial GET + at most 2 fallbacks (alt UA + same-origin referer) = <= 3 GETs, not 6 retry loops!
+        assert!(hits.load(Ordering::SeqCst) <= 3);
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cross_origin_redirect_strips_credentials_in_multi_section_download() {
+        let payload: Arc<Vec<u8>> = Arc::new((0..(512 * 1024)).map(|i| (i % 241) as u8).collect());
+        let payload_cdn = Arc::clone(&payload);
+
+        // Origin B (CDN): rejects ANY Authorization or origin-A Cookie with 403!
+        let cdn_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cdn_addr = cdn_listener.local_addr().unwrap();
+        let leaked_creds = Arc::new(AtomicBool::new(false));
+        let leaked_srv = Arc::clone(&leaked_creds);
+
+        let cdn_srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = cdn_listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_cdn);
+                let leaked = Arc::clone(&leaked_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let has_auth = req
+                        .lines()
+                        .any(|l| l.to_ascii_lowercase().starts_with("authorization:"));
+                    let has_origin_cookie = req.lines().any(|l| {
+                        l.to_ascii_lowercase().starts_with("cookie:")
+                            && l.contains("origin_a=secret")
+                    });
+                    if has_auth || has_origin_cookie {
+                        leaked.store(true, Ordering::SeqCst);
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    let is_head = req.starts_with("HEAD ");
+                    let range_hdr = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string());
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(data.len() - 1)
+                            .min(data.len() - 1);
+                        let slice = &data[start..=end];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(slice).await;
+                        return;
+                    }
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                        data.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    if !is_head {
+                        let _ = sock.write_all(&data).await;
+                    }
+                });
+            }
+        });
+
+        // Origin A (redirector on a distinct port = distinct origin)
+        let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin_listener.local_addr().unwrap();
+        let origin_srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = origin_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let resp = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: http://{cdn_addr}/signed.bin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_xorigin_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.current_tum = TrafficUsageMode::Medium;
+
+        let mut rec = make_test_record(format!("http://{origin_addr}/dl"), &dir, "signed.bin");
+        rec.http.cookies = Some("origin_a=secret".into());
+        let cred = Some(AuthCredential {
+            scope: origin_addr.to_string(),
+            username: "alice".into(),
+            password: "s3cr3t".into(),
+        });
+
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], cred, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert!(
+            !leaked_creds.load(Ordering::SeqCst),
+            "origin-A Authorization or Cookie leaked to cross-origin CDN"
+        );
+        assert!(done.segments.len() >= 4, "expected multi-section download");
+        assert_eq!(std::fs::read(dir.join("signed.bin")).unwrap(), *payload);
+
+        origin_srv.abort();
+        cdn_srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cookie_jar_enforces_secure_flag_and_rejects_single_label_domain() {
+        let jar = RedirectCookieJar::default();
+        let mut headers = HeaderMap::new();
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("sec=1; Secure; Domain=example.com"),
+        );
+        headers.append(SET_COOKIE, HeaderValue::from_static("broad=2; Domain=com"));
+        let https_url = Url::parse("https://dl.example.com/file").unwrap();
+        jar.store_from_response(&https_url, &headers);
+
+        // Secure cookie sent on https subdomain, NOT on http downgrade.
+        let https_sub = Url::parse("https://cdn.example.com/file").unwrap();
+        let http_sub = Url::parse("http://cdn.example.com/file").unwrap();
+        let https_cookies = jar.cookie_header_for(&https_sub).unwrap_or_default();
+        assert!(https_cookies.contains("sec=1"));
+        assert!(jar.cookie_header_for(&http_sub).is_none());
+
+        // Single-label `Domain=com` must be scoped only to exact `dl.example.com`, never `other.com`.
+        let other_com = Url::parse("https://other.com/file").unwrap();
+        assert!(jar.cookie_header_for(&other_com).is_none());
+        let same_host = jar.cookie_header_for(&https_url).unwrap_or_default();
+        assert!(same_host.contains("broad=2"));
+    }
+
+    #[tokio::test]
+    async fn probe_winning_ua_is_reused_for_multi_section_without_403_burst() {
+        let payload: Arc<Vec<u8>> = Arc::new((0..(512 * 1024)).map(|i| (i % 227) as u8).collect());
+        let payload_srv = Arc::clone(&payload);
+        let section_403s = Arc::new(AtomicU64::new(0));
+        let section_403s_srv = Arc::clone(&section_403s);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_srv);
+                let s403 = Arc::clone(&section_403s_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let ua = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string())
+                        .unwrap_or_default();
+                    let range_hdr = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string());
+
+                    if ua.starts_with("Mozilla/5.0") {
+                        if let Some(ref rh) = range_hdr
+                            && rh != "bytes=0-0"
+                        {
+                            s403.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(data.len() - 1)
+                            .min(data.len() - 1);
+                        let slice = &data[start..=end];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(slice).await;
+                        return;
+                    }
+
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                        data.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    if !req.starts_with("HEAD ") {
+                        let _ = sock.write_all(&data).await;
+                    }
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_probe_ua_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FdmConfig::default();
+        cfg.core.use_system_default_user_agent = true;
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.current_tum = TrafficUsageMode::Medium;
+
+        let rec = make_test_record(format!("http://{addr}/sf.tar.xz"), &dir, "sf.tar.xz");
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(
+            section_403s.load(Ordering::SeqCst),
+            0,
+            "winning probe UA should prevent any 403 section burst"
+        );
+        assert!(done.segments.len() >= 4, "expected multi-section download");
+        assert_eq!(std::fs::read(dir.join("sf.tar.xz")).unwrap(), *payload);
 
         srv.abort();
         let _ = std::fs::remove_dir_all(&dir);

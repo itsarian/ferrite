@@ -120,6 +120,103 @@ pub struct DownloadEngine {
 
 pub type EngineEventAlias = fdm_core::EngineEvent;
 
+fn is_likely_direct_file_url(url_str: &str) -> bool {
+    let Ok(parsed) = Url::parse(url_str) else {
+        return false;
+    };
+    let Some(last_seg) = parsed
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    let ext = Path::new(last_seg)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "zip"
+            | "tar"
+            | "gz"
+            | "tgz"
+            | "bz2"
+            | "xz"
+            | "zst"
+            | "7z"
+            | "rar"
+            | "iso"
+            | "img"
+            | "dmg"
+            | "pkg"
+            | "deb"
+            | "rpm"
+            | "appimage"
+            | "exe"
+            | "msi"
+            | "apk"
+            | "pdf"
+            | "bin"
+            | "wasm"
+            | "whl"
+            | "jar"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "svg"
+            | "flac"
+            | "mp3"
+            | "wav"
+            | "ogg"
+            | "txt"
+            | "csv"
+            | "json"
+            | "xml"
+            | "sha256"
+            | "sig"
+            | "asc"
+    )
+}
+
+fn apply_variant_http_headers(
+    http: &mut fdm_core::HttpRequestOptions,
+    headers: &std::collections::BTreeMap<String, String>,
+) {
+    for (k, v) in headers {
+        let kl = k.to_ascii_lowercase();
+        if kl == "accept-encoding" {
+            continue;
+        }
+        if kl == "user-agent" {
+            if http
+                .user_agent
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty())
+            {
+                http.user_agent = Some(v.clone());
+            }
+        } else if kl == "referer" || kl == "referrer" {
+            if http.referrer.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                http.referrer = Some(v.clone());
+            }
+        } else if kl == "cookie" {
+            if http.cookies.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                http.cookies = Some(v.clone());
+            }
+        } else if !http
+            .custom_headers
+            .keys()
+            .any(|existing| existing.eq_ignore_ascii_case(k))
+        {
+            http.custom_headers.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -645,7 +742,9 @@ impl DownloadEngine {
         }
 
         // Check media plugins / yt-dlp first if it looks like a watch page (no obvious binary extension)
-        if let Ok(parsed_media) = probe_media_url(trimmed, &self.plugins_dir, &cfg).await {
+        if !is_likely_direct_file_url(trimmed)
+            && let Ok(parsed_media) = probe_media_url(trimmed, &self.plugins_dir, &cfg).await
+        {
             let name = sanitize_filename(&format!(
                 "{}.{}",
                 parsed_media.title,
@@ -2641,6 +2740,8 @@ impl DownloadEngine {
                     record.file_name = sanitize_filename(&format!("{}.{}", parsed.title, ext));
                 }
 
+                apply_variant_http_headers(&mut record.http, &best.http_headers);
+
                 if best.url.to_ascii_lowercase().contains(".m3u8") {
                     record.url = best.url;
                     return download_hls_stream(record, cfg, limiter, control_rx, on_progress)
@@ -3305,7 +3406,7 @@ impl DownloadEngine {
         }
         let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
         let cred = self.lookup_credential(&rec.url);
-        let client = build_http_client(&cfg, &ssl, None)?;
+        let client = build_http_client(&cfg, &ssl, rec.http.user_agent.as_deref())?;
         let probe = probe_http_resource(&client, &rec, &ssl, cred.as_ref()).await?;
 
         let etag_changed = matches!((&rec.etag, &probe.etag), (Some(a), Some(b)) if a != b);
@@ -3933,5 +4034,42 @@ mod tests {
         assert_ne!(res.file_name, "audio.m4a");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn direct_file_url_detection_and_variant_header_propagation() {
+        assert!(is_likely_direct_file_url(
+            "https://releases.ubuntu.com/24.04/ubuntu-24.04.iso"
+        ));
+        assert!(is_likely_direct_file_url(
+            "https://example.org/app/ferrite-dm_0.2.0_amd64.deb?token=abc"
+        ));
+        assert!(is_likely_direct_file_url(
+            "https://example.org/releases/Ferrite.AppImage"
+        ));
+        assert!(!is_likely_direct_file_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ));
+        assert!(!is_likely_direct_file_url("https://vimeo.com/123456789"));
+
+        let mut opts = fdm_core::HttpRequestOptions::default();
+        let mut hdrs = std::collections::BTreeMap::new();
+        hdrs.insert("User-Agent".into(), "Mozilla/5.0 Test".into());
+        hdrs.insert("Referer".into(), "https://video.example.com/".into());
+        hdrs.insert("Cookie".into(), "vid=123".into());
+        hdrs.insert("Accept-Encoding".into(), "gzip, deflate".into());
+        hdrs.insert("X-Custom-Token".into(), "tok-99".into());
+
+        apply_variant_http_headers(&mut opts, &hdrs);
+        assert_eq!(opts.user_agent.as_deref(), Some("Mozilla/5.0 Test"));
+        assert_eq!(opts.referrer.as_deref(), Some("https://video.example.com/"));
+        assert_eq!(opts.cookies.as_deref(), Some("vid=123"));
+        assert!(!opts.custom_headers.contains_key("Accept-Encoding"));
+        assert_eq!(
+            opts.custom_headers
+                .get("X-Custom-Token")
+                .map(String::as_str),
+            Some("tok-99")
+        );
     }
 }

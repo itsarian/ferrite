@@ -85,6 +85,8 @@ pub struct MediaVariantOption {
     pub codecs: Option<String>,
     pub is_audio_only: bool,
     pub filesize: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub http_headers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1351,6 +1353,22 @@ pub async fn extract_video_thumbnail(
     Ok(())
 }
 
+fn extract_json_headers(val: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    if let Some(obj) = val.as_object() {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                let kt = k.trim();
+                let vt = s.trim();
+                if !kt.is_empty() && !vt.is_empty() {
+                    out.insert(kt.to_string(), vt.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub async fn probe_media_url(
     url: &str,
     plugins_dir: &Path,
@@ -1414,6 +1432,14 @@ pub async fn probe_media_url(
                                 codecs: item["codecs"].as_str().map(str::to_string),
                                 is_audio_only: item["is_audio_only"].as_bool().unwrap_or(false),
                                 filesize: item["filesize"].as_u64(),
+                                http_headers: {
+                                    let h = extract_json_headers(&item["http_headers"]);
+                                    if h.is_empty() {
+                                        extract_json_headers(&item["headers"])
+                                    } else {
+                                        h
+                                    }
+                                },
                             });
                         }
                     }
@@ -1477,6 +1503,7 @@ pub async fn probe_media_url(
                     codecs: v.codecs,
                     is_audio_only: false,
                     filesize: None,
+                    http_headers: std::collections::BTreeMap::new(),
                 })
                 .collect(),
             subtitles: vec![],
@@ -1516,6 +1543,7 @@ pub async fn probe_media_url(
                     codecs: None,
                     is_audio_only: r.mime_type.starts_with("audio/"),
                     filesize: None,
+                    http_headers: std::collections::BTreeMap::new(),
                 })
                 .collect(),
             subtitles: vec![],
@@ -1547,10 +1575,15 @@ pub async fn probe_media_url(
                     }
                 }
             }
+            let top_headers = extract_json_headers(&val["http_headers"]);
             let mut variants = Vec::new();
             if let Some(fmts) = val["formats"].as_array() {
                 for f in fmts {
                     if let Some(u) = f["url"].as_str() {
+                        let mut fmt_headers = top_headers.clone();
+                        for (k, v) in extract_json_headers(&f["http_headers"]) {
+                            fmt_headers.insert(k, v);
+                        }
                         variants.push(MediaVariantOption {
                             format_id: f["format_id"].as_str().unwrap_or("").to_string(),
                             title: f["format_note"]
@@ -1567,6 +1600,7 @@ pub async fn probe_media_url(
                             codecs: f["vcodec"].as_str().map(str::to_string),
                             is_audio_only: f["vcodec"].as_str() == Some("none"),
                             filesize: f["filesize"].as_u64(),
+                            http_headers: fmt_headers,
                         });
                     }
                 }
