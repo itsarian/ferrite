@@ -30,14 +30,26 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --arch)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --arch requires a value (x86_64, amd64, arm64, aarch64)" >&2
+                exit 1
+            fi
             ARCH="$2"
             shift 2
             ;;
         --arch=*)
             ARCH="${1#*=}"
+            if [[ -z "$ARCH" ]]; then
+                echo "Error: --arch requires a value (x86_64, amd64, arm64, aarch64)" >&2
+                exit 1
+            fi
             shift
             ;;
         --version)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --version requires a value" >&2
+                exit 1
+            fi
             VERSION="$2"
             VERSION="${VERSION#v}"
             shift 2
@@ -45,38 +57,47 @@ while [[ $# -gt 0 ]]; do
         --version=*)
             VERSION="${1#*=}"
             VERSION="${VERSION#v}"
+            if [[ -z "$VERSION" ]]; then
+                echo "Error: --version requires a value" >&2
+                exit 1
+            fi
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--skip-build] [--clean] [--arch <arch>] [--version <version>]"
+            echo "Usage: $0 [--skip-build] [--clean] [--arch <x86_64|amd64|arm64|aarch64>] [--version <version>]"
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--clean] [--arch <arch>] [--version <version>]"
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [--skip-build] [--clean] [--arch <x86_64|amd64|arm64|aarch64>] [--version <version>]" >&2
             exit 1
             ;;
     esac
 done
 
-# Map architecture name to Debian conventions
+# Map architecture name to canonical asset arch & Debian conventions
 case "$ARCH" in
     x86_64|amd64)
+        ASSET_ARCH="x86_64"
         DEB_ARCH="amd64"
         RUST_TARGET="x86_64-unknown-linux-gnu"
         ;;
     aarch64|arm64)
+        ASSET_ARCH="arm64"
         DEB_ARCH="arm64"
         RUST_TARGET="aarch64-unknown-linux-gnu"
         ;;
-    armv7l|armhf)
-        DEB_ARCH="armhf"
-        RUST_TARGET="armv7-unknown-linux-gnueabihf"
-        ;;
     *)
-        DEB_ARCH="$ARCH"
-        RUST_TARGET=""
+        echo "Error: Unsupported architecture '$ARCH'. Supported: x86_64, amd64, arm64, aarch64" >&2
+        exit 1
         ;;
+esac
+
+HOST_RAW_ARCH="$(uname -m)"
+case "$HOST_RAW_ARCH" in
+    x86_64|amd64) HOST_ASSET_ARCH="x86_64" ;;
+    aarch64|arm64) HOST_ASSET_ARCH="arm64" ;;
+    *) HOST_ASSET_ARCH="$HOST_RAW_ARCH" ;;
 esac
 
 cd "$ROOT_DIR"
@@ -90,17 +111,17 @@ mkdir -p "$DIST_DIR"
 
 # 1. Build release binaries if requested
 if [ "$SKIP_BUILD" = false ]; then
-    echo "==> Building release binaries for Linux ($DEB_ARCH)..."
-    if [ -n "$RUST_TARGET" ] && [ "$(uname -s)" = "Linux" ]; then
+    echo "==> Building release binaries for Linux (${ASSET_ARCH} / ${DEB_ARCH})..."
+    if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
         cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
     else
-        cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
     fi
 fi
 
-# Locate binaries in target directory
+# Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
-for candidate in "target/release" "target/$RUST_TARGET/release"; do
+for candidate in "target/${RUST_TARGET}/release" "target/release"; do
     if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
@@ -108,7 +129,7 @@ for candidate in "target/release" "target/$RUST_TARGET/release"; do
 done
 
 if [ -z "$BIN_SRC_DIR" ]; then
-    echo "Error: Release binaries not found in target/. Run without --skip-build."
+    echo "Error: Release binaries not found in target/${RUST_TARGET}/release or target/release. Run without --skip-build." >&2
     exit 1
 fi
 
@@ -116,7 +137,7 @@ echo "==> Using binaries from $BIN_SRC_DIR"
 
 # 2. Setup staging tree
 PKG_NAME="ferrite-dm"
-STAGE_DIR="$DIST_DIR/deb-staging/$PKG_NAME"
+STAGE_DIR="$DIST_DIR/deb-staging/${PKG_NAME}-${ASSET_ARCH}"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/usr/bin"
 mkdir -p "$STAGE_DIR/usr/share/applications"
@@ -223,8 +244,8 @@ EOF
 chmod 755 "$STAGE_DIR/DEBIAN/postrm"
 
 # 6. Build the .deb package
-OUTPUT_DEB="$DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
-echo "==> Packaging $OUTPUT_DEB..."
+OUTPUT_DEB="$DIST_DIR/${PKG_NAME}-${VERSION}-linux-${ASSET_ARCH}.deb"
+echo "==> Packaging $OUTPUT_DEB (DEBIAN Architecture: $DEB_ARCH)..."
 
 if command -v dpkg-deb >/dev/null 2>&1; then
     dpkg-deb --build --root-owner-group "$STAGE_DIR" "$OUTPUT_DEB"
@@ -241,6 +262,7 @@ else
     (cd "$STAGE_DIR" && tar -czf "$BUILD_TMP/data.tar.gz" --owner=0 --group=0 usr 2>/dev/null || tar -czf "$BUILD_TMP/data.tar.gz" usr)
 
     # Archive into .deb using ar (use -crS to avoid ranlib on macOS)
+    rm -f "$OUTPUT_DEB"
     ar -crS "$OUTPUT_DEB" "$BUILD_TMP/debian-binary" "$BUILD_TMP/control.tar.gz" "$BUILD_TMP/data.tar.gz"
     rm -rf "$BUILD_TMP"
 fi

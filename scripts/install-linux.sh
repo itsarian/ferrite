@@ -14,12 +14,20 @@ CUSTOM_PREFIX=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --prefix requires a directory path" >&2
+                exit 1
+            fi
             PREFIX="$2"
             CUSTOM_PREFIX=true
             shift 2
             ;;
         --prefix=*)
             PREFIX="${1#*=}"
+            if [[ -z "$PREFIX" ]]; then
+                echo "Error: --prefix requires a directory path" >&2
+                exit 1
+            fi
             CUSTOM_PREFIX=true
             shift
             ;;
@@ -71,11 +79,28 @@ mkdir -p "$BIN_DIR" "$APP_DIR" "$META_DIR"
 
 echo "==> Installing Ferrite DM to prefix: $PREFIX"
 
-# Locate binaries (either in current directory or target/release or SCRIPT_DIR)
+# Detect host Rust target triple for target/<triple>/release lookup
+HOST_RUST_TARGET=""
+case "$(uname -m)" in
+    x86_64|amd64)
+        HOST_RUST_TARGET="x86_64-unknown-linux-gnu"
+        ;;
+    aarch64|arm64)
+        HOST_RUST_TARGET="aarch64-unknown-linux-gnu"
+        ;;
+esac
+
+# Locate binaries (either in script dir, target/<triple>/release, target/release, or current directory)
 install_bin() {
     local bin_name="$1"
     local found=""
-    for loc in "$SCRIPT_DIR/$bin_name" "$ROOT_DIR/target/release/$bin_name" "$PWD/$bin_name"; do
+    local candidates=("$SCRIPT_DIR/$bin_name")
+    if [ -n "$HOST_RUST_TARGET" ]; then
+        candidates+=("$ROOT_DIR/target/${HOST_RUST_TARGET}/release/$bin_name")
+    fi
+    candidates+=("$ROOT_DIR/target/release/$bin_name" "$PWD/$bin_name")
+
+    for loc in "${candidates[@]}"; do
         if [ -f "$loc" ]; then
             found="$loc"
             break

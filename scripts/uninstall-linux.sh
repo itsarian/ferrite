@@ -10,11 +10,19 @@ PREFIX="${PREFIX:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --prefix requires a directory path" >&2
+                exit 1
+            fi
             PREFIX="$2"
             shift 2
             ;;
         --prefix=*)
             PREFIX="${1#*=}"
+            if [[ -z "$PREFIX" ]]; then
+                echo "Error: --prefix requires a directory path" >&2
+                exit 1
+            fi
             shift
             ;;
         --user)

@@ -30,14 +30,26 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --arch)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --arch requires a value (x86_64, amd64, arm64, aarch64)" >&2
+                exit 1
+            fi
             ARCH="$2"
             shift 2
             ;;
         --arch=*)
             ARCH="${1#*=}"
+            if [[ -z "$ARCH" ]]; then
+                echo "Error: --arch requires a value (x86_64, amd64, arm64, aarch64)" >&2
+                exit 1
+            fi
             shift
             ;;
         --version)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --version requires a value" >&2
+                exit 1
+            fi
             VERSION="$2"
             VERSION="${VERSION#v}"
             shift 2
@@ -45,50 +57,73 @@ while [[ $# -gt 0 ]]; do
         --version=*)
             VERSION="${1#*=}"
             VERSION="${VERSION#v}"
+            if [[ -z "$VERSION" ]]; then
+                echo "Error: --version requires a value" >&2
+                exit 1
+            fi
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--skip-build] [--clean] [--arch <arch>] [--version <version>]"
+            echo "Usage: $0 [--skip-build] [--clean] [--arch <x86_64|amd64|arm64|aarch64>] [--version <version>]"
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--clean] [--arch <arch>] [--version <version>]"
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [--skip-build] [--clean] [--arch <x86_64|amd64|arm64|aarch64>] [--version <version>]" >&2
             exit 1
             ;;
     esac
 done
 
 case "$ARCH" in
-    amd64)
-        ARCH="x86_64"
+    x86_64|amd64)
+        ASSET_ARCH="x86_64"
+        APPIMAGE_ARCH="x86_64"
+        RUST_TARGET="x86_64-unknown-linux-gnu"
         ;;
-    arm64)
-        ARCH="aarch64"
+    aarch64|arm64)
+        ASSET_ARCH="arm64"
+        APPIMAGE_ARCH="aarch64"
+        RUST_TARGET="aarch64-unknown-linux-gnu"
         ;;
+    *)
+        echo "Error: Unsupported architecture '$ARCH'. Supported: x86_64, amd64, arm64, aarch64" >&2
+        exit 1
+        ;;
+esac
+
+HOST_RAW_ARCH="$(uname -m)"
+case "$HOST_RAW_ARCH" in
+    x86_64|amd64) HOST_ASSET_ARCH="x86_64" ;;
+    aarch64|arm64) HOST_ASSET_ARCH="arm64" ;;
+    *) HOST_ASSET_ARCH="$HOST_RAW_ARCH" ;;
 esac
 
 cd "$ROOT_DIR"
 
-APPDIR="$DIST_DIR/Ferrite_DM.AppDir"
-OUTPUT_APPIMAGE="$DIST_DIR/Ferrite-DM-${VERSION}-${ARCH}.AppImage"
+APPDIR="$DIST_DIR/Ferrite_DM-${ASSET_ARCH}.AppDir"
+OUTPUT_APPIMAGE="$DIST_DIR/ferrite-dm-${VERSION}-linux-${ASSET_ARCH}.AppImage"
 
 if [ "$CLEAN" = true ]; then
-    echo "==> Cleaning AppDir and existing AppImage..."
-    rm -rf "$APPDIR" "$OUTPUT_APPIMAGE"
+    echo "==> Cleaning AppDir and existing AppImages..."
+    rm -rf "$DIST_DIR"/Ferrite_DM*.AppDir "$DIST_DIR"/*.AppImage
 fi
 
 mkdir -p "$DIST_DIR"
 
 # 1. Build release binaries if requested
 if [ "$SKIP_BUILD" = false ]; then
-    echo "==> Building release binaries for AppImage ($ARCH)..."
-    cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+    echo "==> Building release binaries for AppImage (${ASSET_ARCH} / ${APPIMAGE_ARCH})..."
+    if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
+        cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
+    else
+        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
+    fi
 fi
 
-# Locate binaries in target directory
+# Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
-for candidate in "target/release" "target/${ARCH}-unknown-linux-gnu/release"; do
+for candidate in "target/${RUST_TARGET}/release" "target/release"; do
     if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
@@ -96,7 +131,7 @@ for candidate in "target/release" "target/${ARCH}-unknown-linux-gnu/release"; do
 done
 
 if [ -z "$BIN_SRC_DIR" ]; then
-    echo "Error: Release binaries not found in target/. Run without --skip-build."
+    echo "Error: Release binaries not found in target/${RUST_TARGET}/release or target/release. Run without --skip-build." >&2
     exit 1
 fi
 
@@ -161,7 +196,7 @@ set -e
 HERE="${APPDIR:-$(cd "$(dirname "$0")" && pwd)}"
 
 export PATH="${HERE}/usr/bin:${PATH}"
-export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${HERE}/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 # Route commands based on argument
@@ -188,35 +223,40 @@ chmod 755 "$APPDIR/AppRun"
 
 # 4. Build .AppImage using appimagetool if available
 TOOL=""
+TOOL_CACHE="$DIST_DIR/tools/appimagetool-${APPIMAGE_ARCH}"
 if command -v appimagetool >/dev/null 2>&1; then
     TOOL="appimagetool"
-elif [ -x "$ROOT_DIR/appimagetool" ]; then
-    TOOL="$ROOT_DIR/appimagetool"
+elif [ -x "$TOOL_CACHE" ]; then
+    TOOL="$TOOL_CACHE"
 elif [ "$(uname -s)" = "Linux" ]; then
-    echo "==> Downloading appimagetool for $ARCH..."
-    TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
-    FALLBACK_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage"
-    if curl -fsSL -o "$ROOT_DIR/appimagetool" "$TOOL_URL" || curl -fsSL -o "$ROOT_DIR/appimagetool" "$FALLBACK_URL"; then
-        chmod +x "$ROOT_DIR/appimagetool"
-        TOOL="$ROOT_DIR/appimagetool"
+    mkdir -p "$DIST_DIR/tools"
+    echo "==> Downloading appimagetool for ${APPIMAGE_ARCH}..."
+    TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
+    FALLBACK_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
+    if curl -fsSL -o "${TOOL_CACHE}.tmp" "$TOOL_URL" || curl -fsSL -o "${TOOL_CACHE}.tmp" "$FALLBACK_URL"; then
+        mv -f "${TOOL_CACHE}.tmp" "$TOOL_CACHE"
+        chmod +x "$TOOL_CACHE"
+        TOOL="$TOOL_CACHE"
+    else
+        rm -f "${TOOL_CACHE}.tmp"
     fi
 fi
 
 if [ -n "$TOOL" ]; then
-    echo "==> Packaging AppImage using $TOOL..."
-    if ! APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" "$APPDIR" "$OUTPUT_APPIMAGE"; then
+    echo "==> Packaging AppImage (${APPIMAGE_ARCH}) using $TOOL..."
+    if ! APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$APPIMAGE_ARCH" "$TOOL" "$APPDIR" "$OUTPUT_APPIMAGE"; then
         echo "==> Retrying AppImage build with --no-appstream..."
-        APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" --no-appstream "$APPDIR" "$OUTPUT_APPIMAGE"
+        APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$APPIMAGE_ARCH" "$TOOL" --no-appstream "$APPDIR" "$OUTPUT_APPIMAGE"
     fi
 
     echo "==> Successfully created AppImage: $OUTPUT_APPIMAGE"
     ls -lh "$OUTPUT_APPIMAGE"
 else
     if [ "$(uname -s)" = "Linux" ]; then
-        echo "Error: Failed to acquire appimagetool on Linux."
+        echo "Error: Failed to acquire appimagetool for ${APPIMAGE_ARCH} on Linux." >&2
         exit 1
     fi
     echo "==> Notice: appimagetool not found on current host."
     echo "==> Fully structured AppDir prepared at: $APPDIR"
-    echo "==> To generate final AppImage on Linux: appimagetool $APPDIR $OUTPUT_APPIMAGE"
+    echo "==> To generate final AppImage on Linux: ARCH=${APPIMAGE_ARCH} appimagetool $APPDIR $OUTPUT_APPIMAGE"
 fi

@@ -30,14 +30,26 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --arch)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --arch requires a value (x86_64, amd64, arm64, aarch64)" >&2
+                exit 1
+            fi
             ARCH="$2"
             shift 2
             ;;
         --arch=*)
             ARCH="${1#*=}"
+            if [[ -z "$ARCH" ]]; then
+                echo "Error: --arch requires a value (x86_64, amd64, arm64, aarch64)" >&2
+                exit 1
+            fi
             shift
             ;;
         --version)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --version requires a value" >&2
+                exit 1
+            fi
             VERSION="$2"
             VERSION="${VERSION#v}"
             shift 2
@@ -45,15 +57,19 @@ while [[ $# -gt 0 ]]; do
         --version=*)
             VERSION="${1#*=}"
             VERSION="${VERSION#v}"
+            if [[ -z "$VERSION" ]]; then
+                echo "Error: --version requires a value" >&2
+                exit 1
+            fi
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--skip-build] [--clean] [--arch <arch>] [--version <version>]"
+            echo "Usage: $0 [--skip-build] [--clean] [--arch <x86_64|amd64|arm64|aarch64>] [--version <version>]"
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-build] [--clean] [--arch <arch>] [--version <version>]"
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [--skip-build] [--clean] [--arch <x86_64|amd64|arm64|aarch64>] [--version <version>]" >&2
             exit 1
             ;;
     esac
@@ -61,17 +77,26 @@ done
 
 case "$ARCH" in
     x86_64|amd64)
+        ASSET_ARCH="x86_64"
         RPM_ARCH="x86_64"
         RUST_TARGET="x86_64-unknown-linux-gnu"
         ;;
     aarch64|arm64)
+        ASSET_ARCH="arm64"
         RPM_ARCH="aarch64"
         RUST_TARGET="aarch64-unknown-linux-gnu"
         ;;
     *)
-        RPM_ARCH="$ARCH"
-        RUST_TARGET=""
+        echo "Error: Unsupported architecture '$ARCH'. Supported: x86_64, amd64, arm64, aarch64" >&2
+        exit 1
         ;;
+esac
+
+HOST_RAW_ARCH="$(uname -m)"
+case "$HOST_RAW_ARCH" in
+    x86_64|amd64) HOST_ASSET_ARCH="x86_64" ;;
+    aarch64|arm64) HOST_ASSET_ARCH="arm64" ;;
+    *) HOST_ASSET_ARCH="$HOST_RAW_ARCH" ;;
 esac
 
 cd "$ROOT_DIR"
@@ -86,17 +111,17 @@ mkdir -p "$DIST_DIR"
 
 # 1. Build release binaries if requested
 if [ "$SKIP_BUILD" = false ]; then
-    echo "==> Building release binaries for Linux ($RPM_ARCH)..."
-    if [ -n "$RUST_TARGET" ] && [ "$(uname -s)" = "Linux" ]; then
+    echo "==> Building release binaries for Linux (${ASSET_ARCH} / ${RPM_ARCH})..."
+    if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
         cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
     else
-        cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
     fi
 fi
 
-# Locate binaries in target directory
+# Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
-for candidate in "target/release" "target/$RUST_TARGET/release"; do
+for candidate in "target/${RUST_TARGET}/release" "target/release"; do
     if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
@@ -104,7 +129,7 @@ for candidate in "target/release" "target/$RUST_TARGET/release"; do
 done
 
 if [ -z "$BIN_SRC_DIR" ]; then
-    echo "Error: Release binaries not found in target/. Run without --skip-build."
+    echo "Error: Release binaries not found in target/${RUST_TARGET}/release or target/release. Run without --skip-build." >&2
     exit 1
 fi
 
@@ -159,7 +184,7 @@ RPM_SPEC_FILE="$RPM_TOP_DIR/SPECS/ferrite-dm.spec"
 cat << EOF > "$RPM_SPEC_FILE"
 %define _topdir $RPM_TOP_DIR
 %define _buildrootdir $RPM_TOP_DIR/BUILDROOT
-%define _rpmdir $DIST_DIR
+%define _rpmdir $RPM_TOP_DIR/RPMS
 %global debug_package %{nil}
 %global _build_id_links none
 %global __os_install_post %{nil}
@@ -219,24 +244,37 @@ fi
 EOF
 
 # 4. Build RPM with rpmbuild if available
-echo "==> Building RPM package..."
+OUTPUT_RPM="$DIST_DIR/${PKG_NAME}-${VERSION}-linux-${ASSET_ARCH}.rpm"
+echo "==> Building RPM package ($RPM_ARCH)..."
 if command -v rpmbuild >/dev/null 2>&1; then
     rpmbuild -bb \
+        --target "$RPM_ARCH" \
         --define "_topdir $RPM_TOP_DIR" \
-        --define "_rpmdir $DIST_DIR" \
+        --define "_rpmdir $RPM_TOP_DIR/RPMS" \
         "$RPM_SPEC_FILE"
 
-    # Flatten rpm output if placed in architecture subdirectory
-    if [ -d "$DIST_DIR/$RPM_ARCH" ]; then
-        mv "$DIST_DIR/$RPM_ARCH"/*.rpm "$DIST_DIR/"
-        rmdir "$DIST_DIR/$RPM_ARCH" 2>/dev/null || true
+    BUILT_RPMS=()
+    while IFS= read -r rpm_file; do
+        BUILT_RPMS+=("$rpm_file")
+    done < <(find "$RPM_TOP_DIR/RPMS" -type f -name '*.rpm' | sort)
+
+    if [ "${#BUILT_RPMS[@]}" -eq 0 ]; then
+        echo "Error: rpmbuild succeeded but no .rpm artifact was found under $RPM_TOP_DIR/RPMS" >&2
+        exit 1
+    fi
+    if [ "${#BUILT_RPMS[@]}" -gt 1 ]; then
+        echo "Error: expected 1 .rpm artifact under $RPM_TOP_DIR/RPMS, found ${#BUILT_RPMS[@]}: ${BUILT_RPMS[*]}" >&2
+        exit 1
     fi
 
-    echo "==> Successfully created RPM package in $DIST_DIR:"
-    ls -lh "$DIST_DIR"/*.rpm
+    mv -f "${BUILT_RPMS[0]}" "$OUTPUT_RPM"
+
+    echo "==> Successfully created RPM package: $OUTPUT_RPM"
+    ls -lh "$OUTPUT_RPM"
 else
     echo "==> Note: rpmbuild not installed on current host."
     echo "==> Generated RPM spec at: $RPM_SPEC_FILE"
     echo "==> Staged payload at: $RPM_STAGE_DIR"
-    echo "==> To build on a system with rpm-build installed: rpmbuild -bb $RPM_SPEC_FILE"
+    echo "==> Target RPM output path: $OUTPUT_RPM"
+    echo "==> To build on a system with rpm-build installed: rpmbuild -bb --target $RPM_ARCH $RPM_SPEC_FILE"
 fi
