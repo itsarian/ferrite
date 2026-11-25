@@ -211,7 +211,7 @@ Recommends:     xdg-utils
 %description
 Ferrite DM is a fast, telemetry-free download accelerator written in Rust.
 It combines an ultra-fast asynchronous core with a modern, GPU-accelerated
-graphical interface designed to replace legacy tools like Free Download Manager.
+graphical interface built with GPUI.
 
 %install
 rm -rf %{buildroot}

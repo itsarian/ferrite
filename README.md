@@ -16,54 +16,31 @@
   <a href="#features">Features</a> •
   <a href="#screenshots">Screenshots</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#architecture">Architecture</a> •
   <a href="#installation">Installation</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#supported-protocols">Protocols</a> •
   <a href="#cli-reference">CLI Reference</a> •
-  <a href="#desktop-shortcuts">Shortcuts</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="docs/CI_CD.md">CI/CD</a>
+  <a href="#roadmap">Roadmap</a>
 </div>
 
 <br />
 
 <div align="center">
   <img src="resources/screenshot.png" width="100%" alt="Ferrite DM native GPUI desktop interface running on macOS" />
-  <p><em>Native GPUI desktop interface with real-time transfer throughput and the 6-tab diagnostic inspector.</em></p>
+  <p><em>Native GPUI desktop interface with real-time transfer throughput and the 6-tab diagnostic inspector (<a href="resources/demo.mp4">watch 14s demo clip</a>).</em></p>
 </div>
-
----
-
-## Built with GPUI
-
-Ferrite DM's desktop interface (`fdm-gui`) is built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), Zed's GPU-accelerated UI framework.
-
-Ferrite is an independent project exploring GPUI outside of a code editor — applying it to a native download manager with live transfer graphs, a 6-tab diagnostic inspector, custom chunk maps, background daemon IPC, and native macOS/Linux integrations. Everything runs locally with zero telemetry, no Electron/Chromium overhead, and an SQLite WAL backend.
-
-> [!NOTE]
-> Ferrite DM is an independent open-source project and is not affiliated with Zed Industries.
 
 ---
 
 ## Features
 
-- **Multi-Protocol Transfer Engine:**
-  - Multi-connection segmented HTTP/HTTPS and FTP downloads with dynamic chunk splitting and mirror fallbacks.
-  - BitTorrent engine powered by `librqbit` supporting magnet links, `.torrent` files, DHT, PEX, LSD, uTP, and sequential "Play ASAP" streaming.
-  - HLS (`.m3u8`) and MPEG-DASH (`.mpd`) video stream parsing with AES-128 segment decryption.
-- **Native GPUI Desktop Interface:**
-  - Sub-millisecond GPU rendering via Zed's GPUI framework — zero Electron or Chromium overhead.
-  - 6-tab diagnostic inspector: `GENERAL`, `DETAILS`, `FILES` (interactive file tree), `PROGRESS` (chunk map), `CONNECTIONS` (throughput per peer), and `SPEED` (live transfer graph).
-  - macOS integrations: menu bar item, Dock progress badges, sleep prevention (`caffeinate`), and system notifications.
-- **Traffic Usage Modes (TUM):**
-  - Instant bandwidth throttling profiles: `snail` (64 KiB/s), `low` (512 KiB/s), `medium` (4 MiB/s), and `high` (unlimited).
-- **Wildcard Batch Expansion:**
-  - Expand URL range patterns like `https://example.com/part-[01-20:2].zip` and brace lists like `{linux,macos}`.
-- **Post-Processing & Utilities:**
-  - FFmpeg integration for MP3 extraction (`ferrite-dm mp3`) and MP4 remuxing (`ferrite-dm mp4`).
-  - Cryptographic hash verification (MD5, SHA-1, SHA-256, SHA-512) via `ferrite-dm hash`.
-- **Browser & LAN Remote Control:**
-  - WebExtension Native Messaging host compatible with official Chrome, Firefox, Edge, Brave, Opera, and Vivaldi extensions.
-  - Built-in self-signed HTTPS + WebSocket server with QR-code terminal pairing for remote queue control over LAN.
+- **Zero Telemetry, Local-First:** All download state, chunk maps, and mirror metadata are stored locally in SQLite with Write-Ahead Logging (WAL). No analytics, no ads, no cloud relay.
+- **Native GPUI Desktop Interface:** Sub-millisecond GPU rendering via Zed's GPUI framework — zero Electron or Chromium overhead. Includes a 6-tab diagnostic inspector (`GENERAL`, `DETAILS`, `FILES`, `PROGRESS`, `CONNECTIONS`, `SPEED`), menu bar item, Dock progress badges, sleep prevention (`caffeinate`), and system notifications.
+- **Multi-Protocol Acceleration:** Segmented HTTP(S)/FTP with mirror fallback, full BitTorrent (`librqbit`) with sequential "Play ASAP" streaming, and HLS (`.m3u8`) / MPEG-DASH (`.mpd`) streams with AES-128 decryption.
+- **Traffic Usage Modes (TUM):** Instant bandwidth throttling profiles (`snail`, `low`, `medium`, `high`).
+- **Wildcard Batch Expansion:** Expand URL range patterns like `https://example.com/part-[01-20:2].zip` and brace lists like `{linux,macos}`.
+- **Post-Processing & Utilities:** FFmpeg integration (`ferrite-dm mp3`, `ferrite-dm mp4`) and cryptographic hash verification (`ferrite-dm hash` for MD5, SHA-1, SHA-256, SHA-512).
+- **Browser & LAN Remote Control:** WebExtension Native Messaging host (`ferrite-native-host`) for Chrome, Firefox, Edge, Brave, Opera, and Vivaldi, plus a built-in self-signed HTTPS + WebSocket server with QR-code pairing.
 
 ---
 
@@ -91,27 +68,6 @@ Ferrite is an independent project exploring GPUI outside of a code editor — ap
 
 ---
 
-## Why Ferrite DM?
-
-**Ferrite DM** is a local-first, native alternative to heavy cross-platform GUI downloaders and terminal-only tools like `aria2` and `curl`. All download states, file chunk maps, and mirror metadata are persisted locally in an SQLite database using Write-Ahead Logging (WAL).
-
-| Capability | Ferrite DM | aria2 / curl |
-| :--- | :--- | :--- |
-| **Privacy & Telemetry** | **Zero telemetry** — 100% local SQLite WAL database | Clean (CLI only) |
-| **Desktop Interface** | **Native GPUI** (sub-millisecond GPU rendering, zero Chromium) | None (terminal only) |
-| **Unified IPC** | Shared Unix socket daemon (`ferrite.sock`) between GUI and CLI | Separate process per command |
-| **Protocols** | HTTP(S), FTP, BitTorrent (`librqbit`), HLS & DASH streams | HTTP(S), FTP, BitTorrent (`aria2`) |
-| **Browser Integration** | Built-in WebExtension Native Messaging host (`ferrite-native-host`) | Requires third-party bridges |
-| **LAN Remote Control** | Built-in self-signed HTTPS + WebSocket with QR-code terminal pairing | External web wrappers |
-
-### Trade-offs & Alternatives
-
-- **Windows Desktop GUI:** File allocation and IPC layers currently leverage POSIX file positioning and Unix domain sockets. Windows support is in development.
-- **Single One-off Scripts:** If you only need to fetch a single file in a shell pipeline without queue persistence or chunk resumption, standard `curl` or `wget` is lighter.
-- **Dedicated Remote Seedboxes:** For multi-user seedbox servers, dedicated torrent daemons like `transmission-daemon` or `qbittorrent-nox` are more suitable.
-
----
-
 ## Quick Start
 
 ### 1. Install or run from terminal
@@ -136,7 +92,7 @@ ferrite-dm add "https://cdn1.example.com/installer.dmg" \
 
 ### 3. Connect your browser
 
-Integrate one-click download capture with official Chrome, Firefox, Edge, Brave, Opera, or Vivaldi extensions:
+Integrate one-click download capture with Chrome, Firefox, Edge, Brave, Opera, or Vivaldi:
 
 ```bash
 ferrite-dm native-host-install --browser all
@@ -144,46 +100,6 @@ ferrite-dm native-host-install --browser all
 
 > [!NOTE]
 > When you click a download link in your browser, the native host automatically spawns `ferrite-dm daemon` in the background if neither the GUI nor daemon is already running.
-
----
-
-## Architecture
-
-Ferrite DM is structured as a modular 10-crate Rust workspace. The GPUI desktop app (`fdm-gui`) and background daemon (`ferrite-dm daemon`) expose a shared Unix domain socket (`ferrite.sock`) and optional LAN HTTPS/WebSocket server, allowing the CLI and browser native host to hand off and inspect transfers seamlessly. When no daemon or GUI is running, the CLI can also execute transfers directly against the core engine.
-
-```mermaid
-flowchart TD
-    GUI["Desktop GUI · GPUI (fdm-gui)"] --> IPC["IPC & LAN Remote (fdm-ipc · ferrite.sock)"]
-    CLI["CLI (ferrite-dm)"] --> IPC
-    CLI -. "standalone mode" .-> CORE
-    NH["Browser Native Host (ferrite-native-host)"] --> IPC
-    IPC --> CORE["Core Engine & Persistence (fdm-core)"]
-    GUI --> CORE
-    CORE --> HTTP["HTTP(S) / FTP (fdm-http)"]
-    CORE --> BT["BitTorrent · librqbit (fdm-bt)"]
-    CORE --> HLS["HLS / DASH (fdm-hls)"]
-    CORE --> BATCH["Batch & Media (fdm-batch · fdm-media)"]
-    CORE --> DB[("SQLite · WAL (db.sqlite)")]
-```
-
-### Workspace Crates
-
-| Crate | What it holds |
-| :--- | :--- |
-| [`crates/fdm-core`](crates/fdm-core) | SQLite WAL database persistence, data models, token bucket rate limiter, path routing, and OS sleep prevention |
-| [`crates/fdm-http`](crates/fdm-http) | Multi-connection segmented HTTP/HTTPS and FTP engine with mirror management |
-| [`crates/fdm-bt`](crates/fdm-bt) | BitTorrent engine wrapping `librqbit` with sequential "Play ASAP" streaming |
-| [`crates/fdm-hls`](crates/fdm-hls) | HLS (`.m3u8`) and MPEG-DASH (`.mpd`) stream parser with AES-128 segment decryption |
-| [`crates/fdm-batch`](crates/fdm-batch) | Wildcard pattern parser expanding numeric ranges and brace expansions |
-| [`crates/fdm-media`](crates/fdm-media) | Embedded Boa JavaScript engine for media plugins and FFmpeg conversion helpers |
-| [`crates/fdm-ipc`](crates/fdm-ipc) | Unix domain socket protocol (`ferrite.sock`) and LAN Remote Control web server |
-| [`crates/fdm-native-host`](crates/fdm-native-host) | WebExtension Native Messaging protocol host executable for web browser capture |
-| [`crates/fdm-cli`](crates/fdm-cli) | Command-line interface executable (`ferrite-dm`) and background daemon supervisor |
-| [`crates/fdm-gui`](crates/fdm-gui) | Native GPUI desktop application interface (`fdm-gui` / `Ferrite DM.app`) |
-| [`docs/ARCHITECTURE_BLUEPRINT.md`](docs/ARCHITECTURE_BLUEPRINT.md) | Architecture blueprint and protocol specifications |
-| [`docs/CI_CD.md`](docs/CI_CD.md) | Continuous Integration, security audit, release pipelines, and contributor pre-flight guide |
-| [`scripts/`](scripts/) | Packaging scripts (`package-macos.sh`, `package-linux-*.sh`), installers, `PKGBUILD`, and icon generation |
-| [`resources/`](resources/) | Application icon (`Ferrite-1024.png`, `Ferrite.icns`), screenshots, and `Info.plist` |
 
 ---
 
@@ -293,6 +209,65 @@ Compiled binaries in `target/release/`:
 - **macOS:** macOS 11+ (Big Sur or newer). Native builds for Apple Silicon (`arm64`) and Intel (`x86_64`).
 - **Linux:** `x86_64` or ARM64 (`aarch64`) Linux distribution with glibc 2.31+. The GUI (`fdm-gui`) requires an X11 or Wayland display server and native libraries (automatically handled by `.deb`/`.rpm` packages; see [Linux Runtime Dependencies](#linux-runtime-dependencies) for other install methods).
 - **Optional Dependencies:** [FFmpeg](https://ffmpeg.org/) (for audio/video conversion) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) (for extended media URL resolution).
+
+---
+
+## Architecture
+
+Ferrite DM is structured as a modular 10-crate Rust workspace. The GPUI desktop app (`fdm-gui`) and background daemon (`ferrite-dm daemon`) expose a shared Unix domain socket (`ferrite.sock`) and optional LAN HTTPS/WebSocket server, allowing the CLI and browser native host to hand off and inspect transfers seamlessly. When no daemon or GUI is running, the CLI can also execute transfers directly against the core engine.
+
+```mermaid
+flowchart TD
+    GUI["Desktop GUI · GPUI (fdm-gui)"] --> IPC["IPC & LAN Remote (fdm-ipc · ferrite.sock)"]
+    CLI["CLI (ferrite-dm)"] --> IPC
+    CLI -. "standalone mode" .-> CORE
+    NH["Browser Native Host (ferrite-native-host)"] --> IPC
+    IPC --> CORE["Core Engine & Persistence (fdm-core)"]
+    GUI --> CORE
+    CORE --> HTTP["HTTP(S) / FTP (fdm-http)"]
+    CORE --> BT["BitTorrent · librqbit (fdm-bt)"]
+    CORE --> HLS["HLS / DASH (fdm-hls)"]
+    CORE --> BATCH["Batch & Media (fdm-batch · fdm-media)"]
+    CORE --> DB[("SQLite · WAL (db.sqlite)")]
+```
+
+### Built with GPUI
+
+Ferrite DM's desktop interface (`fdm-gui`) is built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), Zed's GPU-accelerated UI framework.
+
+Ferrite is an independent project exploring GPUI outside of a code editor — applying it to a native download manager with live transfer graphs, a 6-tab diagnostic inspector, custom chunk maps, background daemon IPC, and native macOS/Linux integrations.
+
+> [!NOTE]
+> Ferrite DM is an independent open-source project and is not affiliated with Zed Industries.
+
+### Workspace Crates
+
+| Crate | What it holds |
+| :--- | :--- |
+| [`crates/fdm-core`](crates/fdm-core) | SQLite WAL database persistence, data models, token bucket rate limiter, path routing, and OS sleep prevention |
+| [`crates/fdm-http`](crates/fdm-http) | Multi-connection segmented HTTP/HTTPS and FTP engine with mirror management |
+| [`crates/fdm-bt`](crates/fdm-bt) | BitTorrent engine wrapping `librqbit` with sequential "Play ASAP" streaming |
+| [`crates/fdm-hls`](crates/fdm-hls) | HLS (`.m3u8`) and MPEG-DASH (`.mpd`) stream parser with AES-128 segment decryption |
+| [`crates/fdm-batch`](crates/fdm-batch) | Wildcard pattern parser expanding numeric ranges and brace expansions |
+| [`crates/fdm-media`](crates/fdm-media) | Embedded Boa JavaScript engine for media plugins and FFmpeg conversion helpers |
+| [`crates/fdm-ipc`](crates/fdm-ipc) | Unix domain socket protocol (`ferrite.sock`) and LAN Remote Control web server |
+| [`crates/fdm-native-host`](crates/fdm-native-host) | WebExtension Native Messaging protocol host executable for web browser capture |
+| [`crates/fdm-cli`](crates/fdm-cli) | Command-line interface executable (`ferrite-dm`) and background daemon supervisor |
+| [`crates/fdm-gui`](crates/fdm-gui) | Native GPUI desktop application interface (`fdm-gui` / `Ferrite DM.app`) |
+| [`docs/CI_CD.md`](docs/CI_CD.md) | Continuous Integration, security audit, release pipelines, and contributor pre-flight guide |
+| [`scripts/`](scripts/) | Packaging scripts (`package-macos.sh`, `package-linux-*.sh`), installers, `PKGBUILD`, and icon generation |
+| [`resources/`](resources/) | Application icon (`Ferrite-1024.png`, `Ferrite.icns`), screenshots, demo video, and `Info.plist` |
+
+---
+
+## Supported Protocols
+
+| Protocol | Crate | Capabilities |
+| :--- | :--- | :--- |
+| **HTTP / HTTPS / FTP** | `fdm-http` | Multi-connection segmented transfers, dynamic chunk splitting, mirror fallback, ETag/range resumption |
+| **BitTorrent** | `fdm-bt` | Magnet links, `.torrent` files, DHT, PEX, LSD, uTP, selective file downloads, sequential "Play ASAP" streaming |
+| **HLS & MPEG-DASH** | `fdm-hls` | `.m3u8` and `.mpd` playlist parsing, parallel segment downloads, AES-128 segment decryption |
+| **Batch & Media** | `fdm-batch`, `fdm-media` | Numeric range & brace URL expansion, Boa JS media site plugins, FFmpeg MP3/MP4 post-processing |
 
 ---
 
@@ -412,6 +387,17 @@ Files stored inside the data folder:
 | `FERRITE_THEME` | Overrides desktop interface theme (`dark`, `light`, or `system`). |
 | `FERRITE_UPDATE_MANIFEST_URL` | Custom endpoint for application update manifests. |
 | `HOSTNAME` | Hostname used for self-signed TLS certificates when generating LAN Remote Control links. |
+
+---
+
+## Roadmap
+
+- **Shipped:**
+  - Native GPUI desktop interface on macOS (`arm64` / `x86_64`) and Linux (`x86_64` / `arm64`)
+  - Segmented HTTP(S)/FTP engine, BitTorrent (`librqbit`), HLS/DASH, and wildcard batch expansion
+  - Unified CLI, background daemon (`ferrite.sock`), browser Native Messaging host, and LAN Remote Control
+- **In Progress:**
+  - Windows desktop GUI, file allocation, and named-pipe IPC support
 
 ---
 

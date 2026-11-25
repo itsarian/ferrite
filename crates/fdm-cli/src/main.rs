@@ -17,7 +17,7 @@ use std::sync::Arc;
 #[command(
     name = "ferrite-dm",
     version,
-    about = "Ferrite DM — Fast, telemetry-free Rust replacement for Free Download Manager"
+    about = "Ferrite DM — Fast, telemetry-free native download manager"
 )]
 struct Cli {
     /// Start minimized / background mode (FDM --hidden compatible)
