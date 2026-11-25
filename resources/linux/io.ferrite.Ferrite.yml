@@ -1,0 +1,45 @@
+app-id: io.ferrite.Ferrite
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: ferrite-gui
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=xdg-download
+  - --filesystem=home
+  - --talk-name=org.freedesktop.FileManager1
+  - --talk-name=org.freedesktop.Notifications
+  - --system-talk-name=org.freedesktop.NetworkManager
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/ferrite/cargo
+
+modules:
+  - name: ferrite
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
+      - install -Dm755 target/release/ferrite-gui /app/bin/ferrite-gui
+      - install -Dm755 target/release/ferrite /app/bin/ferrite
+      - install -Dm755 target/release/ferrite-native-host /app/bin/ferrite-native-host
+      - install -Dm644 resources/linux/ferrite.desktop /app/share/applications/io.ferrite.Ferrite.desktop
+      - install -Dm644 resources/linux/io.ferrite.Ferrite.metainfo.xml /app/share/metainfo/io.ferrite.Ferrite.metainfo.xml
+      - |
+        for size in 16 32 48 64 128 256 512 1024; do
+          install -Dm644 resources/linux/icons/hicolor/${size}x${size}/apps/ferrite.png /app/share/icons/hicolor/${size}x${size}/apps/io.ferrite.Ferrite.png
+        done
+        install -Dm644 resources/linux/icons/hicolor/scalable/apps/ferrite.svg /app/share/icons/hicolor/scalable/apps/io.ferrite.Ferrite.svg
+    sources:
+      - type: git
+        url: https://github.com/itsarian/ferrite.git
+        tag: v0.3.0

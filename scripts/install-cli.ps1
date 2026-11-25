@@ -1,4 +1,4 @@
-# Ferrite DM Windows CLI & Native Host Installer
+# Ferrite Windows CLI & Native Host Installer
 [CmdletBinding()]
 param(
     [string]$InstallDir = ""
@@ -8,18 +8,18 @@ $ErrorActionPreference = "Stop"
 
 if (-not $InstallDir) {
     if ($env:LOCALAPPDATA) {
-        $InstallDir = Join-Path $env:LOCALAPPDATA "FerriteDM\bin"
+        $InstallDir = Join-Path $env:LOCALAPPDATA "Ferrite\bin"
     } else {
-        $InstallDir = Join-Path $HOME ".ferrite-dm\bin"
+        $InstallDir = Join-Path $HOME ".ferrite\bin"
     }
 }
 
-Write-Host "==> Installing Ferrite DM binaries to: $InstallDir" -ForegroundColor Cyan
+Write-Host "==> Installing Ferrite binaries to: $InstallDir" -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-$binaries = @("ferrite-dm.exe", "ferrite-native-host.exe")
+$binaries = @("ferrite.exe", "ferrite-native-host.exe")
 foreach ($bin in $binaries) {
     $src = Join-Path $ScriptDir $bin
     if (Test-Path $src) {
@@ -40,9 +40,9 @@ if ($pathEntries -notcontains $InstallDir) {
 }
 
 Write-Host ""
-Write-Host "Ferrite DM installed successfully!" -ForegroundColor Green
-Write-Host "  CLI:         $InstallDir\ferrite-dm.exe"
+Write-Host "Ferrite installed successfully!" -ForegroundColor Green
+Write-Host "  CLI:         $InstallDir\ferrite.exe"
 Write-Host "  Native Host: $InstallDir\ferrite-native-host.exe"
 Write-Host ""
 Write-Host "To register the browser native messaging host, run:" -ForegroundColor Cyan
-Write-Host "  ferrite-dm native-host-install"
+Write-Host "  ferrite native-host-install"

@@ -1,7 +1,7 @@
 #!/usr/bin/env swift
 import AppKit
 
-// Master macOS App Icon Generator for Ferrite DM
+// Master macOS App Icon Generator for Ferrite
 // Generates high-resolution App Icon PNG and compiles into multi-size Ferrite.icns
 
 let size: CGFloat = 1024
@@ -49,7 +49,7 @@ let topRect = NSRect(x: inset, y: size - inset - 280, width: size - (inset * 2),
 sheenGradient.draw(in: topRect, angle: 90)
 context.restoreGState()
 
-// Draw the Ferrite DM Download Disc & Arrow Symbol
+// Draw the Ferrite Download Disc & Arrow Symbol
 // We render the scaled icon path in crisp white with subtle inner depth
 context.saveGState()
 context.setShadow(offset: CGSize(width: 0, height: -6), blur: 14, color: NSColor.black.withAlphaComponent(0.25).cgColor)
@@ -182,7 +182,7 @@ for px in linuxSizes {
     if let rTiff = resized.tiffRepresentation,
        let rRep = NSBitmapImageRep(data: rTiff),
        let rPng = rRep.representation(using: .png, properties: [:]) {
-        try? rPng.write(to: URL(fileURLWithPath: "\(iconDir)/ferrite-dm.png"))
+        try? rPng.write(to: URL(fileURLWithPath: "\(iconDir)/ferrite.png"))
     }
 }
 
@@ -215,5 +215,5 @@ let svgContent = """
   </g>
 </svg>
 """
-try? svgContent.write(to: URL(fileURLWithPath: "\(scalableDir)/ferrite-dm.svg"), atomically: true, encoding: .utf8)
+try? svgContent.write(to: URL(fileURLWithPath: "\(scalableDir)/ferrite.svg"), atomically: true, encoding: .utf8)
 print("Generated Linux hicolor icons and scalable SVG in \(outDir)/linux/icons/hicolor")

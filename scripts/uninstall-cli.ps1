@@ -1,4 +1,4 @@
-# Ferrite DM Windows CLI & Native Host Uninstaller
+# Ferrite Windows CLI & Native Host Uninstaller
 [CmdletBinding()]
 param(
     [string]$InstallDir = ""
@@ -8,15 +8,15 @@ $ErrorActionPreference = "Stop"
 
 if (-not $InstallDir) {
     if ($env:LOCALAPPDATA) {
-        $InstallDir = Join-Path $env:LOCALAPPDATA "FerriteDM\bin"
+        $InstallDir = Join-Path $env:LOCALAPPDATA "Ferrite\bin"
     } else {
-        $InstallDir = Join-Path $HOME ".ferrite-dm\bin"
+        $InstallDir = Join-Path $HOME ".ferrite\bin"
     }
 }
 
-Write-Host "==> Uninstalling Ferrite DM from: $InstallDir" -ForegroundColor Yellow
+Write-Host "==> Uninstalling Ferrite from: $InstallDir" -ForegroundColor Yellow
 
-$binaries = @("ferrite-dm.exe", "ferrite-native-host.exe")
+$binaries = @("ferrite.exe", "ferrite-native-host.exe")
 foreach ($bin in $binaries) {
     $target = Join-Path $InstallDir $bin
     if (Test-Path $target) {
@@ -42,4 +42,4 @@ if ($userPath) {
     [Environment]::SetEnvironmentVariable("Path", $newPath, [EnvironmentVariableTarget]::User)
 }
 
-Write-Host "Ferrite DM uninstalled successfully." -ForegroundColor Green
+Write-Host "Ferrite uninstalled successfully." -ForegroundColor Green

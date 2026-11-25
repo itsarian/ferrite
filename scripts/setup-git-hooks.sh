@@ -4,13 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK_SRC="$ROOT_DIR/.git/hooks/pre-commit"
 
-echo "🔧 Installing Ferrite DM git pre-commit hook..."
+echo "🔧 Installing Ferrite git pre-commit hook..."
 
 cat << 'EOF' > "$HOOK_SRC"
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ferrite DM Pre-Commit Hook (Enforces docs/CI_CD.md Section 3)
+# Ferrite Pre-Commit Hook (Enforces docs/CI_CD.md Section 3)
 echo "🔍 [Pre-Commit] Running code hygiene and CI pre-flight checks..."
 
 # 1. Format check

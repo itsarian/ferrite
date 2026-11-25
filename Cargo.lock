@@ -2331,7 +2331,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-batch"
+name = "ferrite-batch"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -2340,14 +2340,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-bt"
+name = "ferrite-bt"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
- "fdm-core",
- "fdm-http",
+ "ferrite-core",
+ "ferrite-http",
  "hex",
  "librqbit",
  "serde",
@@ -2359,7 +2359,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-cli"
+name = "ferrite-cli"
 version = "0.3.0"
 dependencies = [
  "aes",
@@ -2368,14 +2368,14 @@ dependencies = [
  "cbc",
  "chrono",
  "clap",
- "fdm-batch",
- "fdm-bt",
- "fdm-core",
- "fdm-hls",
- "fdm-http",
- "fdm-ipc",
- "fdm-media",
- "fdm-native-host",
+ "ferrite-batch",
+ "ferrite-bt",
+ "ferrite-core",
+ "ferrite-hls",
+ "ferrite-http",
+ "ferrite-ipc",
+ "ferrite-media",
+ "ferrite-native-host",
  "serde",
  "serde_json",
  "tokio",
@@ -2385,7 +2385,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-core"
+name = "ferrite-core"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -2406,19 +2406,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-gui"
+name = "ferrite-gui"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
  "cocoa 0.26.0",
- "fdm-batch",
- "fdm-bt",
- "fdm-cli",
- "fdm-core",
- "fdm-ipc",
- "fdm-media",
- "fdm-native-host",
+ "ferrite-batch",
+ "ferrite-bt",
+ "ferrite-cli",
+ "ferrite-core",
+ "ferrite-ipc",
+ "ferrite-media",
+ "ferrite-native-host",
  "gpui",
  "objc",
  "qrcode",
@@ -2429,15 +2429,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-hls"
+name = "ferrite-hls"
 version = "0.3.0"
 dependencies = [
  "aes",
  "anyhow",
  "cbc",
  "chrono",
- "fdm-core",
- "fdm-http",
+ "ferrite-core",
+ "ferrite-http",
  "hex",
  "m3u8-rs",
  "reqwest",
@@ -2450,13 +2450,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-http"
+name = "ferrite-http"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
- "fdm-core",
+ "ferrite-core",
  "filetime",
  "futures",
  "hex",
@@ -2475,11 +2475,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-ipc"
+name = "ferrite-ipc"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "fdm-core",
+ "ferrite-core",
  "futures",
  "hex",
  "qrcode",
@@ -2495,15 +2495,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-media"
+name = "ferrite-media"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "boa_engine",
  "chrono",
- "fdm-core",
- "fdm-hls",
- "fdm-http",
+ "ferrite-core",
+ "ferrite-hls",
+ "ferrite-http",
  "reqwest",
  "serde",
  "serde_json",
@@ -2513,13 +2513,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdm-native-host"
+name = "ferrite-native-host"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "directories",
- "fdm-core",
- "fdm-ipc",
+ "ferrite-core",
+ "ferrite-ipc",
  "serde",
  "serde_json",
  "tokio",

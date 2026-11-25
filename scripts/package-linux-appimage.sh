@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ferrite DM Linux AppImage Packaging Script
+# Ferrite Linux AppImage Packaging Script
 # Assembles AppDir and builds a self-contained portable .AppImage bundle.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,12 +101,12 @@ esac
 
 cd "$ROOT_DIR"
 
-APPDIR="$DIST_DIR/Ferrite_DM-${ASSET_ARCH}.AppDir"
-OUTPUT_APPIMAGE="$DIST_DIR/ferrite-dm-${VERSION}-linux-${ASSET_ARCH}.AppImage"
+APPDIR="$DIST_DIR/Ferrite-${ASSET_ARCH}.AppDir"
+OUTPUT_APPIMAGE="$DIST_DIR/ferrite-${VERSION}-linux-${ASSET_ARCH}.AppImage"
 
 if [ "$CLEAN" = true ]; then
     echo "==> Cleaning AppDir and existing AppImages..."
-    rm -rf "$DIST_DIR"/Ferrite_DM*.AppDir "$DIST_DIR"/*.AppImage
+    rm -rf "$DIST_DIR"/Ferrite*.AppDir "$DIST_DIR"/*.AppImage
 fi
 
 mkdir -p "$DIST_DIR"
@@ -115,16 +115,16 @@ mkdir -p "$DIST_DIR"
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building release binaries for AppImage (${ASSET_ARCH} / ${APPIMAGE_ARCH})..."
     if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
-        cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     else
-        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     fi
 fi
 
 # Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
 for candidate in "target/${RUST_TARGET}/release" "target/release"; do
-    if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
+    if [ -f "$ROOT_DIR/$candidate/ferrite" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
     fi
@@ -144,48 +144,48 @@ mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/lib"
 mkdir -p "$APPDIR/usr/share/applications"
 mkdir -p "$APPDIR/usr/share/metainfo"
-mkdir -p "$APPDIR/usr/share/doc/ferrite-dm"
+mkdir -p "$APPDIR/usr/share/doc/ferrite"
 
 # Copy binaries
-if [ -f "$BIN_SRC_DIR/fdm-gui" ]; then
-    install -m 755 "$BIN_SRC_DIR/fdm-gui" "$APPDIR/usr/bin/fdm-gui"
+if [ -f "$BIN_SRC_DIR/ferrite-gui" ]; then
+    install -m 755 "$BIN_SRC_DIR/ferrite-gui" "$APPDIR/usr/bin/ferrite-gui"
 fi
-install -m 755 "$BIN_SRC_DIR/ferrite-dm" "$APPDIR/usr/bin/ferrite-dm"
+install -m 755 "$BIN_SRC_DIR/ferrite" "$APPDIR/usr/bin/ferrite"
 install -m 755 "$BIN_SRC_DIR/ferrite-native-host" "$APPDIR/usr/bin/ferrite-native-host"
 
 # Copy desktop and metadata
-install -m 644 "$RESOURCES_DIR/linux/ferrite-dm.desktop" "$APPDIR/ferrite-dm.desktop"
-install -m 644 "$RESOURCES_DIR/linux/ferrite-dm.desktop" "$APPDIR/usr/share/applications/ferrite-dm.desktop"
-install -m 644 "$RESOURCES_DIR/linux/io.ferrite_dm.FerriteDM.metainfo.xml" "$APPDIR/usr/share/metainfo/io.ferrite_dm.FerriteDM.metainfo.xml"
+install -m 644 "$RESOURCES_DIR/linux/ferrite.desktop" "$APPDIR/ferrite.desktop"
+install -m 644 "$RESOURCES_DIR/linux/ferrite.desktop" "$APPDIR/usr/share/applications/ferrite.desktop"
+install -m 644 "$RESOURCES_DIR/linux/io.ferrite.Ferrite.metainfo.xml" "$APPDIR/usr/share/metainfo/io.ferrite.Ferrite.metainfo.xml"
 
 # Copy icons
 ICONS_SRC_DIR="$RESOURCES_DIR/linux/icons/hicolor"
 for size in 16 32 48 64 128 256 512 1024; do
     DEST_ICON_DIR="$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$DEST_ICON_DIR"
-    if [ -f "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite-dm.png" ]; then
-        install -m 644 "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite-dm.png" "$DEST_ICON_DIR/ferrite-dm.png"
+    if [ -f "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite.png" ]; then
+        install -m 644 "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite.png" "$DEST_ICON_DIR/ferrite.png"
     fi
 done
 
-if [ -f "$ICONS_SRC_DIR/scalable/apps/ferrite-dm.svg" ]; then
+if [ -f "$ICONS_SRC_DIR/scalable/apps/ferrite.svg" ]; then
     mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
-    install -m 644 "$ICONS_SRC_DIR/scalable/apps/ferrite-dm.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/ferrite-dm.svg"
+    install -m 644 "$ICONS_SRC_DIR/scalable/apps/ferrite.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/ferrite.svg"
 fi
 
 # Root AppDir icon
-if [ -f "$ICONS_SRC_DIR/256x256/apps/ferrite-dm.png" ]; then
-    install -m 644 "$ICONS_SRC_DIR/256x256/apps/ferrite-dm.png" "$APPDIR/ferrite-dm.png"
-    install -m 644 "$ICONS_SRC_DIR/256x256/apps/ferrite-dm.png" "$APPDIR/.DirIcon"
+if [ -f "$ICONS_SRC_DIR/256x256/apps/ferrite.png" ]; then
+    install -m 644 "$ICONS_SRC_DIR/256x256/apps/ferrite.png" "$APPDIR/ferrite.png"
+    install -m 644 "$ICONS_SRC_DIR/256x256/apps/ferrite.png" "$APPDIR/.DirIcon"
 elif [ -f "$RESOURCES_DIR/Ferrite-1024.png" ]; then
-    install -m 644 "$RESOURCES_DIR/Ferrite-1024.png" "$APPDIR/ferrite-dm.png"
+    install -m 644 "$RESOURCES_DIR/Ferrite-1024.png" "$APPDIR/ferrite.png"
     install -m 644 "$RESOURCES_DIR/Ferrite-1024.png" "$APPDIR/.DirIcon"
 fi
 
 # Documentation and licenses
-install -m 644 "$ROOT_DIR/LICENSE-MIT" "$APPDIR/usr/share/doc/ferrite-dm/LICENSE-MIT" 2>/dev/null || true
-install -m 644 "$ROOT_DIR/LICENSE-APACHE" "$APPDIR/usr/share/doc/ferrite-dm/LICENSE-APACHE" 2>/dev/null || true
-install -m 644 "$ROOT_DIR/README.md" "$APPDIR/usr/share/doc/ferrite-dm/README.md" 2>/dev/null || true
+install -m 644 "$ROOT_DIR/LICENSE-MIT" "$APPDIR/usr/share/doc/ferrite/LICENSE-MIT" 2>/dev/null || true
+install -m 644 "$ROOT_DIR/LICENSE-APACHE" "$APPDIR/usr/share/doc/ferrite/LICENSE-APACHE" 2>/dev/null || true
+install -m 644 "$ROOT_DIR/README.md" "$APPDIR/usr/share/doc/ferrite/README.md" 2>/dev/null || true
 
 # 3. Create AppRun entrypoint
 cat << 'EOF' > "$APPDIR/AppRun"
@@ -201,19 +201,19 @@ export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/s
 
 # Route commands based on argument
 case "${1:-}" in
-    cli|--cli|ferrite-dm)
+    cli|--cli|ferrite)
         shift
-        exec "${HERE}/usr/bin/ferrite-dm" "$@"
+        exec "${HERE}/usr/bin/ferrite" "$@"
         ;;
     native-host|--native-host|ferrite-native-host)
         shift
         exec "${HERE}/usr/bin/ferrite-native-host" "$@"
         ;;
     *)
-        if [ -x "${HERE}/usr/bin/fdm-gui" ]; then
-            exec "${HERE}/usr/bin/fdm-gui" "$@"
+        if [ -x "${HERE}/usr/bin/ferrite-gui" ]; then
+            exec "${HERE}/usr/bin/ferrite-gui" "$@"
         else
-            exec "${HERE}/usr/bin/ferrite-dm" "$@"
+            exec "${HERE}/usr/bin/ferrite" "$@"
         fi
         ;;
 esac

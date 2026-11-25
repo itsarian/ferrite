@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ferrite DM macOS Packaging Script
-# Builds Ferrite DM.app, .dmg installer, .pkg installer, .zip bundle, and CLI tarball
+# Ferrite macOS Packaging Script
+# Builds Ferrite.app, .dmg installer, .pkg installer, .zip bundle, and CLI tarball
 # for macOS arm64 (Apple Silicon) or x86_64 (Intel).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -123,16 +123,16 @@ if [ "$SKIP_BUILD" = false ]; then
     if command -v rustup >/dev/null 2>&1; then
         rustup target add "$RUST_TARGET"
     fi
-    cargo build --release --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
+    cargo build --release --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 else
     echo "==> Skipping cargo build (using existing release binaries for $ARCH_LABEL)..."
 fi
 
 # Locate and verify binaries
 BIN_SRC_DIR=""
-if [ -f "target/$RUST_TARGET/release/fdm-gui" ] && [ -f "target/$RUST_TARGET/release/ferrite-dm" ] && [ -f "target/$RUST_TARGET/release/ferrite-native-host" ]; then
+if [ -f "target/$RUST_TARGET/release/ferrite-gui" ] && [ -f "target/$RUST_TARGET/release/ferrite" ] && [ -f "target/$RUST_TARGET/release/ferrite-native-host" ]; then
     BIN_SRC_DIR="target/$RUST_TARGET/release"
-elif [ "$ARCH_LABEL" = "$HOST_ARCH" ] && [ -f "target/release/fdm-gui" ] && [ -f "target/release/ferrite-dm" ] && [ -f "target/release/ferrite-native-host" ]; then
+elif [ "$ARCH_LABEL" = "$HOST_ARCH" ] && [ -f "target/release/ferrite-gui" ] && [ -f "target/release/ferrite" ] && [ -f "target/release/ferrite-native-host" ]; then
     BIN_SRC_DIR="target/release"
 fi
 
@@ -143,7 +143,7 @@ if [ -z "$BIN_SRC_DIR" ]; then
     else
         echo "Expected binaries in target/$RUST_TARGET/release."
     fi
-    echo "Run without --skip-build or build with: cargo build --release --target $RUST_TARGET -p fdm-gui -p fdm-cli -p fdm-native-host"
+    echo "Run without --skip-build or build with: cargo build --release --target $RUST_TARGET -p ferrite-gui -p ferrite-cli -p ferrite-native-host"
     exit 1
 fi
 
@@ -155,8 +155,8 @@ if [ ! -f "$RESOURCES_DIR/Ferrite.icns" ]; then
     swift "$SCRIPT_DIR/generate-icon.swift" "$RESOURCES_DIR"
 fi
 
-# 3. Assemble Ferrite DM.app
-APP_NAME="Ferrite DM.app"
+# 3. Assemble Ferrite.app
+APP_NAME="Ferrite.app"
 APP_DIR="$DIST_DIR/$APP_NAME"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -171,8 +171,8 @@ cp "$RESOURCES_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$RESOURCES_DIR/Ferrite.icns" "$RES_DIR/Ferrite.icns"
 
 # Copy binaries
-cp "$BIN_SRC_DIR/fdm-gui" "$MACOS_DIR/fdm-gui"
-cp "$BIN_SRC_DIR/ferrite-dm" "$MACOS_DIR/ferrite-dm"
+cp "$BIN_SRC_DIR/ferrite-gui" "$MACOS_DIR/ferrite-gui"
+cp "$BIN_SRC_DIR/ferrite" "$MACOS_DIR/ferrite"
 cp "$BIN_SRC_DIR/ferrite-native-host" "$MACOS_DIR/ferrite-native-host"
 
 chmod +x "$MACOS_DIR/"*
@@ -182,7 +182,7 @@ echo "==> Code signing $APP_NAME (ad-hoc)..."
 codesign --force --deep --sign - "$APP_DIR"
 
 # 5. Build .dmg disk image
-DMG_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.dmg"
+DMG_NAME="ferrite-${VERSION}-macos-${ARCH_LABEL}.dmg"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 DMG_STAGE="$DIST_DIR/dmg-stage"
 
@@ -193,7 +193,7 @@ cp -R "$APP_DIR" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 
 hdiutil create \
-    -volname "Ferrite DM" \
+    -volname "Ferrite" \
     -srcfolder "$DMG_STAGE" \
     -ov \
     -format UDZO \
@@ -202,7 +202,7 @@ hdiutil create \
 rm -rf "$DMG_STAGE"
 
 # 6. Build .pkg installer package
-PKG_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.pkg"
+PKG_NAME="ferrite-${VERSION}-macos-${ARCH_LABEL}.pkg"
 PKG_PATH="$DIST_DIR/$PKG_NAME"
 PKG_STAGE="$DIST_DIR/pkg-stage"
 
@@ -217,14 +217,14 @@ pkgbuild \
     --root "$PKG_STAGE" \
     --install-location "/Applications" \
     --scripts "$RESOURCES_DIR/pkg-scripts" \
-    --identifier "org.ferritedm.FerriteDM" \
+    --identifier "org.ferrite.Ferrite" \
     --version "$VERSION" \
     "$PKG_PATH" > /dev/null
 
 rm -rf "$PKG_STAGE"
 
 # 7. Build standalone App Bundle Zip
-ZIP_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.zip"
+ZIP_NAME="ferrite-${VERSION}-macos-${ARCH_LABEL}.zip"
 ZIP_PATH="$DIST_DIR/$ZIP_NAME"
 
 echo "==> Building App Bundle Zip ($ZIP_NAME)..."
@@ -232,17 +232,17 @@ rm -f "$ZIP_PATH"
 ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"
 
 # 8. Build standalone CLI / portable tarball
-TAR_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}.tar.gz"
+TAR_NAME="ferrite-${VERSION}-macos-${ARCH_LABEL}.tar.gz"
 TAR_PATH="$DIST_DIR/$TAR_NAME"
-TAR_STAGE_NAME="ferrite-dm-${VERSION}-macos-${ARCH_LABEL}"
+TAR_STAGE_NAME="ferrite-${VERSION}-macos-${ARCH_LABEL}"
 TAR_STAGE="$DIST_DIR/tar-stage/$TAR_STAGE_NAME"
 
 echo "==> Building Standalone Tarball ($TAR_NAME)..."
 rm -rf "$DIST_DIR/tar-stage" "$TAR_PATH"
 mkdir -p "$TAR_STAGE"
 
-cp "$BIN_SRC_DIR/fdm-gui" "$TAR_STAGE/"
-cp "$BIN_SRC_DIR/ferrite-dm" "$TAR_STAGE/"
+cp "$BIN_SRC_DIR/ferrite-gui" "$TAR_STAGE/"
+cp "$BIN_SRC_DIR/ferrite" "$TAR_STAGE/"
 cp "$BIN_SRC_DIR/ferrite-native-host" "$TAR_STAGE/"
 cp "$SCRIPT_DIR/install-cli.sh" "$TAR_STAGE/install.sh"
 cp "$SCRIPT_DIR/uninstall-cli.sh" "$TAR_STAGE/uninstall.sh"
@@ -251,7 +251,7 @@ cp "$SCRIPT_DIR/uninstall-cli.sh" "$TAR_STAGE/uninstall-cli.sh"
 cp "$ROOT_DIR/README.md" "$TAR_STAGE/" 2>/dev/null || true
 cp "$ROOT_DIR"/LICENSE* "$TAR_STAGE/" 2>/dev/null || true
 
-chmod +x "$TAR_STAGE/install.sh" "$TAR_STAGE/uninstall.sh" "$TAR_STAGE/install-cli.sh" "$TAR_STAGE/uninstall-cli.sh" "$TAR_STAGE/fdm-gui" "$TAR_STAGE/ferrite-dm" "$TAR_STAGE/ferrite-native-host"
+chmod +x "$TAR_STAGE/install.sh" "$TAR_STAGE/uninstall.sh" "$TAR_STAGE/install-cli.sh" "$TAR_STAGE/uninstall-cli.sh" "$TAR_STAGE/ferrite-gui" "$TAR_STAGE/ferrite" "$TAR_STAGE/ferrite-native-host"
 
 tar -czf "$TAR_PATH" -C "$DIST_DIR/tar-stage" "$TAR_STAGE_NAME"
 rm -rf "$DIST_DIR/tar-stage"

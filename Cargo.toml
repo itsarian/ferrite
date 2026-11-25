@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/fdm-core",
-    "crates/fdm-batch",
-    "crates/fdm-http",
-    "crates/fdm-hls",
-    "crates/fdm-bt",
-    "crates/fdm-media",
-    "crates/fdm-ipc",
-    "crates/fdm-native-host",
-    "crates/fdm-cli",
-    "crates/fdm-gui",
+    "crates/ferrite-core",
+    "crates/ferrite-batch",
+    "crates/ferrite-http",
+    "crates/ferrite-hls",
+    "crates/ferrite-bt",
+    "crates/ferrite-media",
+    "crates/ferrite-ipc",
+    "crates/ferrite-native-host",
+    "crates/ferrite-cli",
+    "crates/ferrite-gui",
 ]
 
 [workspace.package]

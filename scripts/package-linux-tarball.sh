@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ferrite DM Linux Standalone Tarball Packaging Script
+# Ferrite Linux Standalone Tarball Packaging Script
 # Bundles binaries, desktop integration assets, icons, and installers into .tar.gz.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,7 +101,7 @@ cd "$ROOT_DIR"
 
 if [ "$CLEAN" = true ]; then
     echo "==> Cleaning linux stage..."
-    rm -rf "$DIST_DIR/linux-stage" "$DIST_DIR"/ferrite-dm-*-linux-*.tar.gz
+    rm -rf "$DIST_DIR/linux-stage" "$DIST_DIR"/ferrite-*-linux-*.tar.gz
 fi
 
 mkdir -p "$DIST_DIR"
@@ -110,16 +110,16 @@ mkdir -p "$DIST_DIR"
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building release binaries for Linux (${ASSET_ARCH} / ${RUST_TARGET})..."
     if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
-        cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     else
-        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     fi
 fi
 
 # Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
 for candidate in "target/${RUST_TARGET}/release" "target/release"; do
-    if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
+    if [ -f "$ROOT_DIR/$candidate/ferrite" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
     fi
@@ -133,16 +133,16 @@ fi
 echo "==> Using binaries from $BIN_SRC_DIR"
 
 # 2. Stage files
-STAGE_NAME="ferrite-dm-${VERSION}-linux-${ASSET_ARCH}"
+STAGE_NAME="ferrite-${VERSION}-linux-${ASSET_ARCH}"
 STAGE_DIR="$DIST_DIR/linux-stage/$STAGE_NAME"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/resources/linux/icons"
 
 # Copy binaries
-if [ -f "$BIN_SRC_DIR/fdm-gui" ]; then
-    cp "$BIN_SRC_DIR/fdm-gui" "$STAGE_DIR/"
+if [ -f "$BIN_SRC_DIR/ferrite-gui" ]; then
+    cp "$BIN_SRC_DIR/ferrite-gui" "$STAGE_DIR/"
 fi
-cp "$BIN_SRC_DIR/ferrite-dm" "$STAGE_DIR/"
+cp "$BIN_SRC_DIR/ferrite" "$STAGE_DIR/"
 cp "$BIN_SRC_DIR/ferrite-native-host" "$STAGE_DIR/"
 
 # Copy installers
@@ -154,8 +154,8 @@ cp "$SCRIPT_DIR/install-cli.sh" "$STAGE_DIR/install-cli.sh"
 cp "$SCRIPT_DIR/uninstall-cli.sh" "$STAGE_DIR/uninstall-cli.sh"
 
 # Copy desktop and icon assets
-cp "$RESOURCES_DIR/linux/ferrite-dm.desktop" "$STAGE_DIR/resources/linux/"
-cp "$RESOURCES_DIR/linux/io.ferrite_dm.FerriteDM.metainfo.xml" "$STAGE_DIR/resources/linux/"
+cp "$RESOURCES_DIR/linux/ferrite.desktop" "$STAGE_DIR/resources/linux/"
+cp "$RESOURCES_DIR/linux/io.ferrite.Ferrite.metainfo.xml" "$STAGE_DIR/resources/linux/"
 cp -r "$RESOURCES_DIR/linux/icons/hicolor" "$STAGE_DIR/resources/linux/icons/"
 
 # Copy documentation and licenses
@@ -164,13 +164,13 @@ cp "$ROOT_DIR/LICENSE-MIT" "$STAGE_DIR/" 2>/dev/null || true
 cp "$ROOT_DIR/LICENSE-APACHE" "$STAGE_DIR/" 2>/dev/null || true
 
 # Set permissions
-chmod +x "$STAGE_DIR"/install*.sh "$STAGE_DIR"/uninstall*.sh "$STAGE_DIR"/ferrite-dm "$STAGE_DIR"/ferrite-native-host
-if [ -f "$STAGE_DIR/fdm-gui" ]; then
-    chmod +x "$STAGE_DIR/fdm-gui"
+chmod +x "$STAGE_DIR"/install*.sh "$STAGE_DIR"/uninstall*.sh "$STAGE_DIR"/ferrite "$STAGE_DIR"/ferrite-native-host
+if [ -f "$STAGE_DIR/ferrite-gui" ]; then
+    chmod +x "$STAGE_DIR/ferrite-gui"
 fi
 
 # 3. Create tarball
-TAR_NAME="ferrite-dm-${VERSION}-linux-${ASSET_ARCH}.tar.gz"
+TAR_NAME="ferrite-${VERSION}-linux-${ASSET_ARCH}.tar.gz"
 echo "==> Creating tarball $DIST_DIR/$TAR_NAME..."
 tar -czf "$DIST_DIR/$TAR_NAME" -C "$DIST_DIR/linux-stage" "$STAGE_NAME"
 

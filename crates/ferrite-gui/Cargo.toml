@@ -1,0 +1,28 @@
+[package]
+name = "ferrite-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+ferrite-batch = { path = "../ferrite-batch" }
+ferrite-bt = { path = "../ferrite-bt" }
+ferrite-cli = { path = "../ferrite-cli" }
+ferrite-core = { path = "../ferrite-core" }
+ferrite-ipc = { path = "../ferrite-ipc" }
+ferrite-media = { path = "../ferrite-media" }
+ferrite-native-host = { path = "../ferrite-native-host" }
+gpui = { version = "0.2.2", features = ["font-kit", "runtime_shaders"], default-features = false }
+qrcode = "0.14"
+serde_json = "1.0"
+tokio = { version = "1.47", features = ["full"] }
+unicode-segmentation = "1.12"
+url = "2.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { version = "0.2.2", features = ["wayland", "x11"] }

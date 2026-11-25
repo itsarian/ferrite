@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Ferrite DM</string>
+    <string>Ferrite</string>
     <key>CFBundleDisplayName</key>
-    <string>Ferrite DM</string>
+    <string>Ferrite</string>
     <key>CFBundleIdentifier</key>
-    <string>org.ferritedm.FerriteDM</string>
+    <string>org.ferrite.Ferrite</string>
     <key>CFBundleVersion</key>
     <string>0.3.0</string>
     <key>CFBundleShortVersionString</key>
@@ -17,7 +17,7 @@
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleExecutable</key>
-    <string>fdm-gui</string>
+    <string>ferrite-gui</string>
     <key>CFBundleIconFile</key>
     <string>Ferrite</string>
     <key>LSMinimumSystemVersion</key>
@@ -108,7 +108,7 @@
         </dict>
         <dict>
             <key>UTTypeIdentifier</key>
-            <string>org.ferritedm.fda</string>
+            <string>org.ferrite.fda</string>
             <key>UTTypeDescription</key>
             <string>Ferrite Download Addon</string>
             <key>UTTypeConformsTo</key>

@@ -203,7 +203,7 @@ jobs:
       - name: Build Linux Binaries (GUI + CLI + Native Host)
         shell: bash
         run: |
-          cargo build --release -p fdm-gui -p fdm-cli -p fdm-native-host
+          cargo build --release -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 
       - name: Package Linux Standalone Tarball
         shell: bash
@@ -279,7 +279,7 @@ jobs:
           rm -f SHA256SUMS.txt *.sha256
 
           echo "==> Validating canonical release asset names..."
-          CANONICAL_REGEX='^ferrite-dm-[0-9A-Za-z.+-]+-(linux|macos)-(x86_64|arm64)\.(dmg|pkg|zip|tar\.gz|deb|rpm|AppImage)$'
+          CANONICAL_REGEX='^ferrite-[0-9A-Za-z.+-]+-(linux|macos)-(x86_64|arm64)\.(dmg|pkg|zip|tar\.gz|deb|rpm|AppImage)$'
           shopt -s nullglob
           ASSETS=(*)
           if [ "${#ASSETS[@]}" -eq 0 ]; then
@@ -304,22 +304,22 @@ jobs:
           fi
 
           EXPECTED_ASSETS=(
-            "ferrite-dm-${VERSION}-macos-arm64.dmg"
-            "ferrite-dm-${VERSION}-macos-arm64.pkg"
-            "ferrite-dm-${VERSION}-macos-arm64.tar.gz"
-            "ferrite-dm-${VERSION}-macos-arm64.zip"
-            "ferrite-dm-${VERSION}-macos-x86_64.dmg"
-            "ferrite-dm-${VERSION}-macos-x86_64.pkg"
-            "ferrite-dm-${VERSION}-macos-x86_64.tar.gz"
-            "ferrite-dm-${VERSION}-macos-x86_64.zip"
-            "ferrite-dm-${VERSION}-linux-arm64.AppImage"
-            "ferrite-dm-${VERSION}-linux-arm64.deb"
-            "ferrite-dm-${VERSION}-linux-arm64.rpm"
-            "ferrite-dm-${VERSION}-linux-arm64.tar.gz"
-            "ferrite-dm-${VERSION}-linux-x86_64.AppImage"
-            "ferrite-dm-${VERSION}-linux-x86_64.deb"
-            "ferrite-dm-${VERSION}-linux-x86_64.rpm"
-            "ferrite-dm-${VERSION}-linux-x86_64.tar.gz"
+            "ferrite-${VERSION}-macos-arm64.dmg"
+            "ferrite-${VERSION}-macos-arm64.pkg"
+            "ferrite-${VERSION}-macos-arm64.tar.gz"
+            "ferrite-${VERSION}-macos-arm64.zip"
+            "ferrite-${VERSION}-macos-x86_64.dmg"
+            "ferrite-${VERSION}-macos-x86_64.pkg"
+            "ferrite-${VERSION}-macos-x86_64.tar.gz"
+            "ferrite-${VERSION}-macos-x86_64.zip"
+            "ferrite-${VERSION}-linux-arm64.AppImage"
+            "ferrite-${VERSION}-linux-arm64.deb"
+            "ferrite-${VERSION}-linux-arm64.rpm"
+            "ferrite-${VERSION}-linux-arm64.tar.gz"
+            "ferrite-${VERSION}-linux-x86_64.AppImage"
+            "ferrite-${VERSION}-linux-x86_64.deb"
+            "ferrite-${VERSION}-linux-x86_64.rpm"
+            "ferrite-${VERSION}-linux-x86_64.tar.gz"
           )
 
           MISSING=0
@@ -378,41 +378,41 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.metadata.outputs.tag_name }}
-          name: Ferrite DM ${{ needs.metadata.outputs.tag_name }}
+          name: Ferrite ${{ needs.metadata.outputs.tag_name }}
           target_commitish: ${{ github.sha }}
           files: release-assets/*
           draft: ${{ needs.metadata.outputs.is_draft == 'true' }}
           prerelease: ${{ needs.metadata.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
           body: |
-            ## Ferrite DM ${{ needs.metadata.outputs.tag_name }}
+            ## Ferrite ${{ needs.metadata.outputs.tag_name }}
 
-            Ferrite DM is a high-performance, modular, modern download manager for macOS and Linux.
+            Ferrite is a high-performance, modular, modern download manager for macOS and Linux.
 
             ### Naming Convention
-            All release assets follow the canonical format `ferrite-dm-<version>-<os>-<arch>.<ext>`.
+            All release assets follow the canonical format `ferrite-<version>-<os>-<arch>.<ext>`.
 
             ### Package Assets
             - **macOS (`arm64` — Apple Silicon)**:
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.dmg` — Disk image installer
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.pkg` — Native macOS installer package
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.zip` — Standalone `Ferrite DM.app` bundle
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-arm64.tar.gz` — Portable CLI & GUI archive
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-arm64.dmg` — Disk image installer
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-arm64.pkg` — Native macOS installer package
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-arm64.zip` — Standalone `Ferrite.app` bundle
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-arm64.tar.gz` — Portable CLI & GUI archive
             - **macOS (`x86_64` — Intel)**:
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.dmg` — Disk image installer
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.pkg` — Native macOS installer package
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.zip` — Standalone `Ferrite DM.app` bundle
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-macos-x86_64.tar.gz` — Portable CLI & GUI archive
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-x86_64.dmg` — Disk image installer
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-x86_64.pkg` — Native macOS installer package
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-x86_64.zip` — Standalone `Ferrite.app` bundle
+              - `ferrite-${{ needs.metadata.outputs.version }}-macos-x86_64.tar.gz` — Portable CLI & GUI archive
             - **Linux (`x86_64`)**:
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.deb` — Debian/Ubuntu package (`dpkg`, `apt`)
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.rpm` — Fedora/RHEL/openSUSE package (`rpm`, `dnf`, `zypper`)
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.AppImage` — Portable self-contained executable
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-x86_64.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-x86_64.deb` — Debian/Ubuntu package (`dpkg`, `apt`)
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-x86_64.rpm` — Fedora/RHEL/openSUSE package (`rpm`, `dnf`, `zypper`)
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-x86_64.AppImage` — Portable self-contained executable
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-x86_64.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
             - **Linux (`arm64` / `aarch64`)**:
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.deb` — Debian/Ubuntu package (`dpkg`, `apt`)
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.rpm` — Fedora/RHEL/openSUSE package (`rpm`, `dnf`, `zypper`)
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.AppImage` — Portable self-contained executable
-              - `ferrite-dm-${{ needs.metadata.outputs.version }}-linux-arm64.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-arm64.deb` — Debian/Ubuntu package (`dpkg`, `apt`)
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-arm64.rpm` — Fedora/RHEL/openSUSE package (`rpm`, `dnf`, `zypper`)
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-arm64.AppImage` — Portable self-contained executable
+              - `ferrite-${{ needs.metadata.outputs.version }}-linux-arm64.tar.gz` — Standalone archive with GUI, CLI, native host, and install scripts
             - **Checksums**: `SHA256SUMS.txt` containing SHA256 digests for all 16 published assets
 
             > **Note:** Pre-built Windows release binaries are not yet published by CI.

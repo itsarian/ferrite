@@ -1,10 +1,10 @@
-# Maintainer: Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm>
-pkgname=ferrite-dm
+# Maintainer: Ferrite Maintainers <https://github.com/itsarian/ferrite>
+pkgname=ferrite
 pkgver=0.3.0
 pkgrel=1
 pkgdesc="High-performance, modern multi-protocol download manager and accelerator"
 arch=('x86_64' 'aarch64')
-url="https://github.com/itsarian/ferrite-dm"
+url="https://github.com/itsarian/ferrite"
 license=('MIT' 'Apache-2.0')
 depends=(
     'openssl'
@@ -20,9 +20,9 @@ optdepends=(
     'xdg-utils: desktop integration and default browser/folder launcher'
 )
 makedepends=('cargo' 'git' 'cmake' 'pkgconf')
-provides=('ferrite-dm' 'fdm-gui' 'ferrite-native-host')
-conflicts=('ferrite-dm-bin')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/itsarian/ferrite-dm/archive/refs/tags/v$pkgver.tar.gz")
+provides=('ferrite' 'ferrite-gui' 'ferrite-native-host')
+conflicts=('ferrite-bin')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/itsarian/ferrite/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
@@ -35,33 +35,33 @@ build() {
     cd "$srcdir/$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
+    cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 }
 
 check() {
     cd "$srcdir/$pkgname-$pkgver"
-    cargo test --release --locked -p fdm-cli -p fdm-native-host
+    cargo test --release --locked -p ferrite-cli -p ferrite-native-host
 }
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
 
     # Binaries
-    install -Dm755 target/release/fdm-gui "$pkgdir/usr/bin/fdm-gui"
-    install -Dm755 target/release/ferrite-dm "$pkgdir/usr/bin/ferrite-dm"
+    install -Dm755 target/release/ferrite-gui "$pkgdir/usr/bin/ferrite-gui"
+    install -Dm755 target/release/ferrite "$pkgdir/usr/bin/ferrite"
     install -Dm755 target/release/ferrite-native-host "$pkgdir/usr/bin/ferrite-native-host"
 
     # Desktop entry & AppStream
-    install -Dm644 resources/linux/ferrite-dm.desktop "$pkgdir/usr/share/applications/ferrite-dm.desktop"
-    install -Dm644 resources/linux/io.ferrite_dm.FerriteDM.metainfo.xml "$pkgdir/usr/share/metainfo/io.ferrite_dm.FerriteDM.metainfo.xml"
+    install -Dm644 resources/linux/ferrite.desktop "$pkgdir/usr/share/applications/ferrite.desktop"
+    install -Dm644 resources/linux/io.ferrite.Ferrite.metainfo.xml "$pkgdir/usr/share/metainfo/io.ferrite.Ferrite.metainfo.xml"
 
     # Icons
     for size in 16 32 48 64 128 256 512 1024; do
-        install -Dm644 "resources/linux/icons/hicolor/${size}x${size}/apps/ferrite-dm.png" \
-            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ferrite-dm.png"
+        install -Dm644 "resources/linux/icons/hicolor/${size}x${size}/apps/ferrite.png" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ferrite.png"
     done
-    install -Dm644 "resources/linux/icons/hicolor/scalable/apps/ferrite-dm.svg" \
-        "$pkgdir/usr/share/icons/hicolor/scalable/apps/ferrite-dm.svg"
+    install -Dm644 "resources/linux/icons/hicolor/scalable/apps/ferrite.svg" \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/ferrite.svg"
 
     # Licenses
     install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"

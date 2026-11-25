@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ferrite DM Linux Uninstaller
+# Ferrite Linux Uninstaller
 # Removes binaries, desktop launchers, AppStream metadata, and icons.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,20 +61,20 @@ APP_DIR="$DATA_DIR/applications"
 META_DIR="$DATA_DIR/metainfo"
 ICON_BASE="$DATA_DIR/icons/hicolor"
 
-echo "==> Uninstalling Ferrite DM from prefix: $PREFIX"
+echo "==> Uninstalling Ferrite from prefix: $PREFIX"
 
 # Remove binaries
-rm -f "$BIN_DIR/fdm-gui" "$BIN_DIR/ferrite-dm" "$BIN_DIR/ferrite-native-host"
+rm -f "$BIN_DIR/ferrite-gui" "$BIN_DIR/ferrite" "$BIN_DIR/ferrite-native-host"
 
 # Remove desktop entry and AppStream metadata
-rm -f "$APP_DIR/ferrite-dm.desktop"
-rm -f "$META_DIR/io.ferrite_dm.FerriteDM.metainfo.xml"
+rm -f "$APP_DIR/ferrite.desktop"
+rm -f "$META_DIR/io.ferrite.Ferrite.metainfo.xml"
 
 # Remove icons
 for size in 16 32 48 64 128 256 512 1024; do
-    rm -f "$ICON_BASE/${size}x${size}/apps/ferrite-dm.png"
+    rm -f "$ICON_BASE/${size}x${size}/apps/ferrite.png"
 done
-rm -f "$ICON_BASE/scalable/apps/ferrite-dm.svg"
+rm -f "$ICON_BASE/scalable/apps/ferrite.svg"
 
 # Update caches
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -84,4 +84,4 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t -f "$ICON_BASE" 2>/dev/null || true
 fi
 
-echo "==> Ferrite DM uninstalled cleanly."
+echo "==> Ferrite uninstalled cleanly."

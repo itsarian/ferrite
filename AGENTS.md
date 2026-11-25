@@ -1,4 +1,4 @@
-# Ferrite DM — Agent & Contributor Engineering Guidelines
+# Ferrite — Agent & Contributor Engineering Guidelines
 
 All agents and contributors working in this repository MUST strictly adhere to [**`docs/CI_CD.md`**](docs/CI_CD.md).
 
@@ -38,7 +38,7 @@ Before staging, committing, or proposing code changes:
 ## Release Protocol (docs/CI_CD.md Section 4)
 - Releases must use semantic versioning `vX.Y.Z`.
 - Always bump `version` in `Cargo.toml` before tagging.
-- Checksums in `SHA256SUMS.txt` must always be generated and verified across all 16 release assets (`ferrite-dm-<version>-<os>-<arch>.<ext>` for macOS `arm64`/`x86_64` and Linux `arm64`/`x86_64`).
+- Checksums in `SHA256SUMS.txt` must always be generated and verified across all 16 release assets (`ferrite-<version>-<os>-<arch>.<ext>` for macOS `arm64`/`x86_64` and Linux `arm64`/`x86_64`).
 - Never push directly to tags without local build validation or dry-run via `workflow_dispatch`.
 
 ## Mandatory CI Monitoring & Completion Rule

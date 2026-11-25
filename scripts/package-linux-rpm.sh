@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ferrite DM Fedora / RHEL / openSUSE (.rpm) Packaging Script
+# Ferrite Fedora / RHEL / openSUSE (.rpm) Packaging Script
 # Generates RPM spec and builds .rpm packages with full desktop integration.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,16 +113,16 @@ mkdir -p "$DIST_DIR"
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building release binaries for Linux (${ASSET_ARCH} / ${RPM_ARCH})..."
     if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
-        cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     else
-        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     fi
 fi
 
 # Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
 for candidate in "target/${RUST_TARGET}/release" "target/release"; do
-    if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
+    if [ -f "$ROOT_DIR/$candidate/ferrite" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
     fi
@@ -139,7 +139,7 @@ echo "==> Using binaries from $BIN_SRC_DIR"
 rm -rf "$RPM_TOP_DIR"
 mkdir -p "$RPM_TOP_DIR"/{BUILD,RPMS,SOURCES,SPECS,SRPMS,BUILDROOT,STAGE}
 
-PKG_NAME="ferrite-dm"
+PKG_NAME="ferrite"
 RELEASE="1"
 RPM_STAGE_DIR="$RPM_TOP_DIR/STAGE"
 mkdir -p "$RPM_STAGE_DIR/usr/bin"
@@ -149,29 +149,29 @@ mkdir -p "$RPM_STAGE_DIR/usr/share/doc/$PKG_NAME"
 mkdir -p "$RPM_STAGE_DIR/usr/share/licenses/$PKG_NAME"
 
 # Copy binaries
-if [ -f "$BIN_SRC_DIR/fdm-gui" ]; then
-    install -m 755 "$BIN_SRC_DIR/fdm-gui" "$RPM_STAGE_DIR/usr/bin/fdm-gui"
+if [ -f "$BIN_SRC_DIR/ferrite-gui" ]; then
+    install -m 755 "$BIN_SRC_DIR/ferrite-gui" "$RPM_STAGE_DIR/usr/bin/ferrite-gui"
 fi
-install -m 755 "$BIN_SRC_DIR/ferrite-dm" "$RPM_STAGE_DIR/usr/bin/ferrite-dm"
+install -m 755 "$BIN_SRC_DIR/ferrite" "$RPM_STAGE_DIR/usr/bin/ferrite"
 install -m 755 "$BIN_SRC_DIR/ferrite-native-host" "$RPM_STAGE_DIR/usr/bin/ferrite-native-host"
 
 # Copy desktop and AppStream metadata
-install -m 644 "$RESOURCES_DIR/linux/ferrite-dm.desktop" "$RPM_STAGE_DIR/usr/share/applications/ferrite-dm.desktop"
-install -m 644 "$RESOURCES_DIR/linux/io.ferrite_dm.FerriteDM.metainfo.xml" "$RPM_STAGE_DIR/usr/share/metainfo/io.ferrite_dm.FerriteDM.metainfo.xml"
+install -m 644 "$RESOURCES_DIR/linux/ferrite.desktop" "$RPM_STAGE_DIR/usr/share/applications/ferrite.desktop"
+install -m 644 "$RESOURCES_DIR/linux/io.ferrite.Ferrite.metainfo.xml" "$RPM_STAGE_DIR/usr/share/metainfo/io.ferrite.Ferrite.metainfo.xml"
 
 # Copy icons
 ICONS_SRC_DIR="$RESOURCES_DIR/linux/icons/hicolor"
 for size in 16 32 48 64 128 256 512 1024; do
     DEST_ICON_DIR="$RPM_STAGE_DIR/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$DEST_ICON_DIR"
-    if [ -f "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite-dm.png" ]; then
-        install -m 644 "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite-dm.png" "$DEST_ICON_DIR/ferrite-dm.png"
+    if [ -f "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite.png" ]; then
+        install -m 644 "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite.png" "$DEST_ICON_DIR/ferrite.png"
     fi
 done
 
-if [ -f "$ICONS_SRC_DIR/scalable/apps/ferrite-dm.svg" ]; then
+if [ -f "$ICONS_SRC_DIR/scalable/apps/ferrite.svg" ]; then
     mkdir -p "$RPM_STAGE_DIR/usr/share/icons/hicolor/scalable/apps"
-    install -m 644 "$ICONS_SRC_DIR/scalable/apps/ferrite-dm.svg" "$RPM_STAGE_DIR/usr/share/icons/hicolor/scalable/apps/ferrite-dm.svg"
+    install -m 644 "$ICONS_SRC_DIR/scalable/apps/ferrite.svg" "$RPM_STAGE_DIR/usr/share/icons/hicolor/scalable/apps/ferrite.svg"
 fi
 
 # Copy licenses and documentation
@@ -180,7 +180,7 @@ install -m 644 "$ROOT_DIR/LICENSE-APACHE" "$RPM_STAGE_DIR/usr/share/licenses/$PK
 install -m 644 "$ROOT_DIR/README.md" "$RPM_STAGE_DIR/usr/share/doc/$PKG_NAME/README.md" 2>/dev/null || true
 
 # 3. Create Binary RPM Spec file
-RPM_SPEC_FILE="$RPM_TOP_DIR/SPECS/ferrite-dm.spec"
+RPM_SPEC_FILE="$RPM_TOP_DIR/SPECS/ferrite.spec"
 cat << EOF > "$RPM_SPEC_FILE"
 %define _topdir $RPM_TOP_DIR
 %define _buildrootdir $RPM_TOP_DIR/BUILDROOT
@@ -195,7 +195,7 @@ Version:        $VERSION
 Release:        $RELEASE%{?dist}
 Summary:        High-performance, multi-protocol download manager and accelerator
 License:        MIT or Apache-2.0
-URL:            https://github.com/itsarian/ferrite-dm
+URL:            https://github.com/itsarian/ferrite
 BuildArch:      $RPM_ARCH
 
 Requires:       openssl-libs
@@ -209,7 +209,7 @@ Recommends:     yt-dlp
 Recommends:     xdg-utils
 
 %description
-Ferrite DM is a fast, telemetry-free download accelerator written in Rust.
+Ferrite is a fast, telemetry-free download accelerator written in Rust.
 It combines an ultra-fast asynchronous core with a modern, GPU-accelerated
 graphical interface built with GPUI.
 
@@ -234,12 +234,12 @@ fi
 %license /usr/share/licenses/$PKG_NAME/*
 %doc /usr/share/doc/$PKG_NAME/*
 %{_bindir}/*
-%{_datadir}/applications/ferrite-dm.desktop
-%{_datadir}/metainfo/io.ferrite_dm.FerriteDM.metainfo.xml
-%{_datadir}/icons/hicolor/*/apps/ferrite-dm.*
+%{_datadir}/applications/ferrite.desktop
+%{_datadir}/metainfo/io.ferrite.Ferrite.metainfo.xml
+%{_datadir}/icons/hicolor/*/apps/ferrite.*
 
 %changelog
-* Tue Nov 17 2026 Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm> - $VERSION-1
+* Tue Nov 17 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - $VERSION-1
 - Release $VERSION: Linux GUI and multi-distribution packaging
 EOF
 

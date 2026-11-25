@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ferrite DM Debian / Ubuntu (.deb) Packaging Script
+# Ferrite Debian / Ubuntu (.deb) Packaging Script
 # Creates compliant .deb package with desktop integration, MIME types, and icons.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,16 +113,16 @@ mkdir -p "$DIST_DIR"
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building release binaries for Linux (${ASSET_ARCH} / ${DEB_ARCH})..."
     if [ "$(uname -s)" = "Linux" ] && [ "$HOST_ASSET_ARCH" = "$ASSET_ARCH" ]; then
-        cargo build --release --locked -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     else
-        cargo build --release --locked --target "$RUST_TARGET" -p fdm-gui -p fdm-cli -p fdm-native-host
+        cargo build --release --locked --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
     fi
 fi
 
 # Locate binaries in target directory (prefer target/<RUST_TARGET>/release over target/release)
 BIN_SRC_DIR=""
 for candidate in "target/${RUST_TARGET}/release" "target/release"; do
-    if [ -f "$ROOT_DIR/$candidate/ferrite-dm" ]; then
+    if [ -f "$ROOT_DIR/$candidate/ferrite" ]; then
         BIN_SRC_DIR="$ROOT_DIR/$candidate"
         break
     fi
@@ -136,7 +136,7 @@ fi
 echo "==> Using binaries from $BIN_SRC_DIR"
 
 # 2. Setup staging tree
-PKG_NAME="ferrite-dm"
+PKG_NAME="ferrite"
 STAGE_DIR="$DIST_DIR/deb-staging/${PKG_NAME}-${ASSET_ARCH}"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/usr/bin"
@@ -146,29 +146,29 @@ mkdir -p "$STAGE_DIR/usr/share/doc/$PKG_NAME"
 mkdir -p "$STAGE_DIR/DEBIAN"
 
 # Copy binaries
-if [ -f "$BIN_SRC_DIR/fdm-gui" ]; then
-    install -m 755 "$BIN_SRC_DIR/fdm-gui" "$STAGE_DIR/usr/bin/fdm-gui"
+if [ -f "$BIN_SRC_DIR/ferrite-gui" ]; then
+    install -m 755 "$BIN_SRC_DIR/ferrite-gui" "$STAGE_DIR/usr/bin/ferrite-gui"
 fi
-install -m 755 "$BIN_SRC_DIR/ferrite-dm" "$STAGE_DIR/usr/bin/ferrite-dm"
+install -m 755 "$BIN_SRC_DIR/ferrite" "$STAGE_DIR/usr/bin/ferrite"
 install -m 755 "$BIN_SRC_DIR/ferrite-native-host" "$STAGE_DIR/usr/bin/ferrite-native-host"
 
 # Copy Freedesktop .desktop file & AppStream metainfo
-install -m 644 "$RESOURCES_DIR/linux/ferrite-dm.desktop" "$STAGE_DIR/usr/share/applications/ferrite-dm.desktop"
-install -m 644 "$RESOURCES_DIR/linux/io.ferrite_dm.FerriteDM.metainfo.xml" "$STAGE_DIR/usr/share/metainfo/io.ferrite_dm.FerriteDM.metainfo.xml"
+install -m 644 "$RESOURCES_DIR/linux/ferrite.desktop" "$STAGE_DIR/usr/share/applications/ferrite.desktop"
+install -m 644 "$RESOURCES_DIR/linux/io.ferrite.Ferrite.metainfo.xml" "$STAGE_DIR/usr/share/metainfo/io.ferrite.Ferrite.metainfo.xml"
 
 # Copy hicolor icon hierarchy
 ICONS_SRC_DIR="$RESOURCES_DIR/linux/icons/hicolor"
 for size in 16 32 48 64 128 256 512 1024; do
     DEST_ICON_DIR="$STAGE_DIR/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$DEST_ICON_DIR"
-    if [ -f "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite-dm.png" ]; then
-        install -m 644 "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite-dm.png" "$DEST_ICON_DIR/ferrite-dm.png"
+    if [ -f "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite.png" ]; then
+        install -m 644 "$ICONS_SRC_DIR/${size}x${size}/apps/ferrite.png" "$DEST_ICON_DIR/ferrite.png"
     fi
 done
 
-if [ -f "$ICONS_SRC_DIR/scalable/apps/ferrite-dm.svg" ]; then
+if [ -f "$ICONS_SRC_DIR/scalable/apps/ferrite.svg" ]; then
     mkdir -p "$STAGE_DIR/usr/share/icons/hicolor/scalable/apps"
-    install -m 644 "$ICONS_SRC_DIR/scalable/apps/ferrite-dm.svg" "$STAGE_DIR/usr/share/icons/hicolor/scalable/apps/ferrite-dm.svg"
+    install -m 644 "$ICONS_SRC_DIR/scalable/apps/ferrite.svg" "$STAGE_DIR/usr/share/icons/hicolor/scalable/apps/ferrite.svg"
 fi
 
 # Copy licenses and documentation
@@ -187,12 +187,12 @@ Priority: optional
 Architecture: $DEB_ARCH
 Essential: no
 Installed-Size: $INSTALLED_SIZE
-Maintainer: Ferrite DM Maintainers <https://github.com/itsarian/ferrite-dm>
+Maintainer: Ferrite Maintainers <https://github.com/itsarian/ferrite>
 Depends: libc6 (>= 2.31), libssl3 | libssl1.1, libx11-6, libwayland-client0, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1
 Recommends: ffmpeg, yt-dlp, xdg-utils
-Homepage: https://github.com/itsarian/ferrite-dm
+Homepage: https://github.com/itsarian/ferrite
 Description: High-performance, multi-protocol download manager and accelerator
- Ferrite DM is a fast, telemetry-free download accelerator written in Rust.
+ Ferrite is a fast, telemetry-free download accelerator written in Rust.
  It combines an ultra-fast asynchronous core with a modern, GPU-accelerated
  graphical interface designed to replace legacy download managers.
  Features:

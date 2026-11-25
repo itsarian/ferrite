@@ -151,8 +151,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           chmod +x scripts/*.sh
-          test -f resources/linux/ferrite-dm.desktop
-          test -f resources/linux/io.ferrite_dm.FerriteDM.metainfo.xml
+          test -f resources/linux/ferrite.desktop
+          test -f resources/linux/io.ferrite.Ferrite.metainfo.xml
           test -x scripts/package-linux-deb.sh
           test -x scripts/package-linux-rpm.sh
           test -x scripts/package-linux-appimage.sh

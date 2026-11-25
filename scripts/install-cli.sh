@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Ferrite DM Installer
+# Ferrite Installer
 PREFIX="${PREFIX:-/usr/local}"
 if [ -d "$PREFIX/bin" ]; then
     CHECK_DIR="$PREFIX/bin"
@@ -21,16 +21,16 @@ mkdir -p "$BIN_DIR"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd || echo "$SCRIPT_DIR")"
 
-echo "Installing Ferrite DM binaries to $BIN_DIR..."
+echo "Installing Ferrite binaries to $BIN_DIR..."
 
-if [ -f "$SCRIPT_DIR/fdm-gui" ]; then
-    install -m 755 "$SCRIPT_DIR/fdm-gui" "$BIN_DIR/fdm-gui" 2>/dev/null || cp "$SCRIPT_DIR/fdm-gui" "$BIN_DIR/fdm-gui"
-    chmod +x "$BIN_DIR/fdm-gui" 2>/dev/null || true
+if [ -f "$SCRIPT_DIR/ferrite-gui" ]; then
+    install -m 755 "$SCRIPT_DIR/ferrite-gui" "$BIN_DIR/ferrite-gui" 2>/dev/null || cp "$SCRIPT_DIR/ferrite-gui" "$BIN_DIR/ferrite-gui"
+    chmod +x "$BIN_DIR/ferrite-gui" 2>/dev/null || true
 fi
 
-if [ -f "$SCRIPT_DIR/ferrite-dm" ]; then
-    install -m 755 "$SCRIPT_DIR/ferrite-dm" "$BIN_DIR/ferrite-dm" 2>/dev/null || cp "$SCRIPT_DIR/ferrite-dm" "$BIN_DIR/ferrite-dm"
-    chmod +x "$BIN_DIR/ferrite-dm" 2>/dev/null || true
+if [ -f "$SCRIPT_DIR/ferrite" ]; then
+    install -m 755 "$SCRIPT_DIR/ferrite" "$BIN_DIR/ferrite" 2>/dev/null || cp "$SCRIPT_DIR/ferrite" "$BIN_DIR/ferrite"
+    chmod +x "$BIN_DIR/ferrite" 2>/dev/null || true
 fi
 
 if [ -f "$SCRIPT_DIR/ferrite-native-host" ]; then
@@ -41,7 +41,7 @@ fi
 # Optional Linux desktop integration
 RES_DIR=""
 for loc in "$SCRIPT_DIR/resources/linux" "$ROOT_DIR/resources/linux" "$SCRIPT_DIR"; do
-    if [ -f "$loc/ferrite-dm.desktop" ]; then
+    if [ -f "$loc/ferrite.desktop" ]; then
         RES_DIR="$loc"
         break
     fi
@@ -51,26 +51,26 @@ if [ -n "$RES_DIR" ]; then
     DATA_DIR="$PREFIX/share"
     mkdir -p "$DATA_DIR/applications" "$DATA_DIR/metainfo"
 
-    if [ -f "$RES_DIR/ferrite-dm.desktop" ]; then
-        sed "s|^Exec=fdm-gui|Exec=$BIN_DIR/fdm-gui|" "$RES_DIR/ferrite-dm.desktop" > "$DATA_DIR/applications/ferrite-dm.desktop" 2>/dev/null || \
-            install -m 644 "$RES_DIR/ferrite-dm.desktop" "$DATA_DIR/applications/ferrite-dm.desktop"
+    if [ -f "$RES_DIR/ferrite.desktop" ]; then
+        sed "s|^Exec=ferrite-gui|Exec=$BIN_DIR/ferrite-gui|" "$RES_DIR/ferrite.desktop" > "$DATA_DIR/applications/ferrite.desktop" 2>/dev/null || \
+            install -m 644 "$RES_DIR/ferrite.desktop" "$DATA_DIR/applications/ferrite.desktop"
     fi
 
-    if [ -f "$RES_DIR/io.ferrite_dm.FerriteDM.metainfo.xml" ]; then
-        install -m 644 "$RES_DIR/io.ferrite_dm.FerriteDM.metainfo.xml" "$DATA_DIR/metainfo/io.ferrite_dm.FerriteDM.metainfo.xml" 2>/dev/null || true
+    if [ -f "$RES_DIR/io.ferrite.Ferrite.metainfo.xml" ]; then
+        install -m 644 "$RES_DIR/io.ferrite.Ferrite.metainfo.xml" "$DATA_DIR/metainfo/io.ferrite.Ferrite.metainfo.xml" 2>/dev/null || true
     fi
 
     if [ -d "$RES_DIR/icons/hicolor" ]; then
         for size in 16 32 48 64 128 256 512 1024; do
-            SRC_ICON="$RES_DIR/icons/hicolor/${size}x${size}/apps/ferrite-dm.png"
+            SRC_ICON="$RES_DIR/icons/hicolor/${size}x${size}/apps/ferrite.png"
             if [ -f "$SRC_ICON" ]; then
                 mkdir -p "$DATA_DIR/icons/hicolor/${size}x${size}/apps"
-                install -m 644 "$SRC_ICON" "$DATA_DIR/icons/hicolor/${size}x${size}/apps/ferrite-dm.png" 2>/dev/null || true
+                install -m 644 "$SRC_ICON" "$DATA_DIR/icons/hicolor/${size}x${size}/apps/ferrite.png" 2>/dev/null || true
             fi
         done
-        if [ -f "$RES_DIR/icons/hicolor/scalable/apps/ferrite-dm.svg" ]; then
+        if [ -f "$RES_DIR/icons/hicolor/scalable/apps/ferrite.svg" ]; then
             mkdir -p "$DATA_DIR/icons/hicolor/scalable/apps"
-            install -m 644 "$RES_DIR/icons/hicolor/scalable/apps/ferrite-dm.svg" "$DATA_DIR/icons/hicolor/scalable/apps/ferrite-dm.svg" 2>/dev/null || true
+            install -m 644 "$RES_DIR/icons/hicolor/scalable/apps/ferrite.svg" "$DATA_DIR/icons/hicolor/scalable/apps/ferrite.svg" 2>/dev/null || true
         fi
     fi
 
@@ -82,12 +82,12 @@ if [ -n "$RES_DIR" ]; then
     fi
 fi
 
-echo "Ferrite DM installed successfully!"
-if [ -f "$BIN_DIR/fdm-gui" ]; then
-    echo "  GUI:         $BIN_DIR/fdm-gui"
+echo "Ferrite installed successfully!"
+if [ -f "$BIN_DIR/ferrite-gui" ]; then
+    echo "  GUI:         $BIN_DIR/ferrite-gui"
 fi
-echo "  CLI/Daemon:  $BIN_DIR/ferrite-dm"
+echo "  CLI/Daemon:  $BIN_DIR/ferrite"
 echo "  Native Host: $BIN_DIR/ferrite-native-host"
 echo ""
 echo "To register the browser native messaging host, run:"
-echo "  $BIN_DIR/ferrite-dm native-host-install"
+echo "  $BIN_DIR/ferrite native-host-install"
