@@ -1,5 +1,5 @@
 Name:           ferrite
-Version:        0.3.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        High-performance, multi-protocol download manager and accelerator
 
@@ -84,6 +84,8 @@ fi
 %{_datadir}/icons/hicolor/*/apps/ferrite.*
 
 %changelog
+* Thu Nov 26 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - 0.4.0-1
+- Release 0.4.0: Renamed project to Ferrite (ferrite, ferrite-gui, Ferrite.app) with automatic legacy data migration and refreshed documentation
 * Wed Nov 18 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - 0.3.0-1
 - Release 0.3.0: Native Linux ARM64 (aarch64) support, unified release asset naming, Linux copy/paste fixes, and Linux HTTP 403 download fixes
 * Tue Nov 17 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - 0.2.0-1

@@ -52,6 +52,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-11-26">
+      <description>
+        <p>Renamed the project, binaries, and bundle identifiers to Ferrite with automatic one-time migration from legacy data directories.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-18">
       <description>
         <p>Added native Linux ARM64 (aarch64) support and unified release asset naming across macOS and Linux, alongside fixes for Linux clipboard copy/paste and HTTP 403 download failures.</p>
