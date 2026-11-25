@@ -228,7 +228,7 @@ flowchart TD
     CORE --> BT["BitTorrent · librqbit (ferrite-bt)"]
     CORE --> HLS["HLS / DASH (ferrite-hls)"]
     CORE --> BATCH["Batch & Media (ferrite-batch · ferrite-media)"]
-    CORE --> DB[("SQLite · WAL (db.sqlite)")]
+    CORE --> DB[("SQLite · WAL (ferrite.sqlite)")]
 ```
 
 ### Built with GPUI
@@ -366,7 +366,7 @@ State, history, and configuration are stored in your operating system's standard
 - **Portable Mode (`--portable`):** `./ferrite-data` adjacent to the executable binary.
 
 Files stored inside the data folder:
-- `db.sqlite` — SQLite database with WAL journaling (downloads, history, chunk maps, tags).
+- `ferrite.sqlite` — SQLite database with WAL journaling (downloads, history, chunk maps, tags).
 - `config.json` — Persistent settings and bandwidth profiles.
 - `ferrite.sock` — Unix domain socket for IPC communication.
 - `plugins/` — JavaScript media site parser add-ons.
