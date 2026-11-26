@@ -10,7 +10,9 @@ use crate::ui_widgets::{
     snail_switch_btn, svg_icon, tooltip_text,
 };
 use ferrite_core::{DownloadId, DownloadState, ShutdownType, StateFilter, TrafficUsageMode};
-use gpui::{AnyElement, Context, FontWeight, WindowControlArea, div, prelude::*, px};
+#[cfg(target_os = "macos")]
+use gpui::WindowControlArea;
+use gpui::{AnyElement, Context, FontWeight, div, prelude::*, px};
 
 impl FerriteApp {
     pub(crate) fn render_window_titlebar(&self) -> AnyElement {

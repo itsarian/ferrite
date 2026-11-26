@@ -642,6 +642,7 @@ pub fn macos_restore_windows_and_activate() {
     {}
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[allow(deprecated, unexpected_cfgs)]
 pub fn macos_hide_all_windows() {
     #[cfg(target_os = "macos")]

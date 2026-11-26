@@ -21,7 +21,7 @@ Icon=ferrite
 
 [Desktop Action OpenDownloadsFolder]
 Name=Open Downloads Folder
-Exec=sh -c 'xdg-open "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"'
+Exec=sh -c "xdg-open ~/Downloads"
 
 [Desktop Action DaemonMode]
 Name=Start Background Daemon

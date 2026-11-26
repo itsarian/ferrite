@@ -1,12 +1,15 @@
 use crate::actions::{
-    AboutAppAction, AddUrlAction, BatchAddAction, BringAllToFrontAction, CheckForUpdatesAction,
-    CloseWindowAction, FilterActiveAction, FilterAllAction, FilterDownloadingAction,
-    FilterFinishedAction, FilterStoppedAction, FocusSearchAction, HideAppAction,
-    HideOtherAppsAction, OpenExportSettingsAction, OpenImportSettingsAction, OpenPluginsAction,
-    OpenQrAction, OpenSettingsAction, PasteUrlAction, PauseAllAction, QuitApp,
-    SelectAllDownloadsAction, ShowAllAppsAction, ShowTroubleshootingAction, StartAllAction,
-    ToggleInspectorAction, ToggleThemeAction, ZoomInAction, ZoomOutAction, ZoomResetAction,
-    app_key_bindings, attach_root_actions, register_global_action_handlers,
+    AboutAppAction, AddUrlAction, BatchAddAction, CheckForUpdatesAction, CloseWindowAction,
+    FilterActiveAction, FilterAllAction, FilterDownloadingAction, FilterFinishedAction,
+    FilterStoppedAction, FocusSearchAction, OpenExportSettingsAction, OpenImportSettingsAction,
+    OpenPluginsAction, OpenQrAction, OpenSettingsAction, PasteUrlAction, PauseAllAction, QuitApp,
+    SelectAllDownloadsAction, ShowTroubleshootingAction, StartAllAction, ToggleInspectorAction,
+    ToggleThemeAction, ZoomInAction, ZoomOutAction, ZoomResetAction, app_key_bindings,
+    attach_root_actions, register_global_action_handlers,
+};
+#[cfg(target_os = "macos")]
+use crate::actions::{
+    BringAllToFrontAction, HideAppAction, HideOtherAppsAction, ShowAllAppsAction,
 };
 use crate::bottom_panel::render_bottom_panel;
 use crate::helpers::{
@@ -36,9 +39,11 @@ use ferrite_ipc::RemotePairingInfo;
 use ferrite_media::JsPluginInfo;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Entity, FocusHandle, Focusable, Global,
-    Menu, MenuItem, MouseButton, OsAction, Pixels, Point, Render, SharedString, SystemMenuType,
-    UniformListScrollHandle, Window, div, ease_out_quint, prelude::*, px,
+    Menu, MenuItem, MouseButton, Pixels, Point, Render, SharedString, UniformListScrollHandle,
+    Window, div, ease_out_quint, prelude::*, px,
 };
+#[cfg(target_os = "macos")]
+use gpui::{OsAction, SystemMenuType};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
