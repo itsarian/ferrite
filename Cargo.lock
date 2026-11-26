@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-batch"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "regex",
@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-bt"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-gui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-hls"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-http"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2475,7 +2475,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-ipc"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "ferrite-core",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-media"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "boa_engine",
@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "ferrite-native-host"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "directories",

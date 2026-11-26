@@ -43,4 +43,4 @@ modules:
     sources:
       - type: git
         url: https://github.com/itsarian/ferrite.git
-        tag: v0.4.0
+        tag: v0.4.1

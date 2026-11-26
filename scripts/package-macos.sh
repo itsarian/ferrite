@@ -168,6 +168,10 @@ mkdir -p "$MACOS_DIR" "$RES_DIR"
 
 # Copy Info.plist and Icon
 cp "$RESOURCES_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
+if command -v plutil >/dev/null 2>&1; then
+    plutil -replace CFBundleVersion -string "$VERSION" "$CONTENTS_DIR/Info.plist" || true
+    plutil -replace CFBundleShortVersionString -string "$VERSION" "$CONTENTS_DIR/Info.plist" || true
+fi
 cp "$RESOURCES_DIR/Ferrite.icns" "$RES_DIR/Ferrite.icns"
 
 # Copy binaries

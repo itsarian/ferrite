@@ -53,6 +53,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.1" date="2026-11-27">
+      <description>
+        <p>Comprehensive architecture refactoring, protocol robustness enhancements, GPUI virtualized downloads table, and stability fixes.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-26">
       <description>
         <p>Renamed the project, binaries, and bundle identifiers to Ferrite with automatic one-time migration from legacy data directories.</p>

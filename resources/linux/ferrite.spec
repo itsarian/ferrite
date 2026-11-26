@@ -1,5 +1,5 @@
 Name:           ferrite
-Version:        0.4.0
+Version:        0.4.1
 Release:        1%{?dist}
 Summary:        High-performance, multi-protocol download manager and accelerator
 
@@ -84,6 +84,8 @@ fi
 %{_datadir}/icons/hicolor/*/apps/ferrite.*
 
 %changelog
+* Fri Nov 27 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - 0.4.1-1
+- Release 0.4.1: Architecture refactoring, enhanced protocol robustness, GPUI virtualized downloads table, and stability fixes
 * Thu Nov 26 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - 0.4.0-1
 - Release 0.4.0: Renamed project to Ferrite (ferrite, ferrite-gui, Ferrite.app) with automatic legacy data migration and refreshed documentation
 * Wed Nov 18 2026 Ferrite Maintainers <https://github.com/itsarian/ferrite> - 0.3.0-1
