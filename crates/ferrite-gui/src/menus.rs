@@ -670,7 +670,7 @@ fn render_main_menu(
                 .child(menu_item_row(
                     "mm-import-urls",
                     "icons/folder_open.svg",
-                    "Import / Legacy FDM / Backup...",
+                    "Import / Export / Backup...",
                     None,
                     false,
                     false,
@@ -994,365 +994,156 @@ fn render_row_context_menu(
     let url_for_copy = rec.url.clone();
     let all_tags = app.tags.clone();
 
-    Some(
-        card_shell(div().w(p.spx(300.)).max_h(p.spx(718.)))
+    let card_div = card_shell(div().w(p.spx(300.)).max_h(p.spx(718.))).child(
+        div()
+            .flex_1()
+            .min_h_0()
+            .id("rcm-scroll")
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
             .child(
                 div()
-                    .flex_1()
-                    .min_h_0()
-                    .id("rcm-scroll")
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .child(
-                        div()
-                            .px_2()
-                            .py(px(3.))
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_size(p.fpx(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_muted)
-                            .child(ellipsis_text(rec.title.clone())),
-                    )
-                    .child(div().h(px(1.)).bg(p.separator).my(px(2.)))
-                    .when(is_batch, |el| {
-                        el.child(menu_item_row(
-                            "rcm-open-batch",
-                            "icons/folder_open.svg",
-                            format!("Open Batch ({} items)", rec.children_ids.len()),
-                            None,
-                            false,
-                            false,
-                            p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.active_popover = ActivePopover::None;
-                                this.parent_folder_id = Some(id);
-                                this.refresh_snapshot(cx);
-                                cx.notify();
-                            },
-                        ))
-                    })
-                    .when(!is_completed && !is_batch, |el| {
-                        el.child(menu_item_row(
-                            "rcm-tog",
-                            if is_running {
-                                "icons/pause.svg"
-                            } else {
-                                "icons/play.svg"
-                            },
-                            if is_running {
-                                "Pause Download"
-                            } else {
-                                "Resume / Start"
-                            },
-                            Some("Space"),
-                            false,
-                            false,
-                            p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.active_popover = ActivePopover::None;
-                                this.toggle_download(id);
-                                cx.notify();
-                            },
-                        ))
-                    })
-                    .when(is_completed && !is_batch, |el| {
-                        el.child(menu_item_row(
-                            "rcm-open",
-                            "icons/folder_open.svg",
-                            "Open File",
-                            None,
-                            false,
-                            false,
-                            p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.active_popover = ActivePopover::None;
-                                this.open_download_file(id);
-                                cx.notify();
-                            },
-                        ))
-                    })
-                    .child(menu_item_row(
-                        "rcm-rev",
-                        "icons/folder.svg",
-                        "Show in Finder",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.reveal_download_file(id);
-                            cx.notify();
-                        },
-                    ))
-                    .when(!is_batch, |el| {
-                        el.child(menu_item_row(
-                            "rcm-restart",
-                            "icons/restart.svg",
-                            "Restart Download",
-                            None,
-                            false,
-                            false,
-                            p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.active_popover = ActivePopover::None;
-                                this.restart_download_action(id, cx);
-                            },
-                        ))
-                    })
-                    .when(is_stream && !is_completed, |el| {
-                        el.child(menu_item_row(
-                            "rcm-save-done",
-                            "icons/check.svg",
-                            "Save & Complete Stream",
-                            None,
-                            false,
-                            false,
-                            p,
-                            cx,
-                            move |this, _, _, cx| {
-                                this.active_popover = ActivePopover::None;
-                                this.save_stream_complete_action(id, cx);
-                            },
-                        ))
-                    })
-                    .child(menu_item_row(
-                        "rcm-insp",
-                        "icons/speed.svg",
-                        "Inspect Details Panel",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.selected_id = Some(id);
-                            this.set_inspector_expanded(true, cx);
-                        },
-                    ))
-                    .when(
-                        !is_batch && app.settings_cfg.app.enable_standalone_downloads_windows,
-                        |el| {
-                            el.child(menu_item_row(
-                                "rcm-standalone",
-                                "icons/link.svg",
-                                "Open in Standalone Window",
-                                None,
-                                false,
-                                false,
-                                p,
-                                cx,
-                                move |this, _, _, cx| {
-                                    this.active_popover = ActivePopover::None;
-                                    this.open_download_window(id, cx);
-                                },
-                            ))
-                        },
-                    )
-                    .child(div().h(px(1.)).bg(p.separator).my_1())
-                    .child(
-                        div()
-                            .px_2()
-                            .py(px(4.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(p.fpx(12.))
-                                    .text_color(p.text_muted)
-                                    .child("Priority"),
-                            )
-                            .child(
-                                div().flex().flex_row().items_center().gap_1().children(
-                                    [
-                                        (DownloadPriority::Low, "Low"),
-                                        (DownloadPriority::Normal, "Normal"),
-                                        (DownloadPriority::High, "High"),
-                                    ]
-                                    .into_iter()
-                                    .map(|(pr, lbl)| {
-                                        chip_toggle(
-                                            format!("rcm-prio-{pr:?}"),
-                                            lbl,
-                                            rec.priority == pr,
-                                            p,
-                                            cx,
-                                            move |this, _, _, cx| {
-                                                this.set_priority_action(id, pr, cx);
-                                            },
-                                        )
-                                    }),
-                                ),
-                            ),
-                    )
-                    .child(menu_item_row(
-                        "rcm-seq",
-                        if rec.flags.sequential_play_asap {
-                            "icons/check.svg"
-                        } else {
-                            "icons/play.svg"
-                        },
-                        "Sequential Play ASAP",
-                        None,
-                        rec.flags.sequential_play_asap,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            let next = !rec.flags.sequential_play_asap;
-                            let eng = Arc::clone(&this.engine);
-                            this.rt.spawn(async move {
-                                let _ = eng.toggle_sequential_play_asap(id, next).await;
-                            });
-                            cx.notify();
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-autoretry",
-                        if !rec.flags.disable_auto_retry {
-                            "icons/check.svg"
-                        } else {
-                            "icons/repeat.svg"
-                        },
-                        "Allow Auto-Retry on Failure",
-                        None,
-                        !rec.flags.disable_auto_retry,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.toggle_auto_retry_action(id, cx);
-                        },
-                    ))
-                    .child(div().h(px(1.)).bg(p.separator).my_1())
-                    .child(menu_item_row(
-                        "rcm-hash",
-                        "icons/shield.svg",
-                        "Check File Integrity (Hash)...",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.open_hash_modal(id, w, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-av",
-                        "icons/shield.svg",
-                        "Scan with Antivirus",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.check_virus_action(id, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-upd",
-                        "icons/refresh.svg",
-                        "Check Remote for Update",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.check_update_action(id, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-conv",
-                        "icons/type_video.svg",
-                        "Convert MP3 / MP4...",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.open_convert_modal(id, w, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-src",
+                    .px_2()
+                    .py(px(3.))
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_size(p.fpx(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text_muted)
+                    .child(ellipsis_text(rec.title.clone())),
+            )
+            .child(div().h(px(1.)).bg(p.separator).my(px(2.)))
+            .when(is_batch, |el| {
+                el.child(menu_item_row(
+                    "rcm-open-batch",
+                    "icons/folder_open.svg",
+                    format!("Open Batch ({} items)", rec.children_ids.len()),
+                    None,
+                    false,
+                    false,
+                    p,
+                    cx,
+                    move |this, _, _, cx| {
+                        this.active_popover = ActivePopover::None;
+                        this.parent_folder_id = Some(id);
+                        this.refresh_snapshot(cx);
+                        cx.notify();
+                    },
+                ))
+            })
+            .when(!is_completed && !is_batch, |el| {
+                el.child(menu_item_row(
+                    "rcm-tog",
+                    if is_running {
+                        "icons/pause.svg"
+                    } else {
+                        "icons/play.svg"
+                    },
+                    if is_running {
+                        "Pause Download"
+                    } else {
+                        "Resume / Start"
+                    },
+                    Some("Space"),
+                    false,
+                    false,
+                    p,
+                    cx,
+                    move |this, _, _, cx| {
+                        this.active_popover = ActivePopover::None;
+                        this.toggle_download(id);
+                        cx.notify();
+                    },
+                ))
+            })
+            .when(is_completed && !is_batch, |el| {
+                el.child(menu_item_row(
+                    "rcm-open",
+                    "icons/folder_open.svg",
+                    "Open File",
+                    None,
+                    false,
+                    false,
+                    p,
+                    cx,
+                    move |this, _, _, cx| {
+                        this.active_popover = ActivePopover::None;
+                        this.open_download_file(id);
+                        cx.notify();
+                    },
+                ))
+            })
+            .child(menu_item_row(
+                "rcm-rev",
+                "icons/folder.svg",
+                "Show in Finder",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.reveal_download_file(id);
+                    cx.notify();
+                },
+            ))
+            .when(!is_batch, |el| {
+                el.child(menu_item_row(
+                    "rcm-restart",
+                    "icons/restart.svg",
+                    "Restart Download",
+                    None,
+                    false,
+                    false,
+                    p,
+                    cx,
+                    move |this, _, _, cx| {
+                        this.active_popover = ActivePopover::None;
+                        this.restart_download_action(id, cx);
+                    },
+                ))
+            })
+            .when(is_stream && !is_completed, |el| {
+                el.child(menu_item_row(
+                    "rcm-save-done",
+                    "icons/check.svg",
+                    "Save & Complete Stream",
+                    None,
+                    false,
+                    false,
+                    p,
+                    cx,
+                    move |this, _, _, cx| {
+                        this.active_popover = ActivePopover::None;
+                        this.save_stream_complete_action(id, cx);
+                    },
+                ))
+            })
+            .child(menu_item_row(
+                "rcm-insp",
+                "icons/speed.svg",
+                "Inspect Details Panel",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.selected_id = Some(id);
+                    this.set_inspector_expanded(true, cx);
+                },
+            ))
+            .when(
+                !is_batch && app.settings_cfg.app.enable_standalone_downloads_windows,
+                |el| {
+                    el.child(menu_item_row(
+                        "rcm-standalone",
                         "icons/link.svg",
-                        "Change URL / Mirrors...",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.open_change_source_modal(id, w, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-move",
-                        "icons/file_move.svg",
-                        "Move To Folder...",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.open_move_dir_modal(id, w, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-rename",
-                        "icons/edit.svg",
-                        "Rename File...",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.open_rename_modal(id, w, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-sched",
-                        "icons/single_download_scheduler.svg",
-                        "Schedule Window...",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.open_schedule_modal(id, w, cx);
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-copy-url",
-                        "icons/content_copy.svg",
-                        "Copy Download URL",
+                        "Open in Standalone Window",
                         None,
                         false,
                         false,
@@ -1360,154 +1151,365 @@ fn render_row_context_menu(
                         cx,
                         move |this, _, _, cx| {
                             this.active_popover = ActivePopover::None;
-                            this.copy_to_clipboard(url_for_copy.clone(), "Copied download URL", cx);
+                            this.open_download_window(id, cx);
                         },
                     ))
-                    .when(is_bt, |el| {
-                        el.child(div().h(px(1.)).bg(p.separator).my_1())
-                            .child(menu_item_row(
-                                "rcm-bt-reann",
-                                "icons/refresh.svg",
-                                "Force Tracker Reannounce",
-                                None,
-                                false,
-                                false,
-                                p,
-                                cx,
-                                move |this, _, _, cx| {
-                                    this.active_popover = ActivePopover::None;
-                                    this.bt_reannounce_action(id, cx);
-                                },
-                            ))
-                            .child(menu_item_row(
-                                "rcm-bt-noseed",
-                                if rec.flags.bt_disable_seeding {
-                                    "icons/check.svg"
-                                } else {
-                                    "icons/pause.svg"
-                                },
-                                "Disable Seeding",
-                                None,
-                                rec.flags.bt_disable_seeding,
-                                false,
-                                p,
-                                cx,
-                                move |this, _, _, cx| {
-                                    this.bt_toggle_seeding_action(id, cx);
-                                },
-                            ))
-                            .child(menu_item_row(
-                                "rcm-bt-ratio",
-                                if rec.flags.bt_ignore_upload_ratio {
-                                    "icons/check.svg"
-                                } else {
-                                    "icons/arrow_up.svg"
-                                },
-                                "Ignore Upload Ratio Limit",
-                                None,
-                                rec.flags.bt_ignore_upload_ratio,
-                                false,
-                                p,
-                                cx,
-                                move |this, _, _, cx| {
-                                    this.bt_toggle_ignore_ratio_action(id, cx);
-                                },
-                            ))
-                    })
-                    .when(!all_tags.is_empty(), |el| {
-                        el.child(div().h(px(1.)).bg(p.separator).my_1()).child(
+                },
+            )
+            .child(div().h(px(1.)).bg(p.separator).my_1())
+            .child(
+                div()
+                    .px_2()
+                    .py(px(4.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(p.fpx(12.))
+                            .text_color(p.text_muted)
+                            .child("Priority"),
+                    )
+                    .child(
+                        div().flex().flex_row().items_center().gap_1().children(
+                            [
+                                (DownloadPriority::Low, "Low"),
+                                (DownloadPriority::Normal, "Normal"),
+                                (DownloadPriority::High, "High"),
+                            ]
+                            .into_iter()
+                            .map(|(pr, lbl)| {
+                                chip_toggle(
+                                    format!("rcm-prio-{pr:?}"),
+                                    lbl,
+                                    rec.priority == pr,
+                                    p,
+                                    cx,
+                                    move |this, _, _, cx| {
+                                        this.set_priority_action(id, pr, cx);
+                                    },
+                                )
+                            }),
+                        ),
+                    ),
+            )
+            .child(menu_item_row(
+                "rcm-seq",
+                if rec.flags.sequential_play_asap {
+                    "icons/check.svg"
+                } else {
+                    "icons/play.svg"
+                },
+                "Sequential Play ASAP",
+                None,
+                rec.flags.sequential_play_asap,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    let next = !rec.flags.sequential_play_asap;
+                    let eng = Arc::clone(&this.engine);
+                    this.rt.spawn(async move {
+                        let _ = eng.toggle_sequential_play_asap(id, next).await;
+                    });
+                    cx.notify();
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-autoretry",
+                if !rec.flags.disable_auto_retry {
+                    "icons/check.svg"
+                } else {
+                    "icons/repeat.svg"
+                },
+                "Allow Auto-Retry on Failure",
+                None,
+                !rec.flags.disable_auto_retry,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.toggle_auto_retry_action(id, cx);
+                },
+            ))
+            .child(div().h(px(1.)).bg(p.separator).my_1())
+            .child(menu_item_row(
+                "rcm-hash",
+                "icons/shield.svg",
+                "Check File Integrity (Hash)...",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.open_hash_modal(id, w, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-av",
+                "icons/shield.svg",
+                "Scan with Antivirus",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.check_virus_action(id, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-upd",
+                "icons/refresh.svg",
+                "Check Remote for Update",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.check_update_action(id, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-conv",
+                "icons/type_video.svg",
+                "Convert MP3 / MP4...",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.open_convert_modal(id, w, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-src",
+                "icons/link.svg",
+                "Change URL / Mirrors...",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.open_change_source_modal(id, w, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-move",
+                "icons/file_move.svg",
+                "Move To Folder...",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.open_move_dir_modal(vec![id], w, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-rename",
+                "icons/edit.svg",
+                "Rename File...",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.open_rename_modal(id, w, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-sched",
+                "icons/single_download_scheduler.svg",
+                "Schedule Window...",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.open_schedule_modal(id, w, cx);
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-copy-url",
+                "icons/content_copy.svg",
+                "Copy Download URL",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.copy_to_clipboard(url_for_copy.clone(), "Copied download URL", cx);
+                },
+            ))
+            .when(is_bt, |el| {
+                el.child(div().h(px(1.)).bg(p.separator).my_1())
+                    .child(menu_item_row(
+                        "rcm-bt-reann",
+                        "icons/refresh.svg",
+                        "Force Tracker Reannounce",
+                        None,
+                        false,
+                        false,
+                        p,
+                        cx,
+                        move |this, _, _, cx| {
+                            this.active_popover = ActivePopover::None;
+                            this.bt_reannounce_action(id, cx);
+                        },
+                    ))
+                    .child(menu_item_row(
+                        "rcm-bt-noseed",
+                        if rec.flags.bt_disable_seeding {
+                            "icons/check.svg"
+                        } else {
+                            "icons/pause.svg"
+                        },
+                        "Disable Seeding",
+                        None,
+                        rec.flags.bt_disable_seeding,
+                        false,
+                        p,
+                        cx,
+                        move |this, _, _, cx| {
+                            this.bt_toggle_seeding_action(id, cx);
+                        },
+                    ))
+                    .child(menu_item_row(
+                        "rcm-bt-ratio",
+                        if rec.flags.bt_ignore_upload_ratio {
+                            "icons/check.svg"
+                        } else {
+                            "icons/arrow_up.svg"
+                        },
+                        "Ignore Upload Ratio Limit",
+                        None,
+                        rec.flags.bt_ignore_upload_ratio,
+                        false,
+                        p,
+                        cx,
+                        move |this, _, _, cx| {
+                            this.bt_toggle_ignore_ratio_action(id, cx);
+                        },
+                    ))
+            })
+            .when(!all_tags.is_empty(), |el| {
+                el.child(div().h(px(1.)).bg(p.separator).my_1()).child(
+                    div()
+                        .px_2()
+                        .py(px(4.))
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_1()
+                        .children(all_tags.into_iter().map(|t| {
+                            let tid = t.id;
+                            let assigned = rec.tags.contains(&tid);
+                            let dot = parse_hex_color(&t.color_hex);
                             div()
-                                .px_2()
-                                .py(px(4.))
+                                .id(SharedString::from(format!("rcm-tag-{id}-{tid}")))
+                                .px_1p5()
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(if assigned { p.accent_soft } else { p.bg_input })
+                                .border_1()
+                                .border_color(if assigned { p.accent } else { p.border })
                                 .flex()
                                 .flex_row()
-                                .flex_wrap()
+                                .items_center()
                                 .gap_1()
-                                .children(all_tags.into_iter().map(|t| {
-                                    let tid = t.id;
-                                    let assigned = rec.tags.contains(&tid);
-                                    let dot = parse_hex_color(&t.color_hex);
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if assigned {
+                                        let _ = this.engine.unassign_tag(id, tid);
+                                    } else {
+                                        let _ = this.engine.assign_tag(id, tid);
+                                    }
+                                    this.refresh_snapshot(cx);
+                                    cx.notify();
+                                }))
+                                .child(div().w(px(7.)).h(px(7.)).rounded(px(2.)).bg(dot))
+                                .child(
                                     div()
-                                        .id(SharedString::from(format!("rcm-tag-{id}-{tid}")))
-                                        .px_1p5()
-                                        .py(px(2.))
-                                        .rounded(px(4.))
-                                        .bg(if assigned { p.accent_soft } else { p.bg_input })
-                                        .border_1()
-                                        .border_color(if assigned { p.accent } else { p.border })
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap_1()
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if assigned {
-                                                let _ = this.engine.unassign_tag(id, tid);
-                                            } else {
-                                                let _ = this.engine.assign_tag(id, tid);
-                                            }
-                                            this.refresh_snapshot(cx);
-                                            cx.notify();
-                                        }))
-                                        .child(div().w(px(7.)).h(px(7.)).rounded(px(2.)).bg(dot))
-                                        .child(
-                                            div()
-                                                .text_size(px(10.))
-                                                .text_color(p.text_primary)
-                                                .child(t.name),
-                                        )
-                                })),
-                        )
-                    })
-                    .child(div().h(px(1.)).bg(p.separator).my(px(2.)))
-                    .child(menu_item_row(
-                        "rcm-stop",
-                        "icons/stop.svg",
-                        "Stop Download",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.cancel_download(id);
-                            cx.notify();
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-rm",
-                        "icons/trash.svg",
-                        "Remove from List",
-                        None,
-                        false,
-                        false,
-                        p,
-                        cx,
-                        move |this, _, _, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.remove_download(id, false);
-                            cx.notify();
-                        },
-                    ))
-                    .child(menu_item_row(
-                        "rcm-rm-files",
-                        "icons/delete.svg",
-                        "Delete...",
-                        Some("Del"),
-                        false,
-                        true,
-                        p,
-                        cx,
-                        move |this, _, w, cx| {
-                            this.active_popover = ActivePopover::None;
-                            this.request_delete_downloads(vec![id], w, cx);
-                        },
-                    )),
-            )
-            .absolute()
-            .top(p.spx(74.))
-            .right(p.spx(20.))
-            .into_any_element(),
-    )
+                                        .text_size(px(10.))
+                                        .text_color(p.text_primary)
+                                        .child(t.name),
+                                )
+                        })),
+                )
+            })
+            .child(div().h(px(1.)).bg(p.separator).my(px(2.)))
+            .child(menu_item_row(
+                "rcm-stop",
+                "icons/stop.svg",
+                "Stop Download",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.cancel_download(id);
+                    cx.notify();
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-rm",
+                "icons/trash.svg",
+                "Remove from List",
+                None,
+                false,
+                false,
+                p,
+                cx,
+                move |this, _, _, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.remove_download(id, false);
+                    cx.notify();
+                },
+            ))
+            .child(menu_item_row(
+                "rcm-rm-files",
+                "icons/delete.svg",
+                "Delete...",
+                Some("Del"),
+                false,
+                true,
+                p,
+                cx,
+                move |this, _, w, cx| {
+                    this.active_popover = ActivePopover::None;
+                    this.request_delete_downloads(vec![id], w, cx);
+                },
+            )),
+    );
+    let positioned = if let Some(pos) = app.context_menu_pos {
+        let left_px = (f32::from(pos.x) - 12.0).clamp(8.0, 920.0);
+        let top_px = (f32::from(pos.y) - 8.0).clamp(40.0, 420.0);
+        card_div.absolute().left(px(left_px)).top(px(top_px))
+    } else {
+        card_div.absolute().top(p.spx(74.)).right(p.spx(20.))
+    };
+
+    Some(positioned.into_any_element())
 }

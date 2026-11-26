@@ -9,14 +9,13 @@ use ferrite_bt::{
 use ferrite_core::{
     AuthCredential, AutoStartPreventer, BandwidthLimiter, DownloadAbortReason, DownloadFileEntry,
     DownloadFlags, DownloadId, DownloadPriority, DownloadRecord, DownloadState, DownloadType,
-    ExistingFileReaction, FdmConfig, FileExistsAction, FileType, FilterQuery, HashAlgorithm,
+    ExistingFileReaction, FerriteConfig, FileExistsAction, FileType, FilterQuery, HashAlgorithm,
     NewDownloadRequest, ResumeSupport, ScheduleRule, ShutdownType, SslException, Tag, TrackerInfo,
     TrafficUsageMode,
     db::{Database, filter_and_sort_downloads},
     export_import::{
         export_downloads_csv, export_downloads_json, export_downloads_urls_txt,
         export_settings_json, import_downloads_file, import_settings_json,
-        inspect_legacy_fdm_sqlite,
     },
     hash::{compute_file_hash, sha256_str, verify_file_hash},
     os_integration::{
@@ -32,11 +31,13 @@ use ferrite_core::{
     scheduler::is_schedule_active,
 };
 use ferrite_hls::{download_dash_stream, download_hls_stream};
-use ferrite_http::{ControlCommand, build_http_client, download_http_or_ftp, probe_http_resource};
+use ferrite_http::{
+    ControlCommand, build_http_client_for_url, download_http_or_ftp, probe_http_resource,
+};
 use ferrite_ipc::{
-    IpcRequest, IpcResponse, RemotePairingInfo, apply_browser_settings_patch,
+    IpcRequest, IpcResponse, RemotePairingInfo, TorrentInspectInfo, apply_browser_settings_patch,
     build_browser_settings_payload, default_socket_path, generate_pairing_info_with_secret,
-    start_ipc_server, start_remote_control_server,
+    start_ipc_server, start_remote_control_server, verify_token_against_sha256_hashes,
 };
 use ferrite_media::{
     JsPluginInfo, MediaParseResult, PluginUpdateOutcome, check_and_update_plugins, compare_semver,
@@ -96,7 +97,7 @@ pub struct DownloadEngine {
     data_dir: PathBuf,
     plugins_dir: PathBuf,
     db: Database,
-    config: RwLock<FdmConfig>,
+    config: RwLock<FerriteConfig>,
     downloads: RwLock<Vec<DownloadRecord>>,
     controls: Mutex<HashMap<DownloadId, watch::Sender<ControlCommand>>>,
     tasks: Mutex<HashMap<DownloadId, JoinHandle<()>>>,
@@ -342,14 +343,27 @@ impl DownloadEngine {
         let _ = self.raise_tx.send(());
     }
 
-    pub fn get_config(&self) -> FdmConfig {
+    pub fn get_config(&self) -> FerriteConfig {
         self.config
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
-    pub fn update_config(self: &Arc<Self>, new_cfg: FdmConfig) -> Result<()> {
+    pub fn redact_config_secrets(mut cfg: FerriteConfig) -> FerriteConfig {
+        let redact = |pw: &mut String| {
+            if !pw.is_empty() {
+                *pw = "***REDACTED***".to_string();
+            }
+        };
+        redact(&mut cfg.app.remote_access_password);
+        redact(&mut cfg.app.proxy.http.password);
+        redact(&mut cfg.app.proxy.https.password);
+        redact(&mut cfg.app.proxy.socks5.password);
+        cfg
+    }
+
+    pub fn update_config(self: &Arc<Self>, new_cfg: FerriteConfig) -> Result<()> {
         let max_dl = new_cfg.active_profile().max_download_speed_bps;
         self.limiter.set_limit_bps(max_dl);
         self.limiter
@@ -386,14 +400,14 @@ impl DownloadEngine {
         let prev_remote_pw = self
             .config
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .app
             .remote_access_password
             .clone();
         let existing_remote_host = self
             .remote_pairing
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .and_then(|p| Url::parse(&p.https_url).ok())
             .and_then(|u| u.host_str().map(str::to_string))
@@ -545,7 +559,7 @@ impl DownloadEngine {
     pub fn get_download(&self, id: DownloadId) -> Option<DownloadRecord> {
         self.downloads
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|d| d.id == id)
             .cloned()
@@ -651,7 +665,33 @@ impl DownloadEngine {
         Ok(arc)
     }
 
-    /// Inspect any URL / magnet / .torrent path before enqueueing (backing FDM's "Tune & Add" dialog).
+    async fn inspect_torrent_source(&self, source: &str) -> Result<TorrentInspection> {
+        let trimmed = source.trim();
+        if trimmed.starts_with("magnet:") {
+            if self.ephemeral_bt {
+                inspect_magnet(trimmed)
+            } else {
+                let bt = self.get_or_init_bt().await?;
+                Ok(bt.inspect_source(trimmed).await.unwrap_or_else(|_| {
+                    inspect_magnet(trimmed).unwrap_or(TorrentInspection {
+                        info_hash: String::new(),
+                        name: "Magnet Download".into(),
+                        total_bytes: 0,
+                        files: vec![],
+                        trackers: vec![],
+                        raw_torrent_bytes: None,
+                    })
+                }))
+            }
+        } else if Path::new(trimmed).is_file() {
+            inspect_torrent_bytes(&std::fs::read(trimmed)?)
+        } else {
+            let bt = self.get_or_init_bt().await?;
+            bt.inspect_source(trimmed).await
+        }
+    }
+
+    /// Inspect any URL / magnet / .torrent path before enqueueing (backing the "Tune & Add" dialog).
     pub async fn probe_source(&self, source: &str) -> Result<AddProbeOutcome> {
         let trimmed = source.trim();
         let cfg = self.get_config();
@@ -665,28 +705,7 @@ impl DownloadEngine {
                 .map(|e| e.eq_ignore_ascii_case("torrent"))
                 .unwrap_or(false)
         {
-            let info = if trimmed.starts_with("magnet:") {
-                if self.ephemeral_bt {
-                    inspect_magnet(trimmed)?
-                } else {
-                    let bt = self.get_or_init_bt().await?;
-                    bt.inspect_source(trimmed).await.unwrap_or_else(|_| {
-                        inspect_magnet(trimmed).unwrap_or(TorrentInspection {
-                            info_hash: String::new(),
-                            name: "Magnet Download".into(),
-                            total_bytes: 0,
-                            files: vec![],
-                            trackers: vec![],
-                            raw_torrent_bytes: None,
-                        })
-                    })
-                }
-            } else if Path::new(trimmed).is_file() {
-                inspect_torrent_bytes(&std::fs::read(trimmed)?)?
-            } else {
-                let bt = self.get_or_init_bt().await?;
-                bt.inspect_source(trimmed).await?
-            };
+            let info = self.inspect_torrent_source(trimmed).await?;
             let resolved_file_name = sanitize_filename(&info.name);
             let resolved_dir = resolve_target_dir(&cfg, None, trimmed, &resolved_file_name, None);
             return Ok(AddProbeOutcome {
@@ -706,13 +725,17 @@ impl DownloadEngine {
             });
         }
 
+        let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
+
         if lower.contains(".m3u8") || lower.contains(".mpd") {
             let dl_type = if lower.contains(".mpd") {
                 DownloadType::Dash
             } else {
                 DownloadType::HlsM3u8
             };
-            let media = probe_media_url(trimmed, &self.plugins_dir, &cfg).await.ok();
+            let media = probe_media_url(trimmed, &self.plugins_dir, &cfg, &ssl)
+                .await
+                .ok();
             let raw_name = media
                 .as_ref()
                 .map(|m| sanitize_filename(&format!("{}.mp4", m.title)))
@@ -743,7 +766,7 @@ impl DownloadEngine {
 
         // Check media plugins / yt-dlp first if it looks like a watch page (no obvious binary extension)
         if !is_likely_direct_file_url(trimmed)
-            && let Ok(parsed_media) = probe_media_url(trimmed, &self.plugins_dir, &cfg).await
+            && let Ok(parsed_media) = probe_media_url(trimmed, &self.plugins_dir, &cfg, &ssl).await
         {
             let name = sanitize_filename(&format!(
                 "{}.{}",
@@ -770,9 +793,8 @@ impl DownloadEngine {
 
         // Fallback to HTTP/FTP header probe
         let mut dummy = self.draft_record(&NewDownloadRequest::from_url(trimmed), &cfg);
-        let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
         let cred = self.lookup_credential(trimmed);
-        if let Ok(client) = build_http_client(&cfg, &ssl, None)
+        if let Ok(client) = build_http_client_for_url(&cfg, &ssl, None, trimmed)
             && let Ok(probe) = probe_http_resource(&client, &dummy, &ssl, cred.as_ref()).await
         {
             if let Some(ref s) = probe.suggested_filename {
@@ -825,7 +847,7 @@ impl DownloadEngine {
         None
     }
 
-    fn draft_record(&self, req: &NewDownloadRequest, cfg: &FdmConfig) -> DownloadRecord {
+    fn draft_record(&self, req: &NewDownloadRequest, cfg: &FerriteConfig) -> DownloadRecord {
         let lower = req.url.to_ascii_lowercase();
         let dl_type = req.download_type.unwrap_or_else(|| {
             if req.url.starts_with("magnet:")
@@ -1092,7 +1114,7 @@ impl DownloadEngine {
         Ok(out)
     }
 
-    /// Creates a parent Batch download record containing child downloads (used by FDM's Batch drill-down view).
+    /// Creates a parent Batch download record containing child downloads (used by the Batch drill-down view).
     pub async fn add_batch_group(
         self: &Arc<Self>,
         pattern_or_multiline: &str,
@@ -1644,11 +1666,15 @@ impl DownloadEngine {
     }
 
     pub fn set_js_plugin_enabled(&self, uid: &str, enabled: bool) -> Result<()> {
-        set_plugin_enabled(&self.plugins_dir, uid, enabled)
+        set_plugin_enabled(&self.plugins_dir, uid, enabled)?;
+        let _ = self.events_tx.send(EngineEventAlias::SettingsUpdated);
+        Ok(())
     }
 
     pub fn uninstall_js_plugin(&self, uid: &str) -> Result<()> {
-        uninstall_plugin(&self.plugins_dir, uid)
+        uninstall_plugin(&self.plugins_dir, uid)?;
+        let _ = self.events_tx.send(EngineEventAlias::SettingsUpdated);
+        Ok(())
     }
 
     pub fn install_js_plugin_from_path(&self, source: &Path) -> Result<JsPluginInfo> {
@@ -1665,7 +1691,8 @@ impl DownloadEngine {
 
     pub async fn check_and_update_js_plugins(self: &Arc<Self>) -> Result<Vec<PluginUpdateOutcome>> {
         let cfg = self.get_config();
-        let outcomes = check_and_update_plugins(&self.plugins_dir, &cfg).await?;
+        let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
+        let outcomes = check_and_update_plugins(&self.plugins_dir, &cfg, &ssl).await?;
         if !outcomes.is_empty() {
             let summary: Vec<String> = outcomes
                 .iter()
@@ -1675,6 +1702,56 @@ impl DownloadEngine {
             let _ = self.events_tx.send(EngineEventAlias::SettingsUpdated);
         }
         Ok(outcomes)
+    }
+
+    fn stage_verified_update_bytes(
+        &self,
+        latest_version: &str,
+        dl_url: &Url,
+        expected_sha256: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf> {
+        if !dl_url.scheme().eq_ignore_ascii_case("https") {
+            bail!("Update download URL must use https://");
+        }
+        let valid_sha = validate_sha256_hex(expected_sha256)?;
+        let updates_dir = self.data_dir.join("updates");
+        std::fs::create_dir_all(&updates_dir)?;
+        let file_name = dl_url
+            .path_segments()
+            .and_then(|mut segs| segs.next_back().map(str::to_string))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("ferrite-{latest_version}.pkg"));
+        let safe_name = sanitize_filename(&file_name);
+        let dest = updates_dir.join(&safe_name);
+        let tmp_dest = updates_dir.join(format!(
+            ".staging-{}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple(),
+            safe_name
+        ));
+
+        std::fs::write(&tmp_dest, bytes)?;
+        match verify_file_hash(&tmp_dest, HashAlgorithm::Sha256, &valid_sha) {
+            Ok(true) => {
+                if let Err(e) = std::fs::rename(&tmp_dest, &dest) {
+                    let _ = std::fs::remove_file(&tmp_dest);
+                    return Err(e.into());
+                }
+                Ok(dest)
+            }
+            Ok(false) => {
+                let _ = std::fs::remove_file(&tmp_dest);
+                bail!(
+                    "Staged update payload for v{} failed SHA-256 verification",
+                    latest_version
+                );
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_dest);
+                Err(e)
+            }
+        }
     }
 
     pub async fn check_for_app_updates(
@@ -1691,13 +1768,8 @@ impl DownloadEngine {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let local_manifest = self.data_dir.join("update-manifest.json");
 
-        let source = if let Some(u) = override_str.or(env_url) {
-            u
-        } else if local_manifest.is_file() {
-            local_manifest.to_string_lossy().into_owned()
-        } else {
+        let Some(manifest_source) = override_str.or(env_url) else {
             return Ok(AppUpdateCheckResult {
                 current_version: current_version.clone(),
                 latest_version: Some(current_version.clone()),
@@ -1713,142 +1785,80 @@ impl DownloadEngine {
             });
         };
 
+        let parsed_manifest = require_https_url(&manifest_source, "Update manifest URL")?;
         let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
-        let client = build_http_client(&cfg, &ssl, None)?;
+        let manifest_client =
+            build_http_client_for_url(&cfg, &ssl, None, parsed_manifest.as_str())?;
 
-        let raw_json: String = if source.starts_with("http://") || source.starts_with("https://") {
-            let resp = client.get(&source).send().await?.error_for_status()?;
-            resp.text().await?
-        } else if let Some(path_str) = source.strip_prefix("file://") {
-            std::fs::read_to_string(path_str)
-                .with_context(|| format!("Failed reading update manifest {path_str}"))?
-        } else {
-            std::fs::read_to_string(&source)
-                .with_context(|| format!("Failed reading update manifest {source}"))?
-        };
-
-        let val: serde_json::Value =
-            serde_json::from_str(&raw_json).context("Invalid update manifest JSON")?;
-        let latest_version_raw = val
-            .get("version")
-            .or_else(|| val.get("tag_name"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .context("Update manifest missing 'version' or 'tag_name'")?;
-        let latest_version = latest_version_raw
-            .trim_start_matches(['v', 'V'])
-            .to_string();
-
-        let release_notes = val
-            .get("notes")
-            .or_else(|| val.get("release_notes"))
-            .or_else(|| val.get("body"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-
-        let expected_sha256 = val
-            .get("sha256")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let download_url = val
-            .get("download_url")
-            .or_else(|| val.get("url"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or_else(|| {
-                val.get("assets")
-                    .and_then(|a| a.as_array())
-                    .and_then(|arr| {
-                        select_release_asset_url_for_target(
-                            arr,
-                            std::env::consts::OS,
-                            std::env::consts::ARCH,
-                        )
-                    })
-            })
-            .or_else(|| {
-                val.get("html_url")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            });
-
-        let update_available =
-            compare_semver(&latest_version, &current_version) == std::cmp::Ordering::Greater;
+        let resp = manifest_client
+            .get(parsed_manifest.as_str())
+            .send()
+            .await?
+            .error_for_status()?;
+        if !resp.url().scheme().eq_ignore_ascii_case("https") {
+            bail!("Update manifest URL redirected to non-HTTPS URL");
+        }
+        let raw_json = resp.text().await?;
+        let parsed = parse_update_manifest(&raw_json, &current_version)?;
 
         let mut staged_path: Option<PathBuf> = None;
-        if update_available
+        if parsed.update_available
             && cfg.app.auto_install_updates
-            && let Some(ref dl_url) = download_url
+            && let Some(ref dl_url) = parsed.download_url
         {
-            let updates_dir = self.data_dir.join("updates");
-            std::fs::create_dir_all(&updates_dir)?;
-            let file_name = Url::parse(dl_url)
-                .ok()
-                .and_then(|u| {
-                    u.path_segments()
-                        .and_then(|mut segs| segs.next_back().map(str::to_string))
-                })
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("ferrite-{latest_version}.pkg"));
-            let dest = updates_dir.join(sanitize_filename(&file_name));
+            let dl_parsed = require_https_url(dl_url, "Update download URL")?;
+            let expected_sha = parsed
+                .expected_sha256
+                .as_deref()
+                .context("Update manifest missing required sha256 checksum")?;
+            let valid_sha = validate_sha256_hex(expected_sha)?;
 
-            if dl_url.starts_with("http://") || dl_url.starts_with("https://") {
-                let bytes = client
-                    .get(dl_url)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .bytes()
-                    .await?;
-                std::fs::write(&dest, &bytes)?;
-            } else {
-                let src_path = dl_url.strip_prefix("file://").unwrap_or(dl_url.as_str());
-                std::fs::copy(src_path, &dest)
-                    .with_context(|| format!("Failed staging update payload from {src_path}"))?;
+            let dl_client = build_http_client_for_url(&cfg, &ssl, None, dl_parsed.as_str())?;
+            let dl_resp = dl_client
+                .get(dl_parsed.as_str())
+                .send()
+                .await?
+                .error_for_status()?;
+            if !dl_resp.url().scheme().eq_ignore_ascii_case("https") {
+                bail!("Update download URL redirected to non-HTTPS URL");
             }
-
-            if let Some(ref sha) = expected_sha256
-                && !verify_file_hash(&dest, HashAlgorithm::Sha256, sha)?
-            {
-                let _ = std::fs::remove_file(&dest);
-                bail!(
-                    "Staged update payload for v{} failed SHA-256 verification",
-                    latest_version
-                );
-            }
+            let bytes = dl_resp.bytes().await?;
+            let dest = self.stage_verified_update_bytes(
+                &parsed.latest_version,
+                &dl_parsed,
+                &valid_sha,
+                &bytes,
+            )?;
             self.log_dl_mgmt(&format!(
                 "Downloaded and staged Ferrite v{} update to {}",
-                latest_version,
+                parsed.latest_version,
                 dest.display()
             ));
             staged_path = Some(dest);
         }
 
-        let message = if !update_available {
+        let message = if !parsed.update_available {
             format!("Ferrite v{} is up to date.", current_version)
         } else if let Some(ref path) = staged_path {
             format!(
                 "Update v{} ready (staged at {}).",
-                latest_version,
+                parsed.latest_version,
                 path.display()
             )
         } else {
             format!(
                 "Ferrite v{} is available (current: v{}).",
-                latest_version, current_version
+                parsed.latest_version, current_version
             )
         };
 
         Ok(AppUpdateCheckResult {
             current_version,
-            latest_version: Some(latest_version),
-            update_available,
+            latest_version: Some(parsed.latest_version),
+            update_available: parsed.update_available,
             configured: true,
-            release_notes,
-            download_url,
+            release_notes: parsed.release_notes,
+            download_url: parsed.download_url,
             staged_path,
             message,
         })
@@ -2082,7 +2092,7 @@ impl DownloadEngine {
     }
 
     pub fn reset_settings_to_defaults(self: &Arc<Self>) -> Result<()> {
-        self.update_config(FdmConfig::default())
+        self.update_config(FerriteConfig::default())
     }
 
     pub fn export_downloads_formatted(
@@ -2095,7 +2105,7 @@ impl DownloadEngine {
         let items: Vec<DownloadRecord> = self
             .downloads
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|d| selected_ids.map(|set| set.contains(&d.id)).unwrap_or(true))
             .filter(|d| !only_completed || d.state == DownloadState::Completed)
@@ -2163,22 +2173,7 @@ impl DownloadEngine {
         }
         if !logs_only {
             let _ = self.db.backup_to(&stage.join("ferrite.sqlite"));
-            let mut redacted_cfg = self.get_config();
-            if !redacted_cfg.app.remote_access_password.is_empty() {
-                redacted_cfg.app.remote_access_password = "***REDACTED***".to_string();
-            }
-            if !redacted_cfg.app.proxy.http.password.is_empty() {
-                redacted_cfg.app.proxy.http.password = "***REDACTED***".to_string();
-            }
-            if !redacted_cfg.app.proxy.https.password.is_empty() {
-                redacted_cfg.app.proxy.https.password = "***REDACTED***".to_string();
-            }
-            if !redacted_cfg.app.proxy.ftp.password.is_empty() {
-                redacted_cfg.app.proxy.ftp.password = "***REDACTED***".to_string();
-            }
-            if !redacted_cfg.app.proxy.socks5.password.is_empty() {
-                redacted_cfg.app.proxy.socks5.password = "***REDACTED***".to_string();
-            }
+            let redacted_cfg = Self::redact_config_secrets(self.get_config());
             let cfg_json = serde_json::to_string_pretty(&redacted_cfg)?;
             let _ = std::fs::write(stage.join("config.redacted.json"), cfg_json);
         }
@@ -2215,7 +2210,7 @@ impl DownloadEngine {
     pub fn ensure_remote_password(&self) -> String {
         let mut cfg = self.get_config();
         if cfg.app.remote_access_password.trim().is_empty() {
-            let secret = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+            let secret = uuid::Uuid::new_v4().simple().to_string();
             cfg.app.remote_access_password = secret.clone();
             let _ = self.db.save_config(&cfg);
             let _ = self
@@ -2234,7 +2229,7 @@ impl DownloadEngine {
 
     pub fn regenerate_remote_password(self: &Arc<Self>) -> Result<String> {
         let mut cfg = self.get_config();
-        let secret = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+        let secret = uuid::Uuid::new_v4().simple().to_string();
         cfg.app.remote_access_password = secret.clone();
         self.db.save_config(&cfg)?;
         self.db
@@ -2300,26 +2295,6 @@ impl DownloadEngine {
         }
         if !start_paused && count > 0 {
             self.schedule_queue().await;
-        }
-        Ok(count)
-    }
-
-    pub async fn import_legacy_fdm_db(self: &Arc<Self>, fdm_db_path: &Path) -> Result<usize> {
-        let cfg = self.get_config();
-        let items = inspect_legacy_fdm_sqlite(fdm_db_path, &cfg)?;
-        let count = items.len();
-        for mut rec in items {
-            rec.id = 0;
-            rec.uuid = uuid::Uuid::new_v4().to_string();
-            rec.state = DownloadState::Paused;
-            let saved = self.db.next_download_id_and_insert(rec)?;
-            self.downloads
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(saved.clone());
-            let _ = self
-                .events_tx
-                .send(EngineEventAlias::Added { id: saved.id });
         }
         Ok(count)
     }
@@ -2626,10 +2601,26 @@ impl DownloadEngine {
                 .await
             }
             DownloadType::HlsM3u8 => {
-                download_hls_stream(record, &cfg, limiter, control_rx, emit_progress).await
+                download_hls_stream(
+                    record,
+                    &cfg,
+                    &ssl_exceptions,
+                    limiter,
+                    control_rx,
+                    emit_progress,
+                )
+                .await
             }
             DownloadType::Dash => {
-                download_dash_stream(record, &cfg, limiter, control_rx, emit_progress).await
+                download_dash_stream(
+                    record,
+                    &cfg,
+                    &ssl_exceptions,
+                    limiter,
+                    control_rx,
+                    emit_progress,
+                )
+                .await
             }
             DownloadType::BitTorrent => match self.get_or_init_bt().await {
                 Ok(bt) => {
@@ -2709,7 +2700,7 @@ impl DownloadEngine {
     async fn run_media_parser_download<F>(
         &self,
         mut record: DownloadRecord,
-        cfg: &FdmConfig,
+        cfg: &FerriteConfig,
         ssl_exceptions: &[SslException],
         cred: Option<AuthCredential>,
         limiter: BandwidthLimiter,
@@ -2719,7 +2710,7 @@ impl DownloadEngine {
     where
         F: FnMut(&DownloadRecord) + Send,
     {
-        match probe_media_url(&record.url, &self.plugins_dir, cfg).await {
+        match probe_media_url(&record.url, &self.plugins_dir, cfg, ssl_exceptions).await {
             Ok(parsed) if !parsed.variants.is_empty() => {
                 let best = parsed
                     .variants
@@ -2743,8 +2734,27 @@ impl DownloadEngine {
 
                 if best.url.to_ascii_lowercase().contains(".m3u8") {
                     record.url = best.url;
-                    return download_hls_stream(record, cfg, limiter, control_rx, on_progress)
-                        .await;
+                    return download_hls_stream(
+                        record,
+                        cfg,
+                        ssl_exceptions,
+                        limiter,
+                        control_rx,
+                        on_progress,
+                    )
+                    .await;
+                }
+                if best.url.to_ascii_lowercase().contains(".mpd") {
+                    record.url = best.url;
+                    return download_dash_stream(
+                        record,
+                        cfg,
+                        ssl_exceptions,
+                        limiter,
+                        control_rx,
+                        on_progress,
+                    )
+                    .await;
                 }
 
                 if let Some(ref aud_url) = best.audio_url {
@@ -2880,7 +2890,7 @@ impl DownloadEngine {
         }
     }
 
-    async fn run_post_completion_tasks(&self, record: &DownloadRecord, cfg: &FdmConfig) {
+    async fn run_post_completion_tasks(&self, record: &DownloadRecord, cfg: &FerriteConfig) {
         if cfg.core.disable_post_finished_tasks {
             return;
         }
@@ -2906,7 +2916,7 @@ impl DownloadEngine {
             let any_left = self
                 .downloads
                 .read()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .iter()
                 .any(|d| d.state.is_active() || d.state == DownloadState::Queued);
             if !any_left {
@@ -3123,6 +3133,21 @@ impl DownloadEngine {
         .await
     }
 
+    pub fn verify_remote_token(&self, token: &str) -> bool {
+        let active_pw = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .app
+            .remote_access_password
+            .clone();
+        if active_pw.trim().is_empty() || token.is_empty() {
+            return false;
+        }
+        let expected_hash = sha256_str(&active_pw);
+        verify_token_against_sha256_hashes(token, [expected_hash.as_str()])
+    }
+
     pub async fn ensure_remote_control(
         self: &Arc<Self>,
         host_hint: &str,
@@ -3163,16 +3188,10 @@ impl DownloadEngine {
             .unwrap_or_else(|e| e.into_inner())
             .is_none()
         {
-            let db_clone = self.db.clone();
+            let eng_verify = Arc::clone(self);
             let eng = Arc::clone(self);
             let cert_dir = self.data_dir.join("certs");
-            let verify_fn = Arc::new(move |tok: &str| {
-                let cand = sha256_str(tok);
-                db_clone
-                    .list_rc_passwords()
-                    .map(|m| m.values().any(|h| h.eq_ignore_ascii_case(&cand)))
-                    .unwrap_or(false)
-            });
+            let verify_fn = Arc::new(move |tok: &str| eng_verify.verify_remote_token(tok));
             let (bound_addr, handle) = start_remote_control_server(
                 bind_addr,
                 &cert_dir,
@@ -3219,6 +3238,29 @@ impl DownloadEngine {
                 Ok(rec) => IpcResponse::ok(rec),
                 Err(e) => IpcResponse::err("add_failed", e.to_string()),
             },
+            IpcRequest::AddBatch {
+                input,
+                target_dir,
+                start_paused,
+            } => match self
+                .add_batch_pattern(&input, target_dir, start_paused)
+                .await
+            {
+                Ok(records) => IpcResponse::ok(records),
+                Err(e) => IpcResponse::err("add_batch_failed", e.to_string()),
+            },
+            IpcRequest::InspectTorrent { source } => {
+                match self.inspect_torrent_source(&source).await {
+                    Ok(info) => IpcResponse::ok(TorrentInspectInfo {
+                        info_hash: info.info_hash,
+                        name: info.name,
+                        total_bytes: info.total_bytes,
+                        files: info.files,
+                        trackers: info.trackers,
+                    }),
+                    Err(e) => IpcResponse::err("inspect_torrent_failed", e.to_string()),
+                }
+            }
             IpcRequest::ListDownloads(q) => IpcResponse::ok(self.list_downloads(&q)),
             IpcRequest::GetDownload { id } => match self.get_download(id) {
                 Some(rec) => IpcResponse::ok(rec),
@@ -3271,9 +3313,28 @@ impl DownloadEngine {
                 Ok(tag) => IpcResponse::ok(tag),
                 Err(e) => IpcResponse::err("create_tag_failed", e.to_string()),
             },
+            IpcRequest::DeleteTag { tag_id } => match self.delete_tag(tag_id) {
+                Ok(()) => IpcResponse::ok(true),
+                Err(e) => IpcResponse::err("delete_tag_failed", e.to_string()),
+            },
             IpcRequest::AssignTag { id, tag_id } => match self.assign_tag(id, tag_id) {
                 Ok(()) => IpcResponse::ok(true),
                 Err(e) => IpcResponse::err("assign_tag_failed", e.to_string()),
+            },
+            IpcRequest::UnassignTag { id, tag_id } => match self.unassign_tag(id, tag_id) {
+                Ok(()) => IpcResponse::ok(true),
+                Err(e) => IpcResponse::err("unassign_tag_failed", e.to_string()),
+            },
+            IpcRequest::ListPlugins => IpcResponse::ok(self.list_js_plugins()),
+            IpcRequest::SetPluginEnabled { uid, enabled } => {
+                match self.set_js_plugin_enabled(&uid, enabled) {
+                    Ok(()) => IpcResponse::ok(true),
+                    Err(e) => IpcResponse::err("set_plugin_enabled_failed", e.to_string()),
+                }
+            }
+            IpcRequest::UninstallPlugin { uid } => match self.uninstall_js_plugin(&uid) {
+                Ok(()) => IpcResponse::ok(true),
+                Err(e) => IpcResponse::err("uninstall_plugin_failed", e.to_string()),
             },
             IpcRequest::ResolveConflict { id, action } => {
                 match self.resolve_conflict(id, action).await {
@@ -3405,7 +3466,8 @@ impl DownloadEngine {
         }
         let ssl = self.db.list_ssl_exceptions().unwrap_or_default();
         let cred = self.lookup_credential(&rec.url);
-        let client = build_http_client(&cfg, &ssl, rec.http.user_agent.as_deref())?;
+        let client =
+            build_http_client_for_url(&cfg, &ssl, rec.http.user_agent.as_deref(), &rec.url)?;
         let probe = probe_http_resource(&client, &rec, &ssl, cred.as_ref()).await?;
 
         let etag_changed = matches!((&rec.etag, &probe.etag), (Some(a), Some(b)) if a != b);
@@ -3493,6 +3555,101 @@ impl DownloadEngine {
     pub fn clear_ssl_exceptions(&self) -> Result<()> {
         self.db.clear_ssl_exceptions()
     }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedUpdateManifest {
+    latest_version: String,
+    update_available: bool,
+    release_notes: Option<String>,
+    download_url: Option<String>,
+    expected_sha256: Option<String>,
+}
+
+fn require_https_url(raw: &str, context_label: &str) -> Result<Url> {
+    let parsed =
+        Url::parse(raw.trim()).with_context(|| format!("{context_label} is not a valid URL"))?;
+    if !parsed.scheme().eq_ignore_ascii_case("https") {
+        bail!("{context_label} must use https://");
+    }
+    Ok(parsed)
+}
+
+fn validate_sha256_hex(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 64 || !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("Update manifest contains invalid sha256 checksum");
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+fn parse_update_manifest(raw_json: &str, current_version: &str) -> Result<ParsedUpdateManifest> {
+    let val: serde_json::Value =
+        serde_json::from_str(raw_json).context("Invalid update manifest JSON")?;
+    let latest_version_raw = val
+        .get("version")
+        .or_else(|| val.get("tag_name"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .context("Update manifest missing 'version' or 'tag_name'")?;
+    let latest_version = latest_version_raw
+        .trim_start_matches(['v', 'V'])
+        .to_string();
+
+    let release_notes = val
+        .get("notes")
+        .or_else(|| val.get("release_notes"))
+        .or_else(|| val.get("body"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let expected_sha256 = val
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let download_url = val
+        .get("download_url")
+        .or_else(|| val.get("url"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            val.get("assets")
+                .and_then(|a| a.as_array())
+                .and_then(|arr| {
+                    select_release_asset_url_for_target(
+                        arr,
+                        std::env::consts::OS,
+                        std::env::consts::ARCH,
+                    )
+                })
+        })
+        .or_else(|| {
+            val.get("html_url")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+
+    if let Some(ref dl_url) = download_url {
+        require_https_url(dl_url, "Update download URL")?;
+    }
+
+    let update_available =
+        compare_semver(&latest_version, current_version) == std::cmp::Ordering::Greater;
+
+    Ok(ParsedUpdateManifest {
+        latest_version,
+        update_available,
+        release_notes,
+        download_url,
+        expected_sha256,
+    })
 }
 
 fn select_release_asset_url_for_target(
@@ -3629,7 +3786,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_updates_rc_hash_remembers_host_dir_and_stages_app_updates() {
+    async fn engine_updates_rc_hash_and_remembers_host_dir() {
         let dir = std::env::temp_dir().join(format!("ferrite_eng_set_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3641,7 +3798,6 @@ mod tests {
         cfg.app.remote_access_password = "CustomSecret123".into();
         cfg.core.fixed_download_path = false;
         cfg.core.download_path_depends_on_source_url = true;
-        cfg.app.auto_install_updates = true;
         eng.update_config(cfg).unwrap();
         let rc_map = eng.db().list_rc_passwords().unwrap();
         assert_eq!(
@@ -3670,27 +3826,147 @@ mod tests {
         assert!(!uncfg.configured);
         assert!(!uncfg.update_available);
 
-        // 4) Local update manifest + payload stages update when auto_install_updates = true.
-        let payload = dir.join("ferrite-99.0.0.pkg");
-        std::fs::write(&payload, b"ferrite-update-binary").unwrap();
-        let sha = compute_file_hash(&payload, HashAlgorithm::Sha256).unwrap();
-        let manifest_path = dir.join("data/update-manifest.json");
-        std::fs::write(
-            &manifest_path,
-            serde_json::json!({
-                "version": "99.0.0",
-                "url": payload.to_string_lossy(),
-                "sha256": sha,
-                "notes": "Test release"
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let upd = eng.check_for_app_updates(None).await.unwrap();
-        assert!(upd.configured);
-        assert!(upd.update_available);
-        assert_eq!(upd.latest_version.as_deref(), Some("99.0.0"));
-        assert!(upd.staged_path.as_ref().is_some_and(|p| p.is_file()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remote_control_password_is_32_hex_and_verifies_only_active_secret() {
+        let dir = std::env::temp_dir().join(format!("ferrite_rc_sec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        // Empty password must never authenticate
+        assert!(!eng.verify_remote_token(""));
+        assert!(!eng.verify_remote_token("anything"));
+
+        // ensure_remote_password generates full 32 hex chars (~122 bits)
+        let generated = eng.ensure_remote_password();
+        assert_eq!(generated.len(), 32);
+        assert!(generated.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(eng.verify_remote_token(&generated));
+        assert!(!eng.verify_remote_token(&generated[..16]));
+        assert!(!eng.verify_remote_token("wrong-secret"));
+
+        // Historical rows in rc_passwords must NOT be accepted
+        eng.db()
+            .save_rc_password_hash("legacy-device", &sha256_str("LegacyPassword999"))
+            .unwrap();
+        assert!(!eng.verify_remote_token("LegacyPassword999"));
+        assert!(eng.verify_remote_token(&generated));
+
+        // Regenerating invalidates the previous active password and issues 32 new hex chars
+        let rotated = eng.regenerate_remote_password().unwrap();
+        assert_eq!(rotated.len(), 32);
+        assert_ne!(rotated, generated);
+        assert!(!eng.verify_remote_token(&generated));
+        assert!(eng.verify_remote_token(&rotated));
+        assert!(!eng.verify_remote_token("LegacyPassword999"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn check_for_app_updates_enforces_https_and_sha256_checksum() {
+        let dir = std::env::temp_dir().join(format!("ferrite_upd_sec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = DownloadEngine::open(dir.join("data"), true).unwrap();
+
+        // 1) Manifest URL enforcement: reject http://, file://, and local filesystem paths
+        for bad_manifest in [
+            "http://example.com/update.json",
+            "file:///tmp/update.json",
+            "/tmp/update.json",
+            "ftp://example.com/update.json",
+        ] {
+            let err = eng
+                .check_for_app_updates(Some(bad_manifest))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("https://") || err.contains("not a valid URL"),
+                "expected https:// or invalid URL error for {bad_manifest}, got: {err}"
+            );
+        }
+
+        // 2) Artifact download URL in manifest must use https://
+        let bad_dl_manifest = serde_json::json!({
+            "version": "99.0.0",
+            "url": "http://example.com/ferrite-99.0.0.pkg",
+            "sha256": "a".repeat(64)
+        })
+        .to_string();
+        let err_dl = parse_update_manifest(&bad_dl_manifest, "0.4.0")
+            .unwrap_err()
+            .to_string();
+        assert!(err_dl.contains("https://"), "got: {err_dl}");
+
+        let file_dl_manifest = serde_json::json!({
+            "version": "99.0.0",
+            "url": "file:///tmp/ferrite-99.0.0.pkg",
+            "sha256": "a".repeat(64)
+        })
+        .to_string();
+        let err_file = parse_update_manifest(&file_dl_manifest, "0.4.0")
+            .unwrap_err()
+            .to_string();
+        assert!(err_file.contains("https://"), "got: {err_file}");
+
+        // 3) Staging rejects non-https URLs, missing/empty/invalid sha256, and mismatched sha256
+        let payload = b"ferrite-update-binary";
+        let payload_file = dir.join("payload.bin");
+        std::fs::write(&payload_file, payload).unwrap();
+        let valid_sha = compute_file_hash(&payload_file, HashAlgorithm::Sha256).unwrap();
+
+        let https_url = Url::parse("https://updates.example.com/ferrite-99.0.0.pkg").unwrap();
+        let http_url = Url::parse("http://updates.example.com/ferrite-99.0.0.pkg").unwrap();
+        assert!(
+            eng.stage_verified_update_bytes("99.0.0", &http_url, &valid_sha, payload)
+                .is_err()
+        );
+        assert!(
+            eng.stage_verified_update_bytes("99.0.0", &https_url, "", payload)
+                .is_err()
+        );
+        assert!(
+            eng.stage_verified_update_bytes("99.0.0", &https_url, "   ", payload)
+                .is_err()
+        );
+        assert!(
+            eng.stage_verified_update_bytes("99.0.0", &https_url, "not-hex", payload)
+                .is_err()
+        );
+        let mismatch_err = eng
+            .stage_verified_update_bytes("99.0.0", &https_url, &"0".repeat(64), payload)
+            .unwrap_err()
+            .to_string();
+        assert!(mismatch_err.contains("SHA-256"), "got: {mismatch_err}");
+        assert!(!dir.join("data/updates/ferrite-99.0.0.pkg").exists());
+
+        // Missing/empty sha256 in manifest JSON yields None -> rejected before download/stage
+        let no_sha_manifest = serde_json::json!({
+            "version": "99.0.0",
+            "download_url": "https://updates.example.com/ferrite-99.0.0.pkg"
+        })
+        .to_string();
+        let parsed_no_sha = parse_update_manifest(&no_sha_manifest, "0.4.0").unwrap();
+        assert!(parsed_no_sha.expected_sha256.is_none());
+
+        let empty_sha_manifest = serde_json::json!({
+            "version": "99.0.0",
+            "download_url": "https://updates.example.com/ferrite-99.0.0.pkg",
+            "sha256": "   "
+        })
+        .to_string();
+        let parsed_empty_sha = parse_update_manifest(&empty_sha_manifest, "0.4.0").unwrap();
+        assert!(parsed_empty_sha.expected_sha256.is_none());
+
+        // 4) Valid https:// + matching sha256 stages cleanly
+        let staged = eng
+            .stage_verified_update_bytes("99.0.0", &https_url, &valid_sha, payload)
+            .unwrap();
+        assert!(staged.is_file());
+        assert_eq!(std::fs::read(&staged).unwrap(), payload);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

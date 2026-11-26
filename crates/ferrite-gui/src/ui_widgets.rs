@@ -1,40 +1,77 @@
 use crate::theme::ThemePalette;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Bounds, Context, Div, Element, ElementId, FontWeight,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Rgba, ShapedLine,
-    SharedString, Stateful, Style, Svg, TextStyle, Window, div, ease_in_out, ease_out_quint,
-    prelude::*, px, svg,
+    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, Context, Div, Element, ElementId,
+    FontWeight, Global, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels,
+    Rgba, ShapedLine, SharedString, Stateful, Style, Svg, TextStyle, Window, div, ease_in_out,
+    ease_out_quint, prelude::*, px, svg,
 };
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
-struct SwitchAnimState {
+struct SwitchAnimStore {
     entries: HashMap<String, (u64, Instant)>,
 }
 
-fn switch_anim_store() -> &'static Mutex<SwitchAnimState> {
-    static STORE: OnceLock<Mutex<SwitchAnimState>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(SwitchAnimState::default()))
+impl Global for SwitchAnimStore {}
+
+fn mark_switch_toggled(id: &str, cx: &mut App) {
+    let store = cx.default_global::<SwitchAnimStore>();
+    let next_epoch = store.entries.get(id).map(|(e, _)| *e + 1).unwrap_or(1);
+    store
+        .entries
+        .insert(id.to_string(), (next_epoch, Instant::now()));
 }
 
-pub fn mark_switch_toggled(id: &str) {
-    if let Ok(mut guard) = switch_anim_store().lock() {
-        let next_epoch = guard.entries.get(id).map(|(e, _)| *e + 1).unwrap_or(1);
-        guard
-            .entries
-            .insert(id.to_string(), (next_epoch, Instant::now()));
-    }
-}
-
-pub fn active_switch_epoch(id: &str) -> Option<u64> {
-    let guard = switch_anim_store().lock().ok()?;
-    let (epoch, at) = guard.entries.get(id)?;
+fn active_switch_epoch(id: &str, cx: &App) -> Option<u64> {
+    let store = cx.try_global::<SwitchAnimStore>()?;
+    let (epoch, at) = store.entries.get(id)?;
     if at.elapsed() < Duration::from_millis(240) {
         Some(*epoch)
     } else {
         None
+    }
+}
+
+struct TooltipView {
+    text: SharedString,
+    bg: Hsla,
+    fg: Hsla,
+    border: Hsla,
+}
+
+impl gpui::Render for TooltipView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2p5()
+            .py_1()
+            .rounded(px(6.))
+            .bg(self.bg)
+            .border_1()
+            .border_color(self.border)
+            .text_size(px(11.5))
+            .text_color(self.fg)
+            .shadow_md()
+            .child(self.text.clone())
+    }
+}
+
+pub fn tooltip_text(
+    text: impl Into<SharedString>,
+    p: &ThemePalette,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    let bg = p.tooltip_bg;
+    let fg = p.tooltip_fg;
+    let border = p.border;
+    move |_window, cx| {
+        cx.new(|_| TooltipView {
+            text: text.clone(),
+            bg,
+            fg,
+            border,
+        })
+        .into()
     }
 }
 
@@ -242,7 +279,7 @@ pub fn chip_toggle<T: 'static>(
         .child(label.into())
 }
 
-pub fn fdm_checkbox(checked: bool, p: &ThemePalette) -> Div {
+pub fn ferrite_checkbox(checked: bool, p: &ThemePalette) -> Div {
     div()
         .w(p.spx(16.))
         .h(p.spx(16.))
@@ -259,7 +296,7 @@ pub fn fdm_checkbox(checked: bool, p: &ThemePalette) -> Div {
         })
 }
 
-fn switch_pill_track(id_key: &str, checked: bool, p: &ThemePalette) -> AnyElement {
+fn switch_pill_track(id_key: &str, checked: bool, p: &ThemePalette, cx: &App) -> AnyElement {
     let p_copy = *p;
     let track_w = p.spx(34.);
     let track_h = p.spx(18.);
@@ -267,7 +304,7 @@ fn switch_pill_track(id_key: &str, checked: bool, p: &ThemePalette) -> AnyElemen
     let thumb_sz = p.spx(12.);
     let travel = 16.0 * p.ui_scale();
 
-    if let Some(epoch) = active_switch_epoch(id_key) {
+    if let Some(epoch) = active_switch_epoch(id_key, cx) {
         let anim_id = SharedString::from(format!("sw-anim-{id_key}-{epoch}"));
         div()
             .w(track_w)
@@ -334,7 +371,7 @@ pub fn switch_row<T: 'static>(
 ) -> Stateful<Div> {
     let id_ss: SharedString = id.into();
     let id_for_click = id_ss.to_string();
-    let pill = switch_pill_track(&id_ss, checked, p);
+    let pill = switch_pill_track(&id_ss, checked, p, cx);
     div()
         .id(ElementId::Name(id_ss))
         .flex()
@@ -348,7 +385,7 @@ pub fn switch_row<T: 'static>(
         .hover(|s| s.bg(p.bg_elevated))
         .cursor_pointer()
         .on_click(cx.listener(move |this, ev, w, cx| {
-            mark_switch_toggled(&id_for_click);
+            mark_switch_toggled(&id_for_click, cx);
             handler(this, ev, w, cx);
         }))
         .child(
@@ -389,7 +426,7 @@ pub fn section_heading(title: impl Into<String>, p: &ThemePalette) -> Div {
         .child(title.into())
 }
 
-pub fn fdm_indeterminate_checkbox(checked: bool, indeterminate: bool, p: &ThemePalette) -> Div {
+pub fn ferrite_indeterminate_checkbox(checked: bool, indeterminate: bool, p: &ThemePalette) -> Div {
     let filled = checked || indeterminate;
     div()
         .w(p.spx(16.))
@@ -481,7 +518,7 @@ pub fn switch_row_desc<T: 'static>(
 ) -> Stateful<Div> {
     let id_ss: SharedString = id.into();
     let id_for_click = id_ss.to_string();
-    let pill = switch_pill_track(&id_ss, checked, p);
+    let pill = switch_pill_track(&id_ss, checked, p, cx);
     div()
         .id(ElementId::Name(id_ss))
         .flex()
@@ -495,7 +532,7 @@ pub fn switch_row_desc<T: 'static>(
         .hover(|s| s.bg(p.bg_row_hover))
         .cursor_pointer()
         .on_click(cx.listener(move |this, ev, w, cx| {
-            mark_switch_toggled(&id_for_click);
+            mark_switch_toggled(&id_for_click, cx);
             handler(this, ev, w, cx);
         }))
         .child(
@@ -538,7 +575,7 @@ pub fn snail_switch_btn<T: 'static>(
     let thumb_sz = p.spx(18.);
     let travel = 22.0 * p.ui_scale();
 
-    let inner: AnyElement = if let Some(epoch) = active_switch_epoch(&id_ss) {
+    let inner: AnyElement = if let Some(epoch) = active_switch_epoch(&id_ss, cx) {
         let anim_id = SharedString::from(format!("snail-anim-{id_ss}-{epoch}"));
         div()
             .w(track_w)
@@ -619,7 +656,7 @@ pub fn snail_switch_btn<T: 'static>(
         .id(ElementId::Name(id_ss))
         .cursor_pointer()
         .on_click(cx.listener(move |this, ev, w, cx| {
-            mark_switch_toggled(&id_for_click);
+            mark_switch_toggled(&id_for_click, cx);
             handler(this, ev, w, cx);
         }))
         .child(inner)

@@ -173,25 +173,53 @@ pub fn format_system_user_agent(os: &str, macos_version: Option<&str>) -> String
     format_system_user_agent_for_arch(os, std::env::consts::ARCH, macos_version)
 }
 
+fn compute_system_default_user_agent_blocking() -> String {
+    #[cfg(target_os = "macos")]
+    let macos_ver = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+    #[cfg(not(target_os = "macos"))]
+    let macos_ver: Option<String> = None;
+
+    format_system_user_agent_for_arch(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        macos_ver.as_deref(),
+    )
+}
+
+static SYSTEM_UA: OnceLock<String> = OnceLock::new();
+
+/// Asynchronously initialize and return the cached OS-native browser-style User-Agent string
+/// without blocking a Tokio async worker thread.
+pub async fn warm_system_default_user_agent() -> &'static str {
+    if let Some(ua) = SYSTEM_UA.get() {
+        return ua.as_str();
+    }
+    let ua = tokio::task::spawn_blocking(compute_system_default_user_agent_blocking)
+        .await
+        .unwrap_or_else(|_| {
+            format_system_user_agent_for_arch(std::env::consts::OS, std::env::consts::ARCH, None)
+        });
+    SYSTEM_UA.get_or_init(|| ua).as_str()
+}
+
 /// Cached OS-native browser-style User-Agent string when `use_system_default_user_agent` is enabled.
 pub fn system_default_user_agent() -> &'static str {
-    static UA: OnceLock<String> = OnceLock::new();
-    UA.get_or_init(|| {
-        #[cfg(target_os = "macos")]
-        let macos_ver = std::process::Command::new("sw_vers")
-            .arg("-productVersion")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok());
-        #[cfg(not(target_os = "macos"))]
-        let macos_ver: Option<String> = None;
-
-        format_system_user_agent_for_arch(
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            macos_ver.as_deref(),
-        )
-    })
+    SYSTEM_UA
+        .get_or_init(|| {
+            if matches!(
+                tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()),
+                Ok(tokio::runtime::RuntimeFlavor::MultiThread)
+            ) {
+                tokio::task::block_in_place(compute_system_default_user_agent_blocking)
+            } else {
+                compute_system_default_user_agent_blocking()
+            }
+        })
+        .as_str()
 }
 
 fn xml_escape(input: &str) -> String {
@@ -311,7 +339,7 @@ pub async fn is_default_torrent_client() -> bool {
             .join("Preferences")
             .join("com.apple.LaunchServices")
             .join("com.apple.launchservices.secure.plist");
-        if !plist.exists() {
+        if !tokio::fs::try_exists(&plist).await.unwrap_or(false) {
             return false;
         }
         if let Ok(out) = Command::new("plutil")
@@ -348,6 +376,43 @@ pub async fn is_default_torrent_client() -> bool {
     {
         false
     }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_wwan_blocking() -> bool {
+    let mut default_iface = None;
+    if let Ok(route_content) = std::fs::read_to_string("/proc/net/route") {
+        for line in route_content.lines().skip(1) {
+            let mut fields = line.split_whitespace();
+            let iface = fields.next();
+            let dest = fields.next();
+            if dest == Some("00000000") {
+                default_iface = iface.map(|s| s.to_string());
+                break;
+            }
+        }
+    }
+
+    if let Some(iface) = default_iface {
+        return iface.starts_with("ww")
+            || iface.starts_with("cdc")
+            || iface.starts_with("ppp")
+            || iface.starts_with("lte");
+    }
+
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if (name.starts_with("ww") || name.starts_with("cdc") || name.starts_with("ppp"))
+                && let Ok(operstate) = std::fs::read_to_string(entry.path().join("operstate"))
+                && operstate.trim() == "up"
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Returns `(is_metered_or_cellular, is_roaming)` cached for 5 seconds to avoid spawning processes on every scheduler tick.
@@ -410,38 +475,11 @@ pub async fn detect_network_restrictions() -> (bool, bool) {
     }
     #[cfg(target_os = "linux")]
     {
-        let mut default_iface = None;
-        if let Ok(route_content) = std::fs::read_to_string("/proc/net/route") {
-            for line in route_content.lines().skip(1) {
-                let mut fields = line.split_whitespace();
-                let iface = fields.next();
-                let dest = fields.next();
-                if dest == Some("00000000") {
-                    default_iface = iface.map(|s| s.to_string());
-                    break;
-                }
-            }
-        }
-
-        if let Some(iface) = default_iface {
-            let is_wwan = iface.starts_with("ww")
-                || iface.starts_with("cdc")
-                || iface.starts_with("ppp")
-                || iface.starts_with("lte");
-            if is_wwan {
-                cellular = true;
-            }
-        } else if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if (name.starts_with("ww") || name.starts_with("cdc") || name.starts_with("ppp"))
-                    && let Ok(operstate) = std::fs::read_to_string(entry.path().join("operstate"))
-                    && operstate.trim() == "up"
-                {
-                    cellular = true;
-                    break;
-                }
-            }
+        if tokio::task::spawn_blocking(detect_linux_wwan_blocking)
+            .await
+            .unwrap_or(false)
+        {
+            cellular = true;
         }
 
         if !cellular
@@ -575,6 +613,57 @@ pub fn set_mark_of_the_web(path: &Path, source_url: &str, app_name: &str) -> Res
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn check_linux_power_status_blocking() -> (bool, u8) {
+    let mut on_battery = false;
+    let mut battery_capacity: Option<u8> = None;
+    let mut has_battery = false;
+    let mut ac_online: Option<bool> = None;
+
+    if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let type_file = path.join("type");
+            let supply_type = std::fs::read_to_string(&type_file)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+
+            if supply_type == "mains" || supply_type.contains("ac") {
+                if let Ok(online_str) = std::fs::read_to_string(path.join("online")) {
+                    if online_str.trim() == "1" {
+                        ac_online = Some(true);
+                    } else if online_str.trim() == "0" {
+                        ac_online = Some(false);
+                    }
+                }
+            } else if supply_type == "battery" {
+                has_battery = true;
+                if let Ok(cap_str) = std::fs::read_to_string(path.join("capacity"))
+                    && let Ok(v) = cap_str.trim().parse::<u8>()
+                {
+                    battery_capacity = Some(battery_capacity.map_or(v, |old| old.min(v)));
+                }
+                if let Ok(status_str) = std::fs::read_to_string(path.join("status"))
+                    && status_str.trim().eq_ignore_ascii_case("discharging")
+                {
+                    on_battery = true;
+                }
+            }
+        }
+    }
+
+    if let Some(ac) = ac_online
+        && !ac
+        && has_battery
+    {
+        on_battery = true;
+    }
+
+    let pct = battery_capacity.unwrap_or(100);
+    (on_battery, pct)
+}
+
 /// Check battery and power state: returns `(on_battery, battery_percentage)`.
 pub async fn check_power_status() -> (bool, u8) {
     #[cfg(target_os = "macos")]
@@ -599,53 +688,9 @@ pub async fn check_power_status() -> (bool, u8) {
     }
     #[cfg(target_os = "linux")]
     {
-        let mut on_battery = false;
-        let mut battery_capacity: Option<u8> = None;
-        let mut has_battery = false;
-        let mut ac_online: Option<bool> = None;
-
-        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let type_file = path.join("type");
-                let supply_type = std::fs::read_to_string(&type_file)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_lowercase();
-
-                if supply_type == "mains" || supply_type.contains("ac") {
-                    if let Ok(online_str) = std::fs::read_to_string(path.join("online")) {
-                        if online_str.trim() == "1" {
-                            ac_online = Some(true);
-                        } else if online_str.trim() == "0" {
-                            ac_online = Some(false);
-                        }
-                    }
-                } else if supply_type == "battery" {
-                    has_battery = true;
-                    if let Ok(cap_str) = std::fs::read_to_string(path.join("capacity"))
-                        && let Ok(v) = cap_str.trim().parse::<u8>()
-                    {
-                        battery_capacity = Some(battery_capacity.map_or(v, |old| old.min(v)));
-                    }
-                    if let Ok(status_str) = std::fs::read_to_string(path.join("status"))
-                        && status_str.trim().eq_ignore_ascii_case("discharging")
-                    {
-                        on_battery = true;
-                    }
-                }
-            }
-        }
-
-        if let Some(ac) = ac_online
-            && !ac
-            && has_battery
-        {
-            on_battery = true;
-        }
-
-        let pct = battery_capacity.unwrap_or(100);
-        return (on_battery, pct);
+        return tokio::task::spawn_blocking(check_linux_power_status_blocking)
+            .await
+            .unwrap_or((false, 100));
     }
     #[allow(unreachable_code)]
     (false, 100)
@@ -688,7 +733,7 @@ impl SleepPreventer {
                 if let Ok(child) = std::process::Command::new("systemd-inhibit")
                     .args([
                         "--what=sleep:idle",
-                        "--who=FerriteDM",
+                        "--who=Ferrite",
                         "--why=Active downloads",
                         "--mode=block",
                         "sleep",
@@ -715,23 +760,49 @@ impl Drop for SleepPreventer {
     }
 }
 
+fn substitute_template_placeholders(
+    token: &str,
+    file_str: &str,
+    dir_str: &str,
+    url: &str,
+    title: &str,
+) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut rest = token;
+    while !rest.is_empty() {
+        let matched = [
+            ("{file}", file_str),
+            ("%path%", file_str),
+            ("{path}", file_str),
+            ("%1", file_str),
+            ("{dir}", dir_str),
+            ("{url}", url),
+            ("{title}", title),
+        ]
+        .into_iter()
+        .find_map(|(pat, val)| rest.strip_prefix(pat).map(|after| (val, after)));
+        if let Some((val, after)) = matched {
+            out.push_str(val);
+            rest = after;
+        } else if let Some(ch) = rest.chars().next() {
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
 fn split_template_args(template: &str, record: &DownloadRecord) -> Vec<String> {
     let file_str = record.output_path().to_string_lossy().to_string();
     let dir_str = record.target_dir.to_string_lossy().to_string();
-    let replaced = template
-        .replace("{file}", &file_str)
-        .replace("%path%", &file_str)
-        .replace("{path}", &file_str)
-        .replace("%1", &file_str)
-        .replace("{dir}", &dir_str)
-        .replace("{url}", &record.url)
-        .replace("{title}", &record.title);
 
-    let mut args = Vec::new();
+    let mut raw_tokens = Vec::new();
     let mut cur = String::new();
     let mut in_quotes = false;
     let mut quote_char = '"';
-    for ch in replaced.chars() {
+    let mut has_token = false;
+
+    for ch in template.chars() {
         if in_quotes {
             if ch == quote_char {
                 in_quotes = false;
@@ -741,18 +812,27 @@ fn split_template_args(template: &str, record: &DownloadRecord) -> Vec<String> {
         } else if ch == '"' || ch == '\'' {
             in_quotes = true;
             quote_char = ch;
+            has_token = true;
         } else if ch.is_whitespace() {
-            if !cur.is_empty() {
-                args.push(std::mem::take(&mut cur));
+            if has_token || !cur.is_empty() {
+                raw_tokens.push(std::mem::take(&mut cur));
+                has_token = false;
             }
         } else {
             cur.push(ch);
+            has_token = true;
         }
     }
-    if !cur.is_empty() {
-        args.push(cur);
+    if has_token || !cur.is_empty() {
+        raw_tokens.push(cur);
     }
-    args
+
+    raw_tokens
+        .into_iter()
+        .map(|tok| {
+            substitute_template_placeholders(&tok, &file_str, &dir_str, &record.url, &record.title)
+        })
+        .collect()
 }
 
 pub async fn run_external_completion_app(
@@ -890,5 +970,104 @@ mod tests {
 
         let host_linux_ua = format_system_user_agent("linux", None);
         assert!(host_linux_ua.contains("(X11; Linux "));
+    }
+
+    #[test]
+    fn split_template_args_prevents_argument_splitting_and_flag_injection() {
+        use crate::model::*;
+        use chrono::Utc;
+
+        let target_dir = PathBuf::from("/tmp/dl \"folder\"");
+        let rec = DownloadRecord {
+            id: 1,
+            uuid: "u1".into(),
+            parent_id: None,
+            children_ids: vec![],
+            order_index: 1,
+            download_type: DownloadType::Www,
+            state: DownloadState::Completed,
+            priority: DownloadPriority::Normal,
+            resume_support: ResumeSupport::Present,
+            flags: DownloadFlags::default(),
+            title: "Evil \"Title\" --delete-all 'ok' {url}".into(),
+            url: "https://example.org/watch?a=\"1\"&b='2' --inject {title}".into(),
+            target_dir: target_dir.clone(),
+            file_name: "movie 'cut' --evil.mp4".into(),
+            partial_suffix: ".part".into(),
+            total_bytes: None,
+            downloaded_bytes: 0,
+            uploaded_bytes: 0,
+            download_speed_bps: 0,
+            upload_speed_bps: 0,
+            eta_secs: None,
+            connections_active: 0,
+            etag: None,
+            last_modified: None,
+            file_type: FileType::Video,
+            http: HttpRequestOptions::default(),
+            torrent_info_hash: None,
+            torrent_source: None,
+            tags: vec![],
+            files: vec![],
+            segments: vec![],
+            peers: vec![],
+            trackers: vec![],
+            schedule: None,
+            retry_count: 0,
+            forbid_auto_retry_count: 0,
+            last_error: None,
+            abort_reason: DownloadAbortReason::None,
+            preview_path: None,
+            module_data: serde_json::Value::Null,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+
+        let expected_file = rec.output_path().to_string_lossy().to_string();
+        let expected_dir = target_dir.to_string_lossy().to_string();
+
+        // Default quoted template keeps adversarial path as one arg.
+        assert_eq!(
+            split_template_args("\"{file}\"", &rec),
+            vec![expected_file.clone()]
+        );
+
+        // Unquoted template still keeps spaces, quotes, and --flags inside one arg.
+        assert_eq!(
+            split_template_args("{file}", &rec),
+            vec![expected_file.clone()]
+        );
+
+        // Multi-argument template preserves exact arity and prevents secondary placeholder expansion.
+        let args = split_template_args(
+            "--scan '{file}' --dir={dir} --title \"{title}\" --url '{url}' %path%",
+            &rec,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--scan".to_string(),
+                expected_file.clone(),
+                format!("--dir={expected_dir}"),
+                "--title".to_string(),
+                "Evil \"Title\" --delete-all 'ok' {url}".to_string(),
+                "--url".to_string(),
+                "https://example.org/watch?a=\"1\"&b='2' --inject {title}".to_string(),
+                expected_file,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn async_os_helpers_execute_cleanly() {
+        let ua = warm_system_default_user_agent().await;
+        assert!(ua.contains("Mozilla/5.0"));
+        assert_eq!(ua, system_default_user_agent());
+
+        let _ = is_default_torrent_client().await;
+        let _ = detect_network_restrictions().await;
+        let (_on_batt, pct) = check_power_status().await;
+        assert!(pct <= 100);
     }
 }

@@ -10,7 +10,7 @@ Terminal=false
 StartupNotify=true
 StartupWMClass=ferrite
 Categories=Network;FileTransfer;P2P;
-MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/magnet;application/x-bittorrent;application/vnd.apple.mpegurl;application/x-mpegurl;
+MimeType=x-scheme-handler/magnet;x-scheme-handler/ferrite;application/x-bittorrent;application/vnd.apple.mpegurl;application/x-mpegurl;
 Keywords=download;accelerator;torrent;bittorrent;hls;batch;manager;transfer;daemon;
 Actions=NewDownload;OpenDownloadsFolder;DaemonMode;CLIStatus;
 
@@ -21,7 +21,7 @@ Icon=ferrite
 
 [Desktop Action OpenDownloadsFolder]
 Name=Open Downloads Folder
-Exec=xdg-open Downloads
+Exec=sh -c 'xdg-open "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"'
 
 [Desktop Action DaemonMode]
 Name=Start Background Daemon
@@ -29,6 +29,6 @@ Exec=ferrite daemon
 Icon=ferrite
 
 [Desktop Action CLIStatus]
-Name=Check Status (CLI)
-Exec=ferrite status
+Name=List Downloads (CLI)
+Exec=ferrite list
 Icon=ferrite

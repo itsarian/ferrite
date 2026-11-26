@@ -73,9 +73,8 @@ flowchart TD
         GH_REL["GitHub Release Publication (action-gh-release@v2)"]
     end
 
-    P --> FMT & CLIPPY & DOC & MAC_TEST & LNX_X64_TEST & LNX_ARM_TEST & PKG_CHECK
-    PR --> FMT & CLIPPY & DOC & MAC_TEST & LNX_X64_TEST & LNX_ARM_TEST & PKG_CHECK
-    PR --> SEC
+    P --> FMT & CLIPPY & DOC & MAC_TEST & LNX_X64_TEST & LNX_ARM_TEST & PKG_CHECK & SEC
+    PR --> FMT & CLIPPY & DOC & MAC_TEST & LNX_X64_TEST & LNX_ARM_TEST & PKG_CHECK & SEC
     CRON --> SEC
     T --> META
     WD --> META
@@ -86,7 +85,7 @@ flowchart TD
 | Pipeline | Trigger Events | Purpose | Execution Scope |
 | :--- | :--- | :--- | :--- |
 | **CI** (`ci.yml`) | `push` to `main`, `pull_request` against `main`, manual dispatch | Quality gate: formatting, linting, tests, documentation, packaging sanity | Multi-platform matrix (`macos-latest`, `ubuntu-latest`, `ubuntu-24.04-arm`) |
-| **Security Audit** (`audit.yml`) | Weekly cron schedule (`0 0 * * 0`), `pull_request` modifying `Cargo.*`, pushes, manual dispatch | Supply-chain security: scans dependencies against RustSec Advisory Database | `ubuntu-latest` running `rustsec/audit-check@v2` |
+| **Security Audit** (`audit.yml`) | Weekly cron schedule (`0 0 * * 0`), `push` to `main`, `pull_request` against `main`, manual dispatch | Supply-chain security: scans dependencies against RustSec Advisory Database | `ubuntu-latest` installing `cargo-audit` via `taiki-e/install-action@cargo-audit` |
 | **Release** (`release.yml`) | `push` of tags matching `v*`, manual `workflow_dispatch` (with dry-run/draft/prerelease flags) | Production builds: compiles binaries, packages installers, validates canonical names, calculates unified SHA256, publishes release | Decoupled matrix (`macos-latest` for `arm64` & `x86_64`, `ubuntu-latest` for Linux `x86_64`, `ubuntu-24.04-arm` for Linux `arm64`) |
 
 ### Concurrency Management
@@ -122,7 +121,7 @@ Ferrite enforces the principle of least privilege across all workflows:
 
 ### Continuous Integration (`ci.yml`)
 
-The primary quality gate defined in [.github/workflows/ci.yml](file:///.github/workflows/ci.yml) validates every proposed change. It is partitioned into targeted jobs:
+The primary quality gate defined in [.github/workflows/ci.yml](../.github/workflows/ci.yml) validates every proposed change. It is partitioned into targeted jobs:
 
 #### 1. Code Hygiene & Formatting (`fmt`)
 - **Runner:** `ubuntu-latest`
@@ -145,9 +144,9 @@ The primary quality gate defined in [.github/workflows/ci.yml](file:///.github/w
 The test matrix accommodates crate-specific platform dependencies:
 
 - **macOS (`macos-latest`):**
-  - Runs full workspace verification: `cargo check --workspace` and `cargo test --workspace`.
-  - Exercises the native GPUI desktop application (`crates/ferrite-gui`), macOS sleep prevention APIs (`IOPMAssertionCreateWithName`), and Unix socket IPC.
-  - **Packaging Assets Verification:** Validates script permissions (`chmod +x`), compiles the icon generator via `swift scripts/generate-icon.swift resources`, and verifies that [resources/Ferrite.icns](file:///resources/Ferrite.icns) and [resources/Info.plist](file:///resources/Info.plist) exist and are structurally sound.
+  - Runs full workspace verification: `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --workspace --no-deps`, and `cargo test --workspace`.
+  - Exercises the native GPUI desktop application (`crates/ferrite-gui`), macOS sleep prevention (`caffeinate` CLI), and Unix socket IPC.
+  - **Packaging Assets Verification:** Validates script permissions (`chmod +x`), compiles the icon generator via `swift scripts/generate-icon.swift resources`, verifies that [resources/Ferrite.icns](../resources/Ferrite.icns) and [resources/Info.plist](../resources/Info.plist) exist, checks executable permissions on `package-macos.sh`, `install-cli.sh`, and `uninstall-cli.sh`, and validates shell syntax via `bash -n`.
 - **Linux x86_64 (`ubuntu-latest`) & Linux ARM64 (`ubuntu-24.04-arm`):**
   - Installs required Linux GUI native libraries:
     ```
@@ -172,26 +171,25 @@ The test matrix accommodates crate-specific platform dependencies:
 - **Windows:** Deferred / roadmap; cross-platform OS integration abstraction layer prepared in `ferrite-core` and `ferrite-ipc` for future enablement.
 
 #### 5. Intelligent Caching (`rust-cache@v2`)
-Workflows leverage `Swatinem/rust-cache@v2`, which hashes `Cargo.lock` and workspace configuration. This reduces average build durations from ~8 minutes down to under 90 seconds by persisting `target/` artifacts and `~/.cargo/registry/index`.
+Workflows leverage `Swatinem/rust-cache@v2`, which hashes `Cargo.lock` and workspace configuration to persist `target/` build artifacts and Cargo registry caches across workflow runs.
 
 ---
 
 ### Security Audit (`audit.yml`)
 
-Supply chain security is managed by [.github/workflows/audit.yml](file:///.github/workflows/audit.yml):
+Supply chain security is managed by [.github/workflows/audit.yml](../.github/workflows/audit.yml):
 
-- **Trigger:** Scheduled weekly every Sunday at 00:00 UTC, on pull requests modifying `Cargo.lock` or `Cargo.toml`, or via manual `workflow_dispatch`.
-- **Tooling:** Runs `cargo-audit` backed by the [RustSec Advisory Database](https://rustsec.org).
+- **Trigger:** Scheduled weekly every Sunday at 00:00 UTC (`0 0 * * 0`), on `push` to `main`, on `pull_request` targeting `main`, or via manual `workflow_dispatch`.
+- **Tooling:** Installs `cargo-audit` via `taiki-e/install-action@cargo-audit` on `ubuntu-latest` and executes `cargo audit` against the [RustSec Advisory Database](https://rustsec.org).
 - **Behavior:**
-  - Scans the dependency graph for known security advisories (CVEs, RUSTSEC IDs).
-  - Flags unmaintained crates or yanked versions.
-  - Generates clear annotations in the GitHub Actions summary if vulnerable packages are found.
+  - Scans `Cargo.lock` for known security advisories (CVEs, RUSTSEC IDs) and unmaintained/yanked crates.
+  - Fails the job with a non-zero exit status and prints advisory details in the GitHub Actions log if any vulnerability is detected.
 
 ---
 
 ### Automated Release Pipeline (`release.yml`)
 
-The production release workflow in [.github/workflows/release.yml](file:///.github/workflows/release.yml) is structured as a decoupled multi-stage deployment pipeline: `metadata` -> parallel multi-platform compilation & packaging -> consolidated checksum generation & `publish-release`.
+The production release workflow in [.github/workflows/release.yml](../.github/workflows/release.yml) is structured as a decoupled multi-stage deployment pipeline: `metadata` -> parallel multi-platform compilation & packaging -> consolidated checksum generation & `publish-release`.
 
 #### Release Build Matrix
 
@@ -215,19 +213,19 @@ Every release asset follows the canonical naming format `ferrite-<version>-<os>-
 2. **Stage 2: Parallel Multi-Platform Compilation & Packaging**
    - **macOS Matrix (`build-macos`)**:
      - Builds separate native Apple Silicon (`--arch arm64` -> `aarch64-apple-darwin`) and Intel (`--arch x86_64` -> `x86_64-apple-darwin`) release binaries: `ferrite-gui` (GPUI app), `ferrite` (CLI/daemon), and `ferrite-native-host`.
-     - Generates icon sets via [scripts/generate-icon.swift](file:///scripts/generate-icon.swift).
+     - Generates icon sets via [scripts/generate-icon.swift](../scripts/generate-icon.swift) when `resources/Ferrite.icns` is not yet present.
      - Assembles `Ferrite.app` with ad-hoc codesigning (`codesign --force --deep --sign -`).
      - Packages `.dmg` drag-and-drop disk image via `hdiutil`.
      - Packages `.pkg` flat installer with postinstall script via `pkgbuild`.
-     - Bundles standalone `.zip` app archive and portable `.tar.gz` with [scripts/install-cli.sh](file:///scripts/install-cli.sh).
+     - Bundles standalone `.zip` app archive and portable `.tar.gz` with [scripts/install-cli.sh](../scripts/install-cli.sh).
    - **Linux Matrix (`build-linux`)**:
      - Runs natively across two matrix runners with isolated `rust-cache` keys: `ubuntu-latest` (`x86_64-unknown-linux-gnu`, `--arch x86_64`) and `ubuntu-24.04-arm` (`aarch64-unknown-linux-gnu`, `--arch arm64`).
-     - Installs required Linux GUI native libraries: `cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev`.
-     - Compiles all three binaries: `ferrite-gui` (GPUI desktop app), `ferrite` (CLI/daemon), and `ferrite-native-host`.
+     - Installs required Linux build tools and GUI native headers: `cmake pkg-config libssl-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev dpkg-dev fakeroot rpm appstream wget file`.
+     - Compiles all three binaries with `cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host`.
      - Runs four packaging steps via dedicated scripts (each accepting `--arch <x86_64|arm64> --skip-build`):
        - **`.deb`** via `scripts/package-linux-deb.sh`: Debian-compliant archive with `DEBIAN/control` `Architecture:` set to `amd64` (for `x86_64`) or `arm64` (for ARM64), runtime dependencies, desktop entry, hicolor icon hierarchy, and `postinst`/`postrm` hooks running `update-desktop-database` and `gtk-update-icon-cache`. Output: `ferrite-<version>-linux-<arch>.deb`.
-       - **`.rpm`** via `scripts/package-linux-rpm.sh`: Builds from [resources/linux/ferrite.spec](file:///resources/linux/ferrite.spec) targeting `x86_64` or `aarch64` with Fedora/RHEL/openSUSE runtime `Requires` and `%post`/`%postun` scriptlets. Output: `ferrite-<version>-linux-<arch>.rpm`.
-       - **`.AppImage`** via `scripts/package-linux-appimage.sh`: Self-contained executable built with matching `ARCH=x86_64` / `ARCH=aarch64` and `appimagetool-{x86_64,aarch64}.AppImage`, bundling the application, desktop entry, and icon hierarchy in AppDir format. Output: `ferrite-<version>-linux-<arch>.AppImage`.
+       - **`.rpm`** via `scripts/package-linux-rpm.sh`: Builds from the RPM spec (matching [resources/linux/ferrite.spec](../resources/linux/ferrite.spec)) targeting `x86_64` or `aarch64` with Fedora/RHEL/openSUSE runtime `Requires` and `%post`/`%postun` scriptlets. Output: `ferrite-<version>-linux-<arch>.rpm`.
+       - **`.AppImage`** via `scripts/package-linux-appimage.sh`: Self-contained executable built with matching `ARCH=x86_64` / `ARCH=aarch64` and pinned `appimagetool` (`1.9.1`, verified via SHA-256), bundling the application, desktop entry, and icon hierarchy in AppDir format. Output: `ferrite-<version>-linux-<arch>.AppImage`.
        - **Standalone `.tar.gz`** via `scripts/package-linux-tarball.sh`: Contains `ferrite-gui`, `ferrite`, `ferrite-native-host`, `install.sh`, `uninstall.sh`, README, and licenses. Output: `ferrite-<version>-linux-<arch>.tar.gz`.
    - **Windows:** Deferred / roadmap (not currently built in `release.yml`).
 
@@ -320,14 +318,14 @@ chmod +x scripts/*.sh scripts/*.swift resources/pkg-scripts/*
 swift scripts/generate-icon.swift resources
 
 # Test packaging with pre-existing release binaries (use --arch arm64 or --arch x86_64)
-cargo build --release -p ferrite-gui -p ferrite-cli -p ferrite-native-host
+cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 ./scripts/package-macos.sh --skip-build
 ```
 
 On Linux (`x86_64` or `aarch64`), all four packaging scripts auto-detect the host architecture or accept `--arch <x86_64|arm64>`:
 
 ```bash
-cargo build --release -p ferrite-gui -p ferrite-cli -p ferrite-native-host
+cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 ./scripts/package-linux-tarball.sh --skip-build
 ./scripts/package-linux-deb.sh --skip-build
 ./scripts/package-linux-rpm.sh --skip-build
@@ -336,22 +334,13 @@ cargo build --release -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 
 ### Automated Pre-Commit Hooks
 
-To automatically prevent non-compliant commits from being committed, you can create a Git pre-commit hook in `.git/hooks/pre-commit`:
+To automatically prevent non-compliant commits, run [scripts/setup-git-hooks.sh](../scripts/setup-git-hooks.sh) to install a Git pre-commit hook at `.git/hooks/pre-commit`:
 
 ```bash
-cat << 'EOF' > .git/hooks/pre-commit
-#!/bin/bash
-set -e
-
-echo "==> Running local pre-flight checks..."
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-echo "==> Pre-flight checks passed!"
-EOF
-
-chmod +x .git/hooks/pre-commit
+./scripts/setup-git-hooks.sh
 ```
+
+The installed hook checks `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
 
 ---
 
@@ -362,8 +351,8 @@ chmod +x .git/hooks/pre-commit
 Ferrite adheres to [Semantic Versioning 2.0.0](https://semver.org/):
 
 - **Major (`v1.0.0`):** Incompatible API changes, major protocol overhauls, or breaking database schema migrations.
-- **Minor (`v0.2.0`):** Backwards-compatible new features (e.g., new protocol engine, UI tabs, browser integrations).
-- **Patch (`v0.1.2`):** Backwards-compatible bug fixes, performance optimizations, or documentation revisions.
+- **Minor (`v0.4.0`):** Backwards-compatible new features (e.g., new protocol engine, UI tabs, browser integrations).
+- **Patch (`v0.4.1`):** Backwards-compatible bug fixes, performance optimizations, or documentation revisions.
 
 ### Cutting a Release via Git Tag
 
@@ -373,10 +362,10 @@ Ferrite adheres to [Semantic Versioning 2.0.0](https://semver.org/):
    git pull origin main
    ```
 
-2. **Update Version Numbers:** Update the workspace package version in [Cargo.toml](file:///Cargo.toml):
+2. **Update Version Numbers:** Update the workspace package version in [Cargo.toml](../Cargo.toml):
    ```toml
    [workspace.package]
-   version = "0.1.2"
+   version = "0.4.1"
    ```
    Update the lockfile:
    ```bash
@@ -386,18 +375,18 @@ Ferrite adheres to [Semantic Versioning 2.0.0](https://semver.org/):
 3. **Commit and Tag:**
    ```bash
    git add Cargo.toml Cargo.lock
-   git commit -m "chore(release): prepare v0.1.2"
-   git tag -a v0.1.2 -m "Release v0.1.2"
+   git commit -m "chore(release): prepare v0.4.1"
+   git tag -a v0.4.1 -m "Release v0.4.1"
    ```
 
 4. **Push to GitHub:**
    ```bash
    git push origin main
-   git push origin v0.1.2
+   git push origin v0.4.1
    ```
 
 > [!IMPORTANT]
-> Pushing a tag prefixed with `v` (e.g. `v0.1.2`) automatically triggers the production release pipeline in [.github/workflows/release.yml](file:///.github/workflows/release.yml).
+> Pushing a tag prefixed with `v` (e.g. `v0.4.1`) automatically triggers the production release pipeline in [.github/workflows/release.yml](../.github/workflows/release.yml).
 
 ### Manual Trigger via Workflow Dispatch
 
@@ -405,8 +394,10 @@ Maintainers can trigger a manual or dry-run release directly from the GitHub web
 
 ```bash
 gh workflow run release.yml \
-  -f tag_name="v0.1.2" \
-  -f dry_run=false
+  -f tag_name="v0.4.1" \
+  -f dry_run=false \
+  -f draft=false \
+  -f prerelease=false
 ```
 
 ### Release Asset Specifications
@@ -566,17 +557,23 @@ The workflows rely on the default `GITHUB_TOKEN` automatically provisioned by Gi
 
 ### Environment Variables
 
-The CI and release environments configure the following standard environment variables:
+The workflows and packaging scripts use the following environment variables (note that `ci.yml` and `audit.yml` do not override `CARGO_TERM_COLOR`, `RUST_BACKTRACE`, or `RUSTFLAGS` globally; clippy strictness is passed directly via `-- -D warnings`):
 
-| Variable | Recommended Value | Purpose |
+| Variable | Scope | Purpose |
 | :--- | :--- | :--- |
-| `CARGO_TERM_COLOR` | `always` | Forces colored ANSI output in GitHub Actions step logs. |
-| `RUST_BACKTRACE` | `1` | Produces detailed backtraces if a unit test fails or panics. |
-| `RUSTFLAGS` | `-D warnings` | Treats compilation warnings as fatal errors in CI checks. |
+| `VERSION` | `release.yml`, `scripts/package-*.sh` | Overrides the package version extracted from `Cargo.toml` during release packaging. |
+| `ARCH` | `scripts/package-*.sh` | Overrides host architecture detection (`arm64` / `x86_64`). |
+| `PREFIX` | `scripts/install-cli.sh`, `scripts/install-linux.sh`, `scripts/uninstall-*.sh` | Overrides the install prefix (default `/usr/local` when writable or root, otherwise `~/.local`). |
+| `FERRITE_VERSION` | `scripts/install-cli.sh` | Pins a specific GitHub Release tag/version when installing remotely instead of querying `/releases/latest`. |
+| `FERRITE_REPO` | `scripts/install-cli.sh` | Overrides the GitHub `owner/repo` slug (defaults to `itsarian/ferrite`). |
+| `APPIMAGE_EXTRACT_AND_RUN` | `scripts/package-linux-appimage.sh` | Set to `1` so `appimagetool` runs without FUSE inside container/CI runners. |
+| `FERRITE_THEME` | Runtime (`ferrite-gui`) | Overrides desktop interface theme (`dark`, `light`, or `system`). |
+| `FERRITE_UPDATE_MANIFEST_URL` | Runtime (`ferrite-cli` / `ferrite-gui`) | Custom endpoint for application update manifests. |
+| `HOSTNAME` | Runtime (`ferrite-ipc`) | Hostname used in self-signed TLS certificates for LAN Remote Control. |
 
 ### Future Code Signing & Notarization Roadmap
 
-For commercial or enterprise distributions requiring Apple Developer ID signing and Apple Notarization, the following GitHub Secrets can be introduced into [.github/workflows/release.yml](file:///.github/workflows/release.yml):
+For commercial or enterprise distributions requiring Apple Developer ID signing and Apple Notarization, the following GitHub Secrets can be introduced into [.github/workflows/release.yml](../.github/workflows/release.yml):
 
 - `MACOS_CERTIFICATE_BASE64`: Base64-encoded `.p12` developer certificate.
 - `MACOS_CERTIFICATE_PASSWORD`: Password for the exported `.p12` file.
@@ -610,7 +607,7 @@ xcrun stapler staple "$DMG_PATH"
 - **Fix:**
   - Check if a patched version is available: `cargo update -p <crate-name>`.
   - Re-run `cargo audit` locally.
-  - If no patch exists yet and the vulnerability is unexploitable in Ferrite's architecture, document an exception in `.cargo/audit.toml` with a detailed rationale and review it with maintainers.
+  - If no patch exists yet and the vulnerability is unexploitable in Ferrite's architecture, configure an ignore entry in `.cargo/audit.toml` (creating it if not already present) with a detailed rationale and review it with maintainers.
 
 ### 4. macOS Packaging Fails: `hdiutil create failed`
 - **Error:** `hdiutil: create failed - Resource busy` or destination already exists.
@@ -620,4 +617,4 @@ xcrun stapler staple "$DMG_PATH"
 ### 5. Release Upload Fails with HTTP 403 / 404
 - **Error:** `Resource not accessible by integration` during `action-gh-release`.
 - **Cause:** Missing write permissions on `GITHUB_TOKEN`.
-- **Fix:** Verify that [.github/workflows/release.yml](file:///.github/workflows/release.yml) declares `permissions: { contents: write }` at the root or job level.
+- **Fix:** Verify that [.github/workflows/release.yml](../.github/workflows/release.yml) declares `permissions: { contents: write }` at the root or job level.

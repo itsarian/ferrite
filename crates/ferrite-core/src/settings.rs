@@ -1,8 +1,8 @@
 use crate::model::{
-    BtEncryptionPolicy, ExistingFileReaction, FileType, NotificationEvent, ProxySettings,
-    ScheduleRule, ShutdownType, SortField, TrafficUsageMode,
+    ExistingFileReaction, FileType, NotificationEvent, ProxySettings, ScheduleRule, ShutdownType,
+    SortField, TrafficUsageMode,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -19,8 +19,59 @@ pub enum ThemeMode {
 #[serde(rename_all = "snake_case")]
 pub enum UiStyle {
     #[default]
-    New,
+    #[serde(alias = "new")]
+    Modern,
     Classic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RowDensity {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+impl RowDensity {
+    pub fn is_compact(self) -> bool {
+        matches!(self, Self::Compact)
+    }
+}
+
+fn deserialize_row_density<'de, D>(deserializer: D) -> Result<RowDensity, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct RowDensityVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for RowDensityVisitor {
+        type Value = RowDensity;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a row density string ('comfortable' or 'compact') or boolean")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(if value {
+                RowDensity::Compact
+            } else {
+                RowDensity::Comfortable
+            })
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "comfortable" => Ok(RowDensity::Comfortable),
+                "compact" => Ok(RowDensity::Compact),
+                other => Err(E::unknown_variant(other, &["comfortable", "compact"])),
+            }
+        }
+    }
+
+    deserializer.deserialize_any(RowDensityVisitor)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -130,6 +181,8 @@ pub struct AppSettings {
     pub force_silent_from_torrent_folder: bool,
     pub update_plugins_automatically: bool,
     pub plugins_allow_wb_cookies: bool,
+    #[serde(default)]
+    pub plugins_allow_python: bool,
     pub enable_remote_access: bool,
     pub remote_access_port: u16,
     pub remote_access_bind: String,
@@ -138,6 +191,7 @@ pub struct AppSettings {
     pub autorun_on_login: bool,
     pub quit_confirmation: bool,
     pub theme_mode: ThemeMode,
+    #[serde(default)]
     pub ui_style: UiStyle,
     pub launch_minimized: bool,
     pub enable_standalone_downloads_windows: bool,
@@ -146,7 +200,12 @@ pub struct AppSettings {
     pub toggle_bottom_panel_on_click: bool,
     pub show_save_as_button: bool,
     pub show_support_button: bool,
-    pub compact_downloads_view: bool,
+    #[serde(
+        default,
+        alias = "compact_downloads_view",
+        deserialize_with = "deserialize_row_density"
+    )]
+    pub row_density: RowDensity,
     pub hidden_builtin_tags: Vec<i64>,
     pub overall_zoom_pct: u16,
     pub fonts_zoom_pct: u16,
@@ -161,7 +220,6 @@ pub struct AppSettings {
     pub lt_alerts_logging: bool,
     pub downloads_mgmt_logging: bool,
     pub remote_access_password: String,
-    pub last_remote_app_id: String,
     pub plugins_dev_ignore_sign: bool,
 }
 
@@ -216,6 +274,7 @@ impl Default for AppSettings {
             force_silent_from_torrent_folder: false,
             update_plugins_automatically: false,
             plugins_allow_wb_cookies: true,
+            plugins_allow_python: false,
             enable_remote_access: false,
             remote_access_port: 9443,
             remote_access_bind: "0.0.0.0".into(),
@@ -224,7 +283,7 @@ impl Default for AppSettings {
             autorun_on_login: false,
             quit_confirmation: true,
             theme_mode: ThemeMode::System,
-            ui_style: UiStyle::New,
+            ui_style: UiStyle::Modern,
             launch_minimized: false,
             enable_standalone_downloads_windows: false,
             enable_standalone_create_downloads_windows: false,
@@ -232,7 +291,7 @@ impl Default for AppSettings {
             toggle_bottom_panel_on_click: false,
             show_save_as_button: true,
             show_support_button: false,
-            compact_downloads_view: false,
+            row_density: RowDensity::Comfortable,
             hidden_builtin_tags: Vec::new(),
             overall_zoom_pct: 100,
             fonts_zoom_pct: 100,
@@ -247,7 +306,6 @@ impl Default for AppSettings {
             lt_alerts_logging: false,
             downloads_mgmt_logging: false,
             remote_access_password: String::new(),
-            last_remote_app_id: String::new(),
             plugins_dev_ignore_sign: false,
         }
     }
@@ -255,7 +313,7 @@ impl Default for AppSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct DmCoreSettings {
+pub struct CoreSettings {
     pub default_download_path: PathBuf,
     pub fixed_download_path: bool,
     pub download_path_depends_on_file_type: bool,
@@ -278,7 +336,6 @@ pub struct DmCoreSettings {
     pub prevent_sleep_include_scheduled: bool,
     pub auto_remove_finished: bool,
     pub auto_remove_finished_keep_days: u32,
-    pub antivirus_uid: String,
     pub antivirus_path: Option<PathBuf>,
     pub antivirus_args: String,
     pub auto_launch_antivirus: bool,
@@ -293,12 +350,10 @@ pub struct DmCoreSettings {
     pub bt_session_port: u16,
     pub bt_enable_tracker_list: bool,
     pub bt_tracker_list: Vec<String>,
-    pub bt_encryption_policy: BtEncryptionPolicy,
     pub bt_enable_dht: bool,
     pub bt_enable_utp: bool,
     pub bt_enable_lsd: bool,
     pub bt_enable_port_forwarding: bool,
-    pub bt_enable_pex: bool,
     pub launch_external_on_completion: bool,
     pub external_app_path: Option<PathBuf>,
     pub external_app_args_template: String,
@@ -316,11 +371,10 @@ pub struct DmCoreSettings {
     pub ffmpeg_path: Option<PathBuf>,
     pub yt_dlp_path: Option<PathBuf>,
     pub bt_use_random_port: bool,
-    pub antivirus_custom_mode: bool,
     pub wb_small_size_unit_mb: bool,
 }
 
-impl Default for DmCoreSettings {
+impl Default for CoreSettings {
     fn default() -> Self {
         let default_dl = directories::UserDirs::new()
             .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
@@ -354,7 +408,7 @@ impl Default for DmCoreSettings {
             max_additional_small_downloads: 2,
             max_additional_downloads_if_slow: 2,
             traffic_limits_compliant_mode: true,
-            partial_download_suffix: ".fdmdownload".into(),
+            partial_download_suffix: ".part".into(),
             allow_mobile_networks: true,
             allow_roaming_networks: false,
             take_last_modified_from_server: true,
@@ -365,7 +419,6 @@ impl Default for DmCoreSettings {
             prevent_sleep_include_scheduled: false,
             auto_remove_finished: false,
             auto_remove_finished_keep_days: 30,
-            antivirus_uid: String::new(),
             antivirus_path: None,
             antivirus_args: "\"{file}\"".into(),
             auto_launch_antivirus: false,
@@ -383,12 +436,10 @@ impl Default for DmCoreSettings {
                 "udp://tracker.opentrackr.org:1337/announce".into(),
                 "udp://open.stealth.si:80/announce".into(),
             ],
-            bt_encryption_policy: BtEncryptionPolicy::PreferEncryption,
             bt_enable_dht: true,
             bt_enable_utp: true,
             bt_enable_lsd: true,
             bt_enable_port_forwarding: true,
-            bt_enable_pex: true,
             launch_external_on_completion: false,
             external_app_path: None,
             external_app_args_template: "\"{file}\"".into(),
@@ -406,7 +457,6 @@ impl Default for DmCoreSettings {
             ffmpeg_path: ffmpeg,
             yt_dlp_path: yt_dlp,
             bt_use_random_port: false,
-            antivirus_custom_mode: false,
             wb_small_size_unit_mb: false,
         }
     }
@@ -414,15 +464,15 @@ impl Default for DmCoreSettings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct FdmConfig {
+pub struct FerriteConfig {
     pub app: AppSettings,
-    pub core: DmCoreSettings,
+    pub core: CoreSettings,
     pub path_by_file_type: BTreeMap<FileType, PathBuf>,
     pub path_by_url_hash: BTreeMap<String, PathBuf>,
     pub recent_folders: Vec<PathBuf>,
 }
 
-impl FdmConfig {
+impl FerriteConfig {
     pub fn active_profile(&self) -> TrafficUsageProfile {
         self.core
             .tum_profiles
@@ -431,7 +481,7 @@ impl FdmConfig {
             .unwrap_or_else(|| {
                 TrafficUsageProfile::defaults_map()
                     .remove(&self.core.current_tum)
-                    .unwrap()
+                    .unwrap_or_default()
             })
     }
 
@@ -553,5 +603,62 @@ mod tests {
         assert_eq!(std::fs::read(new_dir.join("config.json")).unwrap(), b"{}");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn settings_defaults_and_legacy_json_compatibility() {
+        let cfg = FerriteConfig::default();
+        assert_eq!(cfg.core.partial_download_suffix, ".part");
+        assert!(!cfg.app.plugins_allow_python);
+        assert_eq!(cfg.app.ui_style, UiStyle::Modern);
+        assert_eq!(cfg.app.row_density, RowDensity::Comfortable);
+        assert!(!cfg.app.row_density.is_compact());
+
+        let legacy_json = r#"{
+            "app": {
+                "ui_style": "new",
+                "compact_downloads_view": true,
+                "last_remote_app_id": "stale-app",
+                "proxy": {
+                    "mode": "system_proxy",
+                    "ftp": { "host": "127.0.0.1", "port": 21, "username": "", "password": "" },
+                    "dont_use_for_remote_access": true
+                }
+            },
+            "core": {
+                "antivirus_uid": "legacy-av",
+                "antivirus_custom_mode": true,
+                "bt_enable_pex": false,
+                "bt_encryption_policy": "prefer_encryption"
+            }
+        }"#;
+        let parsed: FerriteConfig = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.app.ui_style, UiStyle::Modern);
+        assert_eq!(parsed.app.row_density, RowDensity::Compact);
+        assert!(parsed.app.row_density.is_compact());
+        assert!(!parsed.app.plugins_allow_python);
+        assert_eq!(parsed.core.partial_download_suffix, ".part");
+
+        let modern_json = r#"{
+            "app": {
+                "ui_style": "classic",
+                "row_density": "comfortable",
+                "plugins_allow_python": true
+            }
+        }"#;
+        let modern: FerriteConfig = serde_json::from_str(modern_json).unwrap();
+        assert_eq!(modern.app.ui_style, UiStyle::Classic);
+        assert_eq!(modern.app.row_density, RowDensity::Comfortable);
+        assert!(modern.app.plugins_allow_python);
+    }
+
+    #[test]
+    fn active_profile_falls_back_without_panicking_when_profiles_missing() {
+        let mut cfg = FerriteConfig::default();
+        cfg.core.tum_profiles.clear();
+        cfg.core.current_tum = TrafficUsageMode::Low;
+        let prof = cfg.active_profile();
+        assert_eq!(prof.max_download_speed_bps, 512 * 1024);
+        assert_eq!(prof.max_concurrent_downloads, 2);
     }
 }

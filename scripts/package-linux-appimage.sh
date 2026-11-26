@@ -222,23 +222,66 @@ EOF
 chmod 755 "$APPDIR/AppRun"
 
 # 4. Build .AppImage using appimagetool if available
+APPIMAGETOOL_VERSION="1.9.1"
+case "$APPIMAGE_ARCH" in
+    x86_64)
+        APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+        ;;
+    aarch64)
+        APPIMAGETOOL_SHA256="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158"
+        ;;
+    *)
+        echo "Error: No pinned appimagetool SHA-256 configured for ${APPIMAGE_ARCH}." >&2
+        exit 1
+        ;;
+esac
+
+verify_tool_sha256() {
+    local file_path="$1"
+    local expected="$2"
+    local actual=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$file_path" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$file_path" | awk '{print $1}')"
+    else
+        echo "Error: Neither sha256sum nor shasum is available to verify appimagetool." >&2
+        return 1
+    fi
+    [ "$actual" = "$expected" ]
+}
+
 TOOL=""
-TOOL_CACHE="$DIST_DIR/tools/appimagetool-${APPIMAGE_ARCH}"
+TOOL_CACHE="$DIST_DIR/tools/appimagetool-${APPIMAGETOOL_VERSION}-${APPIMAGE_ARCH}.AppImage"
 if command -v appimagetool >/dev/null 2>&1; then
     TOOL="appimagetool"
-elif [ -x "$TOOL_CACHE" ]; then
-    TOOL="$TOOL_CACHE"
-elif [ "$(uname -s)" = "Linux" ]; then
-    mkdir -p "$DIST_DIR/tools"
-    echo "==> Downloading appimagetool for ${APPIMAGE_ARCH}..."
-    TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
-    FALLBACK_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
-    if curl -fsSL -o "${TOOL_CACHE}.tmp" "$TOOL_URL" || curl -fsSL -o "${TOOL_CACHE}.tmp" "$FALLBACK_URL"; then
+else
+    if [ -x "$TOOL_CACHE" ]; then
+        if verify_tool_sha256 "$TOOL_CACHE" "$APPIMAGETOOL_SHA256"; then
+            TOOL="$TOOL_CACHE"
+        else
+            echo "==> Cached appimagetool failed SHA-256 check; removing stale cache..." >&2
+            rm -f "$TOOL_CACHE"
+        fi
+    fi
+
+    if [ -z "$TOOL" ] && [ "$(uname -s)" = "Linux" ]; then
+        mkdir -p "$DIST_DIR/tools"
+        echo "==> Downloading pinned appimagetool ${APPIMAGETOOL_VERSION} for ${APPIMAGE_ARCH}..."
+        TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${APPIMAGE_ARCH}.AppImage"
+        if ! curl -fsSL -o "${TOOL_CACHE}.tmp" "$TOOL_URL"; then
+            rm -f "${TOOL_CACHE}.tmp"
+            echo "Error: Failed to download appimagetool ${APPIMAGETOOL_VERSION} from $TOOL_URL" >&2
+            exit 1
+        fi
+        if ! verify_tool_sha256 "${TOOL_CACHE}.tmp" "$APPIMAGETOOL_SHA256"; then
+            rm -f "${TOOL_CACHE}.tmp"
+            echo "Error: SHA-256 verification failed for downloaded appimagetool ${APPIMAGETOOL_VERSION} (${APPIMAGE_ARCH})." >&2
+            exit 1
+        fi
         mv -f "${TOOL_CACHE}.tmp" "$TOOL_CACHE"
         chmod +x "$TOOL_CACHE"
         TOOL="$TOOL_CACHE"
-    else
-        rm -f "${TOOL_CACHE}.tmp"
     fi
 fi
 

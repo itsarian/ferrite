@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct LocaleStrings {
     pub preferences: &'static str,
@@ -237,7 +238,7 @@ pub const EN_US: LocaleStrings = LocaleStrings {
     disable: "Disable",
     uninstall: "Uninstall",
     empty_hint: "Add URL (⌘N) · Batch generator (⌘B) · Paste from clipboard (⇧⌘V) · Zero telemetry",
-    addons_empty_hint: "Drop FDM-compatible JS parser packages (.fda / .zip / .js) above or click Open Folder.",
+    addons_empty_hint: "Drop JS parser packages (.fda / .zip / .js) above or click Open Folder.",
     url_input_label: "URL, Magnet URI, or .torrent file path",
     save_folder_label: "Save Folder",
     file_name_label: "File Name",
@@ -268,7 +269,7 @@ pub const EN_US: LocaleStrings = LocaleStrings {
     sec_power_sched: "POWER, SLEEP & DEFAULT SCHEDULER",
     sec_post_tools: "POST-PROCESSING & EXTERNAL TOOLS",
     sec_tag_visibility: "BUILT-IN FILTER TAG VISIBILITY",
-    sec_backup_migration: "BACKUP, EXPORT & LEGACY FDM MIGRATION",
+    sec_backup_migration: "BACKUP, EXPORT & IMPORT",
     sec_diag_logging: "DIAGNOSTIC LOGGING",
     sec_diag_archive: "DIAGNOSTICS ARCHIVE",
 };
@@ -380,7 +381,7 @@ pub const DE_DE: LocaleStrings = LocaleStrings {
     disable: "Deaktivieren",
     uninstall: "Deinstallieren",
     empty_hint: "URL hinzufügen (⌘N) · Stapel (⌘B) · Zwischenablage einfügen (⇧⌘V) · Keine Telemetrie",
-    addons_empty_hint: "FDM-kompatible JS-Pakete (.fda / .zip / .js) oben einfügen oder Ordner öffnen.",
+    addons_empty_hint: "JS-Pakete (.fda / .zip / .js) oben einfügen oder Ordner öffnen.",
     url_input_label: "URL, Magnet-URI oder .torrent-Dateipfad",
     save_folder_label: "Zielordner",
     file_name_label: "Dateiname",
@@ -411,7 +412,7 @@ pub const DE_DE: LocaleStrings = LocaleStrings {
     sec_power_sched: "ENERGIE, RUHEMODUS & ZEITPLAN",
     sec_post_tools: "NACHBEARBEITUNG & EXTERNE PROGRAMME",
     sec_tag_visibility: "SICHTBARKEIT STANDARD-TAGS",
-    sec_backup_migration: "SICHERUNG, EXPORT & FDM-MIGRATION",
+    sec_backup_migration: "SICHERUNG, EXPORT & IMPORT",
     sec_diag_logging: "DIAGNOSE-PROTOKOLLIERUNG",
     sec_diag_archive: "DIAGNOSE-ARCHIV",
 };
@@ -517,7 +518,7 @@ pub const FR_FR: LocaleStrings = LocaleStrings {
     disable: "Désactiver",
     uninstall: "Désinstaller",
     empty_hint: "Ajouter URL (⌘N) · Lot (⌘B) · Coller (⇧⌘V) · Zéro télémétrie",
-    addons_empty_hint: "Déposez un module JS FDM (.fda / .zip / .js) ci-dessus ou ouvrez le dossier.",
+    addons_empty_hint: "Déposez un module JS (.fda / .zip / .js) ci-dessus ou ouvrez le dossier.",
     url_input_label: "URL, lien Magnet ou chemin .torrent",
     save_folder_label: "Dossier de destination",
     file_name_label: "Nom du fichier",
@@ -548,7 +549,7 @@ pub const FR_FR: LocaleStrings = LocaleStrings {
     sec_power_sched: "ALIMENTATION, VEILLE & PLANIFICATEUR",
     sec_post_tools: "POST-TRAITEMENT & OUTILS EXTERNES",
     sec_tag_visibility: "VISIBILITÉ DES ÉTIQUETTES INTÉGRÉES",
-    sec_backup_migration: "SAUVEGARDE, EXPORT & MIGRATION FDM",
+    sec_backup_migration: "SAUVEGARDE, EXPORT & IMPORT",
     sec_diag_logging: "JOURNALISATION DIAGNOSTIC",
     sec_diag_archive: "ARCHIVE DE DIAGNOSTIC",
 };
@@ -654,7 +655,7 @@ pub const ES_ES: LocaleStrings = LocaleStrings {
     disable: "Desactivar",
     uninstall: "Desinstalar",
     empty_hint: "Añadir URL (⌘N) · Lotes (⌘B) · Pegar (⇧⌘V) · Sin telemetría",
-    addons_empty_hint: "Coloca paquetes JS de FDM (.fda / .zip / .js) arriba o abre la carpeta.",
+    addons_empty_hint: "Coloca paquetes JS (.fda / .zip / .js) arriba o abre la carpeta.",
     url_input_label: "URL, enlace Magnet o ruta .torrent",
     save_folder_label: "Carpeta de destino",
     file_name_label: "Nombre de archivo",
@@ -685,7 +686,7 @@ pub const ES_ES: LocaleStrings = LocaleStrings {
     sec_power_sched: "ENERGÍA, REPOSO Y PROGRAMADOR",
     sec_post_tools: "POSPROCESAMIENTO Y HERRAMIENTAS",
     sec_tag_visibility: "VISIBILIDAD DE ETIQUETAS INTEGRADAS",
-    sec_backup_migration: "COPIA, EXPORTACIÓN Y MIGRACIÓN FDM",
+    sec_backup_migration: "COPIA, EXPORTACIÓN E IMPORTACIÓN",
     sec_diag_logging: "REGISTRO DE DIAGNÓSTICO",
     sec_diag_archive: "ARCHIVO DE DIAGNÓSTICO",
 };
@@ -791,7 +792,7 @@ pub const JA_JP: LocaleStrings = LocaleStrings {
     disable: "無効",
     uninstall: "削除",
     empty_hint: "URLを追加 (⌘N) · 一括作成 (⌘B) · 貼り付け (⇧⌘V) · テレメトリなし",
-    addons_empty_hint: "FDM互換のJSアドオン (.fda / .zip / .js) を上から追加するかフォルダを開いてください。",
+    addons_empty_hint: "JSアドオン (.fda / .zip / .js) を上から追加するかフォルダを開いてください。",
     url_input_label: "URL、マグネットリンク、または .torrent パス",
     save_folder_label: "保存フォルダ",
     file_name_label: "ファイル名",
@@ -822,7 +823,7 @@ pub const JA_JP: LocaleStrings = LocaleStrings {
     sec_power_sched: "電源、スリープ、既定のスケジュール",
     sec_post_tools: "後処理と外部ツール",
     sec_tag_visibility: "標準フィルタータグの表示",
-    sec_backup_migration: "バックアップ、エクスポート、FDM移行",
+    sec_backup_migration: "バックアップ、エクスポート、インポート",
     sec_diag_logging: "診断ログ",
     sec_diag_archive: "診断アーカイブ",
 };

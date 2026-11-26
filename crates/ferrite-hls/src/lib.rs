@@ -2,22 +2,41 @@ use aes::cipher::{BlockDecryptMut, KeyIvInit};
 use anyhow::{Context, Result, bail};
 use ferrite_core::{
     BandwidthLimiter, DownloadAbortReason, DownloadFileEntry, DownloadPriority, DownloadRecord,
-    DownloadState, FdmConfig, SegmentProgress, SegmentState, os_integration::set_mark_of_the_web,
+    DownloadState, FerriteConfig, SegmentProgress, SegmentState, SslException,
+    os_integration::set_mark_of_the_web,
 };
-use ferrite_http::{ControlCommand, build_http_client, build_request_headers};
+use ferrite_http::{ControlCommand, build_http_client_for_url, build_request_headers};
 use m3u8_rs::{MasterPlaylist, MediaPlaylist, Playlist};
 use reqwest::Client;
-use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, PROXY_AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, PROXY_AUTHORIZATION, RANGE};
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use url::Url;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+
+fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+async fn write_bytes_atomic(tmp_path: &Path, final_path: &Path, data: &[u8]) -> Result<()> {
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(tmp_path)
+        .await?;
+    f.write_all(data).await?;
+    f.flush().await?;
+    f.sync_all().await?;
+    drop(f);
+    tokio::fs::rename(tmp_path, final_path).await?;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct HlsVariantInfo {
@@ -36,7 +55,9 @@ pub struct DashRepresentationInfo {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub init_url: Option<String>,
+    pub init_range: Option<(u64, Option<u64>)>,
     pub segment_urls: Vec<String>,
+    pub segment_ranges: Vec<Option<(u64, Option<u64>)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +150,15 @@ pub async fn inspect_hls_variants(client: &Client, url: &str) -> Result<Vec<HlsV
     }
 }
 
+pub async fn inspect_hls_variants_with_config(
+    config: &FerriteConfig,
+    ssl_exceptions: &[SslException],
+    url: &str,
+) -> Result<Vec<HlsVariantInfo>> {
+    let client = build_http_client_for_url(config, ssl_exceptions, None, url)?;
+    inspect_hls_variants(&client, url).await
+}
+
 fn extract_variants(base: &Url, master: &MasterPlaylist) -> Vec<HlsVariantInfo> {
     let mut list: Vec<HlsVariantInfo> = master
         .variants
@@ -169,7 +199,7 @@ fn extract_audio_rendition(
     None
 }
 
-fn resolve_ffmpeg_binary(config: &FdmConfig) -> Option<PathBuf> {
+fn resolve_ffmpeg_binary(config: &FerriteConfig) -> Option<PathBuf> {
     if let Some(ref p) = config.core.ffmpeg_path
         && p.exists()
     {
@@ -190,7 +220,8 @@ fn resolve_ffmpeg_binary(config: &FdmConfig) -> Option<PathBuf> {
 
 pub async fn download_hls_stream<F>(
     mut record: DownloadRecord,
-    config: &FdmConfig,
+    config: &FerriteConfig,
+    ssl_exceptions: &[SslException],
     limiter: BandwidthLimiter,
     control_rx: watch::Receiver<ControlCommand>,
     mut on_progress: F,
@@ -198,7 +229,12 @@ pub async fn download_hls_stream<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
-    let client = match build_http_client(config, &[], record.http.user_agent.as_deref()) {
+    let client = match build_http_client_for_url(
+        config,
+        ssl_exceptions,
+        record.http.user_agent.as_deref(),
+        &record.url,
+    ) {
         Ok(c) => c,
         Err(e) => {
             record.state = DownloadState::Error;
@@ -230,7 +266,12 @@ where
         match res {
             Ok(OutcomeHls::Completed) => {
                 if config.core.set_mark_of_the_web {
-                    let _ = set_mark_of_the_web(&record.output_path(), &record.url, "FerriteDM");
+                    let out = record.output_path();
+                    let url_c = record.url.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        set_mark_of_the_web(&out, &url_c, "Ferrite")
+                    })
+                    .await;
                 }
                 record.state = DownloadState::Completed;
                 record.download_speed_bps = 0;
@@ -259,7 +300,7 @@ where
             Ok(OutcomeHls::Cancelled) => {
                 if config.core.delete_service_files_when_finished {
                     let work_dir = record.target_dir.join(format!(".{}.hls_tmp", record.uuid));
-                    let _ = std::fs::remove_dir_all(&work_dir);
+                    let _ = tokio::fs::remove_dir_all(&work_dir).await;
                 }
                 record.state = DownloadState::Stopped;
                 record.abort_reason = DownloadAbortReason::AbortedByUser;
@@ -279,7 +320,7 @@ where
                 }
                 if config.core.delete_service_files_when_finished {
                     let work_dir = record.target_dir.join(format!(".{}.hls_tmp", record.uuid));
-                    let _ = std::fs::remove_dir_all(&work_dir);
+                    let _ = tokio::fs::remove_dir_all(&work_dir).await;
                 }
                 record.state = DownloadState::Error;
                 on_progress(&record);
@@ -299,7 +340,7 @@ enum OutcomeHls {
 async fn run_hls_inner<F>(
     client: &Client,
     record: &mut DownloadRecord,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     limiter: &BandwidthLimiter,
     control_rx: watch::Receiver<ControlCommand>,
     on_progress: &mut F,
@@ -330,9 +371,9 @@ where
         Err(e) => bail!("Invalid M3U8 playlist: {e:?}"),
     };
 
-    std::fs::create_dir_all(&record.target_dir)?;
+    tokio::fs::create_dir_all(&record.target_dir).await?;
     let work_dir = record.target_dir.join(format!(".{}.hls_tmp", record.uuid));
-    std::fs::create_dir_all(&work_dir)?;
+    tokio::fs::create_dir_all(&work_dir).await?;
 
     let video_raw_path = if audio_url.is_some() {
         work_dir.join("video_raw.ts")
@@ -358,13 +399,18 @@ where
         if matches!(outcome, OutcomeHls::Cancelled)
             && config.core.delete_service_files_when_finished
         {
-            let _ = std::fs::remove_dir_all(&work_dir);
+            let _ = tokio::fs::remove_dir_all(&work_dir).await;
         }
         return Ok(outcome);
     }
 
     let output_path = record.output_path();
     if let Some(aud_url) = audio_url {
+        let Some(ffmpeg) = resolve_ffmpeg_binary(config) else {
+            bail!(
+                "Separate HLS video and audio streams require FFmpeg for muxing, but ffmpeg was not found"
+            );
+        };
         let audio_raw_path = work_dir.join("audio_raw.aac");
         let a_outcome = download_media_playlist_to_file(
             client,
@@ -383,38 +429,34 @@ where
             if matches!(a_outcome, OutcomeHls::Cancelled)
                 && config.core.delete_service_files_when_finished
             {
-                let _ = std::fs::remove_dir_all(&work_dir);
+                let _ = tokio::fs::remove_dir_all(&work_dir).await;
             }
             return Ok(a_outcome);
         }
 
-        if let Some(ffmpeg) = resolve_ffmpeg_binary(config) {
-            record.state = DownloadState::PostProcessing;
-            on_progress(record);
-            let status = tokio::process::Command::new(ffmpeg)
-                .args(["-y", "-i"])
-                .arg(&video_raw_path)
-                .args(["-i"])
-                .arg(&audio_raw_path)
-                .args(["-c", "copy"])
-                .arg(&output_path)
-                .status()
-                .await?;
-            if !status.success() {
-                bail!("FFmpeg A/V mux exited with status {}", status);
-            }
-        } else {
-            std::fs::rename(&video_raw_path, &output_path)?;
+        record.state = DownloadState::PostProcessing;
+        on_progress(record);
+        let status = tokio::process::Command::new(ffmpeg)
+            .args(["-y", "-i"])
+            .arg(&video_raw_path)
+            .args(["-i"])
+            .arg(&audio_raw_path)
+            .args(["-c", "copy"])
+            .arg(&output_path)
+            .status()
+            .await?;
+        if !status.success() {
+            bail!("FFmpeg A/V mux exited with status {}", status);
         }
     } else if video_raw_path != output_path {
-        if output_path.exists() {
-            let _ = std::fs::remove_file(&output_path);
+        if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+            let _ = tokio::fs::remove_file(&output_path).await;
         }
-        std::fs::rename(&video_raw_path, &output_path)?;
+        tokio::fs::rename(&video_raw_path, &output_path).await?;
     }
 
     if config.core.delete_service_files_when_finished {
-        let _ = std::fs::remove_dir_all(&work_dir);
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
     }
     Ok(OutcomeHls::Completed)
 }
@@ -427,7 +469,7 @@ async fn download_media_playlist_to_file<F>(
     dest_file: &Path,
     seg_dir: &Path,
     record: &mut DownloadRecord,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     limiter: &BandwidthLimiter,
     mut control_rx: watch::Receiver<ControlCommand>,
     on_progress: &mut F,
@@ -435,7 +477,7 @@ async fn download_media_playlist_to_file<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
-    std::fs::create_dir_all(seg_dir)?;
+    tokio::fs::create_dir_all(seg_dir).await?;
     let mut seen_urls = HashSet::<String>::new();
     let mut seq_files: Vec<PathBuf> = Vec::new();
     let total_downloaded = Arc::new(AtomicU64::new(record.downloaded_bytes));
@@ -470,54 +512,78 @@ where
         let mut init_downloaded = false;
         let mut new_jobs: Vec<HlsSegmentJob> = Vec::new();
         let start_seq = media.media_sequence;
+        let mut byte_offset = 0u64;
+        let mut last_byte_range_uri: Option<String> = None;
 
         for (idx, seg) in media.segments.iter().enumerate() {
             if let Some(ref k) = seg.key {
-                if k.method == m3u8_rs::KeyMethod::AES128 {
-                    cur_key_uri = k.uri.as_ref().and_then(|u| resolve_url(&base, u).ok());
-                    cur_iv = k.iv.clone();
-                } else {
-                    cur_key_uri = None;
-                    cur_iv = None;
+                match k.method {
+                    m3u8_rs::KeyMethod::None => {
+                        cur_key_uri = None;
+                        cur_iv = None;
+                    }
+                    m3u8_rs::KeyMethod::AES128 => {
+                        let uri = k.uri.as_deref().context("HLS AES-128 key missing URI")?;
+                        cur_key_uri = Some(resolve_url(&base, uri)?);
+                        cur_iv = k.iv.clone();
+                    }
+                    ref other => {
+                        bail!("Unsupported HLS encryption method: {other:?}");
+                    }
                 }
             }
 
             if !init_downloaded && let Some(ref map) = seg.map {
                 let map_url = resolve_url(&base, &map.uri)?;
-                if seen_urls.insert(format!("MAP:{map_url}")) {
-                    let map_path = seg_dir.join("000000_init.mp4");
-                    let b = client
-                        .get(&map_url)
-                        .headers(headers_for_url(&record.url, &map_url, base_headers))
-                        .send()
-                        .await?
-                        .error_for_status()?
-                        .bytes()
-                        .await?;
-                    limiter.acquire(b.len()).await;
-                    std::fs::write(&map_path, &b)?;
-                    total_downloaded.fetch_add(b.len() as u64, Ordering::Relaxed);
-                    seq_files.push(map_path);
+                let map_range = map
+                    .byte_range
+                    .as_ref()
+                    .map(|r| (r.offset.unwrap_or(0), r.length));
+                let map_key = match map_range {
+                    Some((off, len)) => format!("MAP:{map_url}@{len}#{off}"),
+                    None => format!("MAP:{map_url}"),
+                };
+                if seen_urls.insert(map_key) {
+                    let map_part_path = seg_dir.join("000000_init.mp4.part");
+                    if !tokio::fs::try_exists(&map_part_path).await.unwrap_or(false) {
+                        let mut req = client.get(&map_url).headers(headers_for_url(
+                            &record.url,
+                            &map_url,
+                            base_headers,
+                        ));
+                        if let Some((off, len)) = map_range
+                            && len > 0
+                        {
+                            req = req.header(RANGE, format!("bytes={}-{}", off, off + len - 1));
+                        }
+                        let b = req.send().await?.error_for_status()?.bytes().await?;
+                        limiter.acquire(b.len()).await;
+                        let map_tmp_path = seg_dir.join("000000_init.mp4.tmp");
+                        write_bytes_atomic(&map_tmp_path, &map_part_path, &b).await?;
+                        total_downloaded.fetch_add(b.len() as u64, Ordering::Relaxed);
+                    }
+                    seq_files.push(map_part_path);
                 }
                 init_downloaded = true;
             }
 
             let seg_url = resolve_url(&base, &seg.uri)?;
-            let range_key = seg
-                .byte_range
-                .as_ref()
-                .map(|r| format!("@{}#{}", r.length, r.offset.unwrap_or(0)))
+            let byte_range = seg.byte_range.as_ref().map(|r| {
+                if r.offset.is_none() && last_byte_range_uri.as_deref() != Some(seg_url.as_str()) {
+                    byte_offset = 0;
+                }
+                let off = r.offset.unwrap_or(byte_offset);
+                byte_offset = off.saturating_add(r.length);
+                last_byte_range_uri = Some(seg_url.clone());
+                (off, r.length)
+            });
+            let range_key = byte_range
+                .map(|(off, len)| format!("@{len}#{off}"))
                 .unwrap_or_default();
             let uniq = format!("{seg_url}{range_key}");
             if seen_urls.insert(uniq) {
                 let seq_num = start_seq + idx as u64;
                 let seq_idx = seq_files.len() + new_jobs.len();
-                let mut byte_offset = 0u64;
-                let byte_range = seg.byte_range.as_ref().map(|r| {
-                    let off = r.offset.unwrap_or(byte_offset);
-                    byte_offset = off + r.length;
-                    (off, r.length)
-                });
                 new_jobs.push(HlsSegmentJob {
                     seq_index: seq_idx,
                     url: seg_url,
@@ -574,24 +640,24 @@ where
                         {
                             break;
                         }
-                        let next_job = jobs_q.lock().unwrap().pop_front();
+                        let next_job = lock_mutex(&jobs_q).pop_front();
                         let Some(job) = next_job else {
                             break;
                         };
                         let local_idx = job.seq_index - offset_base;
-                        let part_path = seg_dir.join(format!("{:06}.ts", job.seq_num));
+                        let part_path = seg_dir.join(format!("{:06}.ts.part", job.seq_num));
+                        let tmp_path = seg_dir.join(format!("{:06}.ts.tmp", job.seq_num));
 
-                        if !part_path.exists() {
+                        if !tokio::fs::try_exists(&part_path).await.unwrap_or(false) {
                             let mut req = client.get(&job.url).headers(headers_for_url(
                                 &origin_url,
                                 &job.url,
                                 &base_headers,
                             ));
-                            if let Some((off, len)) = job.byte_range {
-                                req = req.header(
-                                    reqwest::header::RANGE,
-                                    format!("bytes={}-{}", off, off + len - 1),
-                                );
+                            if let Some((off, len)) = job.byte_range
+                                && len > 0
+                            {
+                                req = req.header(RANGE, format!("bytes={}-{}", off, off + len - 1));
                             }
                             let bytes_res = match req.send().await {
                                 Ok(r) => match r.error_for_status() {
@@ -603,7 +669,7 @@ where
                             let mut raw_bytes = match bytes_res {
                                 Ok(b) => b.to_vec(),
                                 Err(e) => {
-                                    let mut g = err_slot.lock().unwrap();
+                                    let mut g = lock_mutex(&err_slot);
                                     if g.is_none() {
                                         *g = Some(format!("HLS segment {} error: {e}", job.url));
                                     }
@@ -614,7 +680,7 @@ where
                             limiter.acquire(raw_bytes.len()).await;
 
                             if let (Some(ref key_url), Some(ref iv)) = (job.key_uri, job.key_iv) {
-                                let cached = key_cache.lock().unwrap().get(key_url).copied();
+                                let cached = lock_mutex(&key_cache).get(key_url).copied();
                                 let key = match cached {
                                     Some(k) => k,
                                     None => match client
@@ -627,26 +693,51 @@ where
                                         .send()
                                         .await
                                     {
-                                        Ok(r) => match r.bytes().await {
-                                            Ok(kb) if kb.len() == 16 => {
-                                                let mut arr = [0u8; 16];
-                                                arr.copy_from_slice(&kb);
-                                                key_cache
-                                                    .lock()
-                                                    .unwrap()
-                                                    .insert(key_url.clone(), arr);
-                                                arr
-                                            }
-                                            _ => {
-                                                let mut g = err_slot.lock().unwrap();
-                                                *g = Some("Invalid AES-128 key length".into());
+                                        Ok(r) => match r.error_for_status() {
+                                            Ok(ok_r) => match ok_r.bytes().await {
+                                                Ok(kb) if kb.len() == 16 => {
+                                                    let mut arr = [0u8; 16];
+                                                    arr.copy_from_slice(&kb);
+                                                    lock_mutex(&key_cache)
+                                                        .insert(key_url.clone(), arr);
+                                                    arr
+                                                }
+                                                Ok(kb) => {
+                                                    let mut g = lock_mutex(&err_slot);
+                                                    if g.is_none() {
+                                                        *g = Some(format!(
+                                                            "Invalid AES-128 key length ({} bytes)",
+                                                            kb.len()
+                                                        ));
+                                                    }
+                                                    cancel_flag.store(true, Ordering::Relaxed);
+                                                    break;
+                                                }
+                                                Err(e) => {
+                                                    let mut g = lock_mutex(&err_slot);
+                                                    if g.is_none() {
+                                                        *g = Some(format!(
+                                                            "Key body read error: {e}"
+                                                        ));
+                                                    }
+                                                    cancel_flag.store(true, Ordering::Relaxed);
+                                                    break;
+                                                }
+                                            },
+                                            Err(e) => {
+                                                let mut g = lock_mutex(&err_slot);
+                                                if g.is_none() {
+                                                    *g = Some(format!("Key fetch HTTP error: {e}"));
+                                                }
                                                 cancel_flag.store(true, Ordering::Relaxed);
                                                 break;
                                             }
                                         },
                                         Err(e) => {
-                                            let mut g = err_slot.lock().unwrap();
-                                            *g = Some(format!("Key fetch error: {e}"));
+                                            let mut g = lock_mutex(&err_slot);
+                                            if g.is_none() {
+                                                *g = Some(format!("Key fetch error: {e}"));
+                                            }
                                             cancel_flag.store(true, Ordering::Relaxed);
                                             break;
                                         }
@@ -655,24 +746,31 @@ where
                                 match decrypt_aes128_cbc(&raw_bytes, &key, iv) {
                                     Ok(pt) => raw_bytes = pt,
                                     Err(e) => {
-                                        let mut g = err_slot.lock().unwrap();
-                                        *g = Some(format!("Segment decrypt error: {e}"));
+                                        let mut g = lock_mutex(&err_slot);
+                                        if g.is_none() {
+                                            *g = Some(format!("Segment decrypt error: {e}"));
+                                        }
                                         cancel_flag.store(true, Ordering::Relaxed);
                                         break;
                                     }
                                 }
                             }
 
-                            if let Err(e) = std::fs::write(&part_path, &raw_bytes) {
-                                let mut g = err_slot.lock().unwrap();
-                                *g = Some(format!("Write segment failed: {e}"));
+                            if let Err(e) =
+                                write_bytes_atomic(&tmp_path, &part_path, &raw_bytes).await
+                            {
+                                let _ = tokio::fs::remove_file(&tmp_path).await;
+                                let mut g = lock_mutex(&err_slot);
+                                if g.is_none() {
+                                    *g = Some(format!("Write segment failed: {e}"));
+                                }
                                 cancel_flag.store(true, Ordering::Relaxed);
                                 break;
                             }
                             total_downloaded.fetch_add(raw_bytes.len() as u64, Ordering::Relaxed);
                         }
 
-                        paths_map.lock().unwrap()[local_idx] = Some(part_path);
+                        lock_mutex(&paths_map)[local_idx] = Some(part_path);
                     }
                 }));
             }
@@ -710,7 +808,7 @@ where
                         slow_accum_secs += dt;
                         if slow_accum_secs >= config.core.unacceptably_slow_interval_secs as f64 {
                             record.abort_reason = DownloadAbortReason::SlowDownload;
-                            *err_slot.lock().unwrap() = Some(format!(
+                            *lock_mutex(&err_slot) = Some(format!(
                                 "HLS speed dropped below {} B/s for {}s",
                                 config.core.unacceptably_slow_speed_bps,
                                 config.core.unacceptably_slow_interval_secs
@@ -737,10 +835,10 @@ where
             if matches!(*control_rx.borrow(), ControlCommand::Cancel) {
                 return Ok(OutcomeHls::Cancelled);
             }
-            if let Some(msg) = err_slot.lock().unwrap().take() {
+            if let Some(msg) = lock_mutex(&err_slot).take() {
                 bail!(msg);
             }
-            let finished_paths = paths_map.lock().unwrap();
+            let finished_paths = lock_mutex(&paths_map);
             for p in finished_paths.iter().flatten() {
                 seq_files.push(p.clone());
             }
@@ -767,18 +865,20 @@ where
     let dest_file_path = dest_file.to_path_buf();
     let seq_files_buf = seq_files.clone();
     let total_written = tokio::task::spawn_blocking(move || -> Result<u64> {
-        let mut out = OpenOptions::new()
+        use std::io::Write;
+        let mut out = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&dest_file_path)?;
         let mut written = 0u64;
         for sp in &seq_files_buf {
-            let mut f = File::open(sp)?;
+            let mut f = std::fs::File::open(sp)?;
             let n = std::io::copy(&mut f, &mut out)?;
             written += n;
         }
         out.flush()?;
+        out.sync_all()?;
         Ok(written)
     })
     .await
@@ -789,125 +889,417 @@ where
     Ok(OutcomeHls::Completed)
 }
 
-/// Minimal DASH MPD parser & downloader supporting SegmentTemplate & SegmentList representations.
+fn resolve_node_base_url(parent_base: &Url, node: roxmltree::Node<'_, '_>) -> Url {
+    if let Some(raw) = node
+        .children()
+        .find(|c| c.has_tag_name("BaseURL"))
+        .and_then(|n| n.text())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && let Ok(joined) = resolve_url(parent_base, raw)
+        && let Ok(parsed) = Url::parse(&joined)
+    {
+        return parsed;
+    }
+    parent_base.clone()
+}
+
+fn parse_iso8601_duration(raw: &str) -> Option<f64> {
+    let s = raw.trim();
+    let rest = s.strip_prefix('P')?;
+    let (date_part, time_part) = rest.split_once('T').unwrap_or((rest, ""));
+    let mut total_secs = 0.0f64;
+
+    if !date_part.is_empty() {
+        let mut num = String::new();
+        for ch in date_part.chars() {
+            if ch.is_ascii_digit() || ch == '.' {
+                num.push(ch);
+            } else {
+                let val: f64 = num.parse().ok()?;
+                num.clear();
+                match ch {
+                    'D' => total_secs += val * 86_400.0,
+                    'W' => total_secs += val * 604_800.0,
+                    'M' => total_secs += val * 2_592_000.0,
+                    'Y' => total_secs += val * 31_536_000.0,
+                    _ => return None,
+                }
+            }
+        }
+    }
+
+    if !time_part.is_empty() {
+        let mut num = String::new();
+        for ch in time_part.chars() {
+            if ch.is_ascii_digit() || ch == '.' {
+                num.push(ch);
+            } else {
+                let val: f64 = num.parse().ok()?;
+                num.clear();
+                match ch {
+                    'H' => total_secs += val * 3600.0,
+                    'M' => total_secs += val * 60.0,
+                    'S' => total_secs += val,
+                    _ => return None,
+                }
+            }
+        }
+    }
+
+    if total_secs > 0.0 && total_secs.is_finite() {
+        Some(total_secs)
+    } else {
+        None
+    }
+}
+
+fn parse_dash_byte_range(raw: &str) -> Option<(u64, Option<u64>)> {
+    let trimmed = raw.trim();
+    let (start_s, end_s) = trimmed.split_once('-')?;
+    let start = start_s.trim().parse::<u64>().ok()?;
+    let end = if end_s.trim().is_empty() {
+        None
+    } else {
+        Some(end_s.trim().parse::<u64>().ok()?)
+    };
+    Some((start, end))
+}
+
+fn format_dash_var(val: u64, spec: &str) -> String {
+    if let Some(fmt) = spec.strip_prefix('%')
+        && let Some(width_s) = fmt.strip_suffix('d')
+        && let Ok(width) = width_s.trim_start_matches('0').parse::<usize>()
+    {
+        return format!("{val:0width$}");
+    }
+    val.to_string()
+}
+
+fn expand_dash_template(
+    template: &str,
+    rep_id: &str,
+    bandwidth: u64,
+    number: Option<u64>,
+    time: Option<u64>,
+) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut chars = template.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        if let Some((_, '$')) = chars.peek().copied() {
+            chars.next();
+            out.push('$');
+            continue;
+        }
+        let rest = &template[idx + 1..];
+        if let Some(end_rel) = rest.find('$') {
+            let token = &rest[..end_rel];
+            let advance_to = idx + 1 + end_rel + 1;
+            while let Some(&(next_idx, _)) = chars.peek() {
+                if next_idx < advance_to {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if token == "RepresentationID" {
+                out.push_str(rep_id);
+            } else if token == "Bandwidth" {
+                out.push_str(&bandwidth.to_string());
+            } else if let Some(spec) = token.strip_prefix("Bandwidth") {
+                if spec.starts_with('%') {
+                    out.push_str(&format_dash_var(bandwidth, spec));
+                } else {
+                    out.push('$');
+                    out.push_str(token);
+                    out.push('$');
+                }
+            } else if token == "Number" {
+                if let Some(n) = number {
+                    out.push_str(&n.to_string());
+                } else {
+                    out.push_str("$Number$");
+                }
+            } else if let Some(spec) = token.strip_prefix("Number") {
+                if let Some(n) = number
+                    && spec.starts_with('%')
+                {
+                    out.push_str(&format_dash_var(n, spec));
+                } else {
+                    out.push('$');
+                    out.push_str(token);
+                    out.push('$');
+                }
+            } else if token == "Time" {
+                if let Some(t) = time {
+                    out.push_str(&t.to_string());
+                } else {
+                    out.push_str("$Time$");
+                }
+            } else if let Some(spec) = token.strip_prefix("Time") {
+                if let Some(t) = time
+                    && spec.starts_with('%')
+                {
+                    out.push_str(&format_dash_var(t, spec));
+                } else {
+                    out.push('$');
+                    out.push_str(token);
+                    out.push('$');
+                }
+            } else {
+                out.push('$');
+                out.push_str(token);
+                out.push('$');
+            }
+        } else {
+            out.push('$');
+        }
+    }
+    out
+}
+
+/// DASH MPD parser supporting SegmentTemplate (timeline & duration-based VOD),
+/// SegmentList, SegmentBase byte-ranges, and BaseURL inheritance.
 pub fn parse_dash_mpd(mpd_url: &str, xml_text: &str) -> Result<Vec<DashRepresentationInfo>> {
     let base = Url::parse(mpd_url)?;
     let doc = roxmltree::Document::parse(xml_text)?;
+    let mpd_node = doc
+        .descendants()
+        .find(|n| n.has_tag_name("MPD"))
+        .unwrap_or_else(|| doc.root_element());
+    let mpd_base = resolve_node_base_url(&base, mpd_node);
+    let mpd_duration_secs = mpd_node
+        .attribute("mediaPresentationDuration")
+        .and_then(parse_iso8601_duration);
+
+    let mut periods: Vec<roxmltree::Node<'_, '_>> = mpd_node
+        .children()
+        .filter(|n| n.has_tag_name("Period"))
+        .collect();
+    if periods.is_empty() {
+        periods.push(mpd_node);
+    }
+
     let mut reps = Vec::new();
 
-    for adap in doc
-        .descendants()
-        .filter(|n| n.has_tag_name("AdaptationSet"))
-    {
-        let adap_mime = adap.attribute("mimeType").unwrap_or("").to_string();
-        let adap_template = adap.children().find(|c| c.has_tag_name("SegmentTemplate"));
-        for rep in adap.children().filter(|c| c.has_tag_name("Representation")) {
-            let id = rep.attribute("id").unwrap_or("0").to_string();
-            let mime = rep
-                .attribute("mimeType")
-                .map(str::to_string)
-                .unwrap_or_else(|| adap_mime.clone());
-            let bandwidth = rep
-                .attribute("bandwidth")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-            let width = rep.attribute("width").and_then(|s| s.parse::<u32>().ok());
-            let height = rep.attribute("height").and_then(|s| s.parse::<u32>().ok());
+    for period in periods {
+        let period_base = if period == mpd_node {
+            mpd_base.clone()
+        } else {
+            resolve_node_base_url(&mpd_base, period)
+        };
+        let period_duration_secs = period
+            .attribute("duration")
+            .and_then(parse_iso8601_duration)
+            .or(mpd_duration_secs);
 
-            let rep_base = rep
-                .children()
-                .find(|c| c.has_tag_name("BaseURL"))
-                .and_then(|n| n.text())
-                .and_then(|t| resolve_url(&base, t.trim()).ok())
-                .unwrap_or_else(|| mpd_url.to_string());
-            let rep_base_url = Url::parse(&rep_base).unwrap_or_else(|_| base.clone());
+        for adap in period
+            .children()
+            .filter(|n| n.has_tag_name("AdaptationSet"))
+        {
+            let adap_base = resolve_node_base_url(&period_base, adap);
+            let adap_mime = adap.attribute("mimeType").unwrap_or("").to_string();
+            let adap_template = adap.children().find(|c| c.has_tag_name("SegmentTemplate"));
+            let adap_seg_base = adap.children().find(|c| c.has_tag_name("SegmentBase"));
 
-            let tmpl = rep
-                .children()
-                .find(|c| c.has_tag_name("SegmentTemplate"))
-                .or(adap_template);
+            for rep in adap.children().filter(|c| c.has_tag_name("Representation")) {
+                let id = rep.attribute("id").unwrap_or("0").to_string();
+                let mime = rep
+                    .attribute("mimeType")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| adap_mime.clone());
+                let bandwidth = rep
+                    .attribute("bandwidth")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let width = rep.attribute("width").and_then(|s| s.parse::<u32>().ok());
+                let height = rep.attribute("height").and_then(|s| s.parse::<u32>().ok());
 
-            let mut init_url = None;
-            let mut segment_urls = Vec::new();
+                let rep_base_url = resolve_node_base_url(&adap_base, rep);
+                let rep_has_base_url = rep.children().any(|c| c.has_tag_name("BaseURL"))
+                    || adap.children().any(|c| c.has_tag_name("BaseURL"));
 
-            if let Some(t) = tmpl {
-                if let Some(init_attr) = t.attribute("initialization") {
-                    let s = init_attr.replace("$RepresentationID$", &id);
-                    init_url = resolve_url(&rep_base_url, &s).ok();
-                }
-                if let Some(media_attr) = t.attribute("media") {
-                    let start_num = t
-                        .attribute("startNumber")
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(1);
-                    if let Some(timeline) = t.children().find(|c| c.has_tag_name("SegmentTimeline"))
-                    {
-                        let mut cur_t = 0u64;
-                        let mut cur_num = start_num;
-                        for seg in timeline.children().filter(|c| c.has_tag_name("S")) {
-                            if let Some(t_val) =
-                                seg.attribute("t").and_then(|s| s.parse::<u64>().ok())
-                            {
-                                cur_t = t_val;
+                let rep_tmpl = rep.children().find(|c| c.has_tag_name("SegmentTemplate"));
+                let tmpl_primary = rep_tmpl.or(adap_template);
+
+                let mut init_url = None;
+                let mut init_range: Option<(u64, Option<u64>)> = None;
+                let mut segment_urls = Vec::new();
+                let mut segment_ranges: Vec<Option<(u64, Option<u64>)>> = Vec::new();
+
+                if let Some(t) = tmpl_primary {
+                    let tmpl_attr = |name: &str| -> Option<&str> {
+                        rep_tmpl
+                            .and_then(|n| n.attribute(name))
+                            .or_else(|| adap_template.and_then(|n| n.attribute(name)))
+                    };
+                    if let Some(init_attr) = tmpl_attr("initialization") {
+                        let s = expand_dash_template(init_attr, &id, bandwidth, None, None);
+                        init_url = resolve_url(&rep_base_url, &s).ok();
+                    }
+                    if let Some(media_attr) = tmpl_attr("media") {
+                        let start_num = tmpl_attr("startNumber")
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(1);
+                        let timeline = rep_tmpl
+                            .and_then(|n| n.children().find(|c| c.has_tag_name("SegmentTimeline")))
+                            .or_else(|| {
+                                adap_template.and_then(|n| {
+                                    n.children().find(|c| c.has_tag_name("SegmentTimeline"))
+                                })
+                            })
+                            .or_else(|| t.children().find(|c| c.has_tag_name("SegmentTimeline")));
+
+                        if let Some(timeline) = timeline {
+                            let mut cur_t = 0u64;
+                            let mut cur_num = start_num;
+                            for seg in timeline.children().filter(|c| c.has_tag_name("S")) {
+                                if let Some(t_val) =
+                                    seg.attribute("t").and_then(|s| s.parse::<u64>().ok())
+                                {
+                                    cur_t = t_val;
+                                }
+                                let d_val = seg
+                                    .attribute("d")
+                                    .and_then(|s| s.parse::<u64>().ok())
+                                    .unwrap_or(0);
+                                let repeat = seg
+                                    .attribute("r")
+                                    .and_then(|s| s.parse::<u64>().ok())
+                                    .unwrap_or(0);
+                                for _ in 0..=repeat {
+                                    let u = expand_dash_template(
+                                        media_attr,
+                                        &id,
+                                        bandwidth,
+                                        Some(cur_num),
+                                        Some(cur_t),
+                                    );
+                                    if let Ok(full) = resolve_url(&rep_base_url, &u) {
+                                        segment_urls.push(full);
+                                        segment_ranges.push(None);
+                                    }
+                                    cur_t += d_val;
+                                    cur_num += 1;
+                                }
                             }
-                            let d_val = seg
-                                .attribute("d")
+                        } else if let (Some(dur), Some(total_secs)) = (
+                            tmpl_attr("duration").and_then(|s| s.parse::<u64>().ok()),
+                            period_duration_secs,
+                        ) && dur > 0
+                        {
+                            let timescale = tmpl_attr("timescale")
                                 .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(0);
-                            let repeat = seg
-                                .attribute("r")
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(0);
-                            for _ in 0..=repeat {
-                                let u = media_attr
-                                    .replace("$RepresentationID$", &id)
-                                    .replace("$Number$", &cur_num.to_string())
-                                    .replace("$Time$", &cur_t.to_string());
+                                .filter(|&ts| ts > 0)
+                                .unwrap_or(1);
+                            let seg_dur_secs = dur as f64 / timescale as f64;
+                            let count =
+                                ((total_secs / seg_dur_secs).ceil() as u64).clamp(1, 100_000);
+                            for i in 0..count {
+                                let cur_num = start_num + i;
+                                let cur_t = i.saturating_mul(dur);
+                                let u = expand_dash_template(
+                                    media_attr,
+                                    &id,
+                                    bandwidth,
+                                    Some(cur_num),
+                                    Some(cur_t),
+                                );
                                 if let Ok(full) = resolve_url(&rep_base_url, &u) {
                                     segment_urls.push(full);
+                                    segment_ranges.push(None);
                                 }
-                                cur_t += d_val;
-                                cur_num += 1;
+                            }
+                        } else {
+                            // Single template entry fallback if duration/timeline unknown
+                            let u = expand_dash_template(
+                                media_attr,
+                                &id,
+                                bandwidth,
+                                Some(start_num),
+                                Some(0),
+                            );
+                            if let Ok(full) = resolve_url(&rep_base_url, &u) {
+                                segment_urls.push(full);
+                                segment_ranges.push(None);
                             }
                         }
-                    } else {
-                        // Single template entry fallback if duration/timeline unknown
-                        let u = media_attr
-                            .replace("$RepresentationID$", &id)
-                            .replace("$Number$", &start_num.to_string());
-                        if let Ok(full) = resolve_url(&rep_base_url, &u) {
-                            segment_urls.push(full);
+                    }
+                } else if let Some(slist) = rep.children().find(|c| c.has_tag_name("SegmentList")) {
+                    if let Some(init_node) =
+                        slist.children().find(|c| c.has_tag_name("Initialization"))
+                    {
+                        init_range = init_node.attribute("range").and_then(parse_dash_byte_range);
+                        if let Some(src) = init_node.attribute("sourceURL") {
+                            init_url = resolve_url(&rep_base_url, src).ok();
+                        } else if init_range.is_some() {
+                            init_url = Some(rep_base_url.to_string());
                         }
                     }
-                }
-            } else if let Some(slist) = rep.children().find(|c| c.has_tag_name("SegmentList")) {
-                if let Some(init) = slist
-                    .children()
-                    .find(|c| c.has_tag_name("Initialization"))
-                    .and_then(|n| n.attribute("sourceURL"))
-                {
-                    init_url = resolve_url(&rep_base_url, init).ok();
-                }
-                for su in slist.children().filter(|c| c.has_tag_name("SegmentURL")) {
-                    if let Some(m) = su.attribute("media")
-                        && let Ok(full) = resolve_url(&rep_base_url, m)
-                    {
-                        segment_urls.push(full);
+                    for su in slist.children().filter(|c| c.has_tag_name("SegmentURL")) {
+                        let range = su.attribute("mediaRange").and_then(parse_dash_byte_range);
+                        let media_url = if let Some(m) = su.attribute("media") {
+                            resolve_url(&rep_base_url, m).ok()
+                        } else if range.is_some() {
+                            Some(rep_base_url.to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(full) = media_url {
+                            segment_urls.push(full);
+                            segment_ranges.push(range);
+                        }
                     }
+                } else if let Some(sbase) = rep
+                    .children()
+                    .find(|c| c.has_tag_name("SegmentBase"))
+                    .or(adap_seg_base)
+                {
+                    let base_str = rep_base_url.to_string();
+                    if let Some(init_node) =
+                        sbase.children().find(|c| c.has_tag_name("Initialization"))
+                    {
+                        let range = init_node.attribute("range").and_then(parse_dash_byte_range);
+                        let resolved_init = init_node
+                            .attribute("sourceURL")
+                            .and_then(|s| resolve_url(&rep_base_url, s).ok())
+                            .unwrap_or_else(|| base_str.clone());
+                        init_url = Some(resolved_init.clone());
+                        init_range = range;
+                        if resolved_init == base_str
+                            && let Some((_, Some(init_end))) = range
+                        {
+                            segment_urls.push(base_str);
+                            segment_ranges.push(Some((init_end.saturating_add(1), None)));
+                        } else {
+                            segment_urls.push(base_str);
+                            segment_ranges.push(None);
+                        }
+                    } else {
+                        segment_urls.push(base_str);
+                        segment_ranges.push(None);
+                    }
+                } else if rep_has_base_url {
+                    segment_urls.push(rep_base_url.to_string());
+                    segment_ranges.push(None);
                 }
-            } else if rep.children().any(|c| c.has_tag_name("BaseURL")) {
-                segment_urls.push(rep_base);
-            }
 
-            reps.push(DashRepresentationInfo {
-                id,
-                mime_type: mime,
-                bandwidth,
-                width,
-                height,
-                init_url,
-                segment_urls,
-            });
+                reps.push(DashRepresentationInfo {
+                    id,
+                    mime_type: mime,
+                    bandwidth,
+                    width,
+                    height,
+                    init_url,
+                    init_range,
+                    segment_urls,
+                    segment_ranges,
+                });
+            }
         }
     }
 
@@ -916,7 +1308,8 @@ pub fn parse_dash_mpd(mpd_url: &str, xml_text: &str) -> Result<Vec<DashRepresent
 
 pub async fn download_dash_stream<F>(
     mut record: DownloadRecord,
-    config: &FdmConfig,
+    config: &FerriteConfig,
+    ssl_exceptions: &[SslException],
     limiter: BandwidthLimiter,
     control_rx: watch::Receiver<ControlCommand>,
     mut on_progress: F,
@@ -924,7 +1317,12 @@ pub async fn download_dash_stream<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
-    let client = match build_http_client(config, &[], record.http.user_agent.as_deref()) {
+    let client = match build_http_client_for_url(
+        config,
+        ssl_exceptions,
+        record.http.user_agent.as_deref(),
+        &record.url,
+    ) {
         Ok(c) => c,
         Err(e) => {
             record.state = DownloadState::Error;
@@ -983,7 +1381,11 @@ where
         .iter()
         .filter(|r| r.mime_type.starts_with("video/") || r.width.is_some())
         .max_by_key(|r| r.bandwidth)
-        .or_else(|| reps.first())
+        .or_else(|| {
+            reps.iter()
+                .filter(|r| !r.mime_type.starts_with("audio/"))
+                .max_by_key(|r| r.bandwidth)
+        })
         .cloned();
     let best_audio = reps
         .iter()
@@ -991,65 +1393,156 @@ where
         .max_by_key(|r| r.bandwidth)
         .cloned();
 
-    let _ = std::fs::create_dir_all(&record.target_dir);
+    if let Err(e) = tokio::fs::create_dir_all(&record.target_dir).await {
+        record.state = DownloadState::Error;
+        record.last_error = Some(format!("Create dir failed: {e}"));
+        return record;
+    }
     let work_dir = record.target_dir.join(format!(".{}.dash_tmp", record.uuid));
-    let _ = std::fs::create_dir_all(&work_dir);
+    if let Err(e) = tokio::fs::create_dir_all(&work_dir).await {
+        record.state = DownloadState::Error;
+        record.last_error = Some(format!("Create work dir failed: {e}"));
+        return record;
+    }
 
     let mut total_done = 0u64;
     let video_path = work_dir.join("video_dash.mp4");
     let audio_path = work_dir.join("audio_dash.m4a");
+    let separate_audio = best_audio
+        .as_ref()
+        .is_some_and(|ar| best_video.as_ref().is_some_and(|v| v.id != ar.id));
+
+    if separate_audio && resolve_ffmpeg_binary(config).is_none() {
+        if config.core.delete_service_files_when_finished {
+            let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        }
+        record.state = DownloadState::Error;
+        record.last_error = Some(
+            "Separate DASH video and audio streams require FFmpeg for muxing, but ffmpeg was not found"
+                .into(),
+        );
+        on_progress(&record);
+        return record;
+    }
 
     record.state = DownloadState::Downloading;
+    let mut ctrl_rx = control_rx;
     if let Some(ref vr) = best_video {
-        if let Err(e) = fetch_dash_rep(
+        match fetch_dash_rep(
             &client,
-            &record.url,
+            &mut record,
+            config,
             &base_headers,
             vr,
             &video_path,
             &limiter,
-            &control_rx,
+            &mut ctrl_rx,
             &mut total_done,
+            &mut on_progress,
         )
         .await
         {
-            if config.core.delete_service_files_when_finished {
-                let _ = std::fs::remove_dir_all(&work_dir);
+            Ok(OutcomeHls::Completed) => {}
+            Ok(OutcomeHls::Paused) => {
+                record.state = DownloadState::Paused;
+                record.download_speed_bps = 0;
+                record.connections_active = 0;
+                on_progress(&record);
+                return record;
             }
-            record.state = DownloadState::Error;
-            record.last_error = Some(e.to_string());
-            return record;
+            Ok(OutcomeHls::Cancelled) => {
+                if config.core.delete_service_files_when_finished {
+                    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                }
+                record.state = DownloadState::Stopped;
+                record.abort_reason = DownloadAbortReason::AbortedByUser;
+                record.download_speed_bps = 0;
+                record.connections_active = 0;
+                on_progress(&record);
+                return record;
+            }
+            Err(e) => {
+                if config.core.delete_service_files_when_finished {
+                    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                }
+                record.state = DownloadState::Error;
+                record.download_speed_bps = 0;
+                record.connections_active = 0;
+                record.last_error = Some(e.to_string());
+                on_progress(&record);
+                return record;
+            }
         }
-        record.downloaded_bytes = total_done;
-        on_progress(&record);
     }
 
     let output_path = record.output_path();
     if let Some(ref ar) = best_audio {
         if best_video.as_ref().map(|v| v.id != ar.id).unwrap_or(true) {
-            if let Err(e) = fetch_dash_rep(
+            let aud_dest = &audio_path;
+            match fetch_dash_rep(
                 &client,
-                &record.url,
+                &mut record,
+                config,
                 &base_headers,
                 ar,
-                &audio_path,
+                aud_dest,
                 &limiter,
-                &control_rx,
+                &mut ctrl_rx,
                 &mut total_done,
+                &mut on_progress,
             )
             .await
             {
-                if config.core.delete_service_files_when_finished {
-                    let _ = std::fs::remove_dir_all(&work_dir);
+                Ok(OutcomeHls::Completed) => {}
+                Ok(OutcomeHls::Paused) => {
+                    record.state = DownloadState::Paused;
+                    record.download_speed_bps = 0;
+                    record.connections_active = 0;
+                    on_progress(&record);
+                    return record;
                 }
-                record.state = DownloadState::Error;
-                record.last_error = Some(e.to_string());
-                return record;
+                Ok(OutcomeHls::Cancelled) => {
+                    if config.core.delete_service_files_when_finished {
+                        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                    }
+                    record.state = DownloadState::Stopped;
+                    record.abort_reason = DownloadAbortReason::AbortedByUser;
+                    record.download_speed_bps = 0;
+                    record.connections_active = 0;
+                    on_progress(&record);
+                    return record;
+                }
+                Err(e) => {
+                    if config.core.delete_service_files_when_finished {
+                        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                    }
+                    record.state = DownloadState::Error;
+                    record.download_speed_bps = 0;
+                    record.connections_active = 0;
+                    record.last_error = Some(e.to_string());
+                    on_progress(&record);
+                    return record;
+                }
             }
-            if let Some(ffmpeg) = resolve_ffmpeg_binary(config) {
+
+            if best_video.is_some() {
+                let Some(ffmpeg) = resolve_ffmpeg_binary(config) else {
+                    if config.core.delete_service_files_when_finished {
+                        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                    }
+                    record.state = DownloadState::Error;
+                    record.last_error = Some(
+                        "Separate DASH video and audio streams require FFmpeg for muxing, but ffmpeg was not found"
+                            .into(),
+                    );
+                    on_progress(&record);
+                    return record;
+                };
                 record.state = DownloadState::PostProcessing;
+                record.download_speed_bps = 0;
+                record.connections_active = 0;
                 on_progress(&record);
-                if let Ok(st) = tokio::process::Command::new(ffmpeg)
+                match tokio::process::Command::new(ffmpeg)
                     .args(["-y", "-i"])
                     .arg(&video_path)
                     .args(["-i"])
@@ -1058,30 +1551,79 @@ where
                     .arg(&output_path)
                     .status()
                     .await
-                    && !st.success()
                 {
-                    let _ = std::fs::rename(&video_path, &output_path);
+                    Ok(st) if st.success() => {}
+                    Ok(st) => {
+                        if config.core.delete_service_files_when_finished {
+                            let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                        }
+                        record.state = DownloadState::Error;
+                        record.last_error =
+                            Some(format!("FFmpeg DASH A/V mux exited with status {st}"));
+                        on_progress(&record);
+                        return record;
+                    }
+                    Err(e) => {
+                        if config.core.delete_service_files_when_finished {
+                            let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                        }
+                        record.state = DownloadState::Error;
+                        record.last_error =
+                            Some(format!("Failed to launch FFmpeg for DASH mux: {e}"));
+                        on_progress(&record);
+                        return record;
+                    }
                 }
             } else {
-                let _ = std::fs::rename(&video_path, &output_path);
+                if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+                    let _ = tokio::fs::remove_file(&output_path).await;
+                }
+                if let Err(e) = tokio::fs::rename(&audio_path, &output_path).await {
+                    record.state = DownloadState::Error;
+                    record.last_error = Some(format!("Finalize rename failed: {e}"));
+                    on_progress(&record);
+                    return record;
+                }
             }
         } else {
-            let _ = std::fs::rename(&video_path, &output_path);
+            if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+                let _ = tokio::fs::remove_file(&output_path).await;
+            }
+            if let Err(e) = tokio::fs::rename(&video_path, &output_path).await {
+                record.state = DownloadState::Error;
+                record.last_error = Some(format!("Finalize rename failed: {e}"));
+                on_progress(&record);
+                return record;
+            }
         }
-    } else {
-        let _ = std::fs::rename(&video_path, &output_path);
+    } else if best_video.is_some() {
+        if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+            let _ = tokio::fs::remove_file(&output_path).await;
+        }
+        if let Err(e) = tokio::fs::rename(&video_path, &output_path).await {
+            record.state = DownloadState::Error;
+            record.last_error = Some(format!("Finalize rename failed: {e}"));
+            on_progress(&record);
+            return record;
+        }
     }
 
     if config.core.delete_service_files_when_finished {
-        let _ = std::fs::remove_dir_all(&work_dir);
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
     }
     if config.core.set_mark_of_the_web {
-        let _ = set_mark_of_the_web(&output_path, &record.url, "FerriteDM");
+        let out_c = output_path.clone();
+        let url_c = record.url.clone();
+        let _ = tokio::task::spawn_blocking(move || set_mark_of_the_web(&out_c, &url_c, "Ferrite"))
+            .await;
     }
-    record.downloaded_bytes = std::fs::metadata(&output_path)
+    record.downloaded_bytes = tokio::fs::metadata(&output_path)
+        .await
         .map(|m| m.len())
         .unwrap_or(total_done);
     record.total_bytes = Some(record.downloaded_bytes);
+    record.download_speed_bps = 0;
+    record.connections_active = 0;
     record.state = DownloadState::Completed;
     record.completed_at = Some(chrono::Utc::now());
     on_progress(&record);
@@ -1089,51 +1631,205 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn fetch_dash_rep(
+async fn fetch_dash_rep<F>(
     client: &Client,
-    origin_url: &str,
+    record: &mut DownloadRecord,
+    config: &FerriteConfig,
     base_headers: &HeaderMap,
     rep: &DashRepresentationInfo,
     out_path: &Path,
     limiter: &BandwidthLimiter,
-    control_rx: &watch::Receiver<ControlCommand>,
+    control_rx: &mut watch::Receiver<ControlCommand>,
     total_done: &mut u64,
-) -> Result<()> {
-    let mut f = File::create(out_path)?;
+    on_progress: &mut F,
+) -> Result<OutcomeHls>
+where
+    F: FnMut(&DownloadRecord) + Send,
+{
+    type DashFetchItem<'a> = (&'a str, Option<(u64, Option<u64>)>);
+    let mut items: Vec<DashFetchItem<'_>> = Vec::new();
     if let Some(ref init_u) = rep.init_url {
-        let b = client
-            .get(init_u)
-            .headers(headers_for_url(origin_url, init_u, base_headers))
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
-        limiter.acquire(b.len()).await;
-        f.write_all(&b)?;
-        *total_done += b.len() as u64;
+        items.push((init_u.as_str(), rep.init_range));
     }
-    for u in &rep.segment_urls {
-        if matches!(
-            *control_rx.borrow(),
-            ControlCommand::Cancel | ControlCommand::Pause
-        ) {
-            bail!("Aborted DASH transfer");
+    for (idx, u) in rep.segment_urls.iter().enumerate() {
+        let r = rep.segment_ranges.get(idx).copied().flatten();
+        items.push((u.as_str(), r));
+    }
+
+    record.segments = items
+        .iter()
+        .enumerate()
+        .map(|(i, (u, _))| SegmentProgress {
+            id: i as u32,
+            start: i as u64,
+            end: i as u64,
+            downloaded: 0,
+            state: SegmentState::Pending,
+            speed_bps: 0,
+            mirror_url: Some((*u).to_string()),
+        })
+        .collect();
+    record.connections_active = 1;
+    on_progress(record);
+
+    let tmp_path = out_path.with_extension("tmp");
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .await?;
+
+    let mut last_tick = tokio::time::Instant::now();
+    let mut bytes_since_tick = 0u64;
+    let mut slow_accum_secs = 0.0f64;
+
+    for (idx, (u, range_opt)) in items.into_iter().enumerate() {
+        let cmd = control_rx.borrow().clone();
+        match cmd {
+            ControlCommand::Pause => {
+                let _ = f.flush().await;
+                drop(f);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Ok(OutcomeHls::Paused);
+            }
+            ControlCommand::Cancel => {
+                drop(f);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Ok(OutcomeHls::Cancelled);
+            }
+            ControlCommand::Run => {}
         }
-        let b = client
+
+        if let Some(seg) = record.segments.get_mut(idx) {
+            seg.state = SegmentState::Active;
+        }
+        on_progress(record);
+
+        let mut req = client
             .get(u)
-            .headers(headers_for_url(origin_url, u, base_headers))
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
-        limiter.acquire(b.len()).await;
-        f.write_all(&b)?;
-        *total_done += b.len() as u64;
+            .headers(headers_for_url(&record.url, u, base_headers));
+        if let Some((start, end_opt)) = range_opt {
+            let hdr_val = match end_opt {
+                Some(end) => format!("bytes={start}-{end}"),
+                None => format!("bytes={start}-"),
+            };
+            req = req.header(RANGE, hdr_val);
+        }
+
+        let resp = tokio::select! {
+            res = req.send() => res?.error_for_status()?,
+            changed = control_rx.changed() => {
+                if changed.is_ok() {
+                    let cmd = control_rx.borrow().clone();
+                    match cmd {
+                        ControlCommand::Pause => {
+                            let _ = f.flush().await;
+                            drop(f);
+                            let _ = tokio::fs::remove_file(&tmp_path).await;
+                            return Ok(OutcomeHls::Paused);
+                        }
+                        ControlCommand::Cancel => {
+                            drop(f);
+                            let _ = tokio::fs::remove_file(&tmp_path).await;
+                            return Ok(OutcomeHls::Cancelled);
+                        }
+                        ControlCommand::Run => {}
+                    }
+                }
+                bail!("DASH control channel interrupted");
+            }
+        };
+
+        let mut resp = resp;
+        let mut seg_bytes = 0u64;
+        loop {
+            tokio::select! {
+                changed = control_rx.changed() => {
+                    if changed.is_ok() {
+                        let cmd = control_rx.borrow().clone();
+                        match cmd {
+                            ControlCommand::Pause => {
+                                let _ = f.flush().await;
+                                drop(f);
+                                let _ = tokio::fs::remove_file(&tmp_path).await;
+                                return Ok(OutcomeHls::Paused);
+                            }
+                            ControlCommand::Cancel => {
+                                drop(f);
+                                let _ = tokio::fs::remove_file(&tmp_path).await;
+                                return Ok(OutcomeHls::Cancelled);
+                            }
+                            ControlCommand::Run => {}
+                        }
+                    }
+                }
+                chunk_res = resp.chunk() => {
+                    match chunk_res? {
+                        Some(chunk) => {
+                            limiter.acquire(chunk.len()).await;
+                            f.write_all(&chunk).await?;
+                            let n = chunk.len() as u64;
+                            *total_done += n;
+                            seg_bytes += n;
+                            bytes_since_tick += n;
+                            record.downloaded_bytes = *total_done;
+                            let now = tokio::time::Instant::now();
+                            let dt = now.duration_since(last_tick).as_secs_f64();
+                            if dt >= 0.25 {
+                                let speed = (bytes_since_tick as f64 / dt) as u64;
+                                bytes_since_tick = 0;
+                                last_tick = now;
+                                record.download_speed_bps = speed;
+                                if let Some(seg) = record.segments.get_mut(idx) {
+                                    seg.downloaded = seg_bytes;
+                                    seg.speed_bps = speed;
+                                }
+                                record.updated_at = chrono::Utc::now();
+                                on_progress(record);
+                                if config.core.detect_unacceptably_slow {
+                                    if speed < config.core.unacceptably_slow_speed_bps {
+                                        slow_accum_secs += dt;
+                                        if slow_accum_secs >= config.core.unacceptably_slow_interval_secs as f64 {
+                                            record.abort_reason = DownloadAbortReason::SlowDownload;
+                                            bail!(
+                                                "DASH speed dropped below {} B/s for {}s",
+                                                config.core.unacceptably_slow_speed_bps,
+                                                config.core.unacceptably_slow_interval_secs
+                                            );
+                                        }
+                                    } else {
+                                        slow_accum_secs = 0.0;
+                                    }
+                                }
+                            } else if let Some(seg) = record.segments.get_mut(idx) {
+                                seg.downloaded = seg_bytes;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        if let Some(seg) = record.segments.get_mut(idx) {
+            seg.downloaded = seg_bytes;
+            seg.state = SegmentState::Completed;
+            seg.speed_bps = record.download_speed_bps;
+        }
+        record.downloaded_bytes = *total_done;
+        record.updated_at = chrono::Utc::now();
+        on_progress(record);
     }
-    f.flush()?;
-    Ok(())
+
+    f.flush().await?;
+    f.sync_all().await?;
+    drop(f);
+    if tokio::fs::try_exists(out_path).await.unwrap_or(false) {
+        let _ = tokio::fs::remove_file(out_path).await;
+    }
+    tokio::fs::rename(&tmp_path, out_path).await?;
+    Ok(OutcomeHls::Completed)
 }
 
 #[cfg(test)]
@@ -1215,7 +1911,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
         cfg.core.delete_service_files_when_finished = true;
 
@@ -1235,7 +1931,7 @@ mod tests {
             url: url.clone(),
             target_dir: dir.clone(),
             file_name: "stream.ts".into(),
-            partial_suffix: ".fdmdownload".into(),
+            partial_suffix: ".part".into(),
             total_bytes: None,
             downloaded_bytes: 0,
             uploaded_bytes: 0,
@@ -1270,7 +1966,7 @@ mod tests {
         };
 
         let (_tx, rx) = watch::channel(ControlCommand::Run);
-        let done = download_hls_stream(rec, &cfg, BandwidthLimiter::new(0), rx, |_| {}).await;
+        let done = download_hls_stream(rec, &cfg, &[], BandwidthLimiter::new(0), rx, |_| {}).await;
         assert_eq!(
             done.state,
             DownloadState::Completed,
@@ -1373,7 +2069,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("ferrite_hls_403_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
         cfg.core.delete_service_files_when_finished = true;
 
@@ -1393,7 +2089,7 @@ mod tests {
             url: url.clone(),
             target_dir: dir.clone(),
             file_name: "protected.ts".into(),
-            partial_suffix: ".fdmdownload".into(),
+            partial_suffix: ".part".into(),
             total_bytes: None,
             downloaded_bytes: 0,
             uploaded_bytes: 0,
@@ -1430,7 +2126,7 @@ mod tests {
         };
 
         let (_tx, rx) = watch::channel(ControlCommand::Run);
-        let done = download_hls_stream(rec, &cfg, BandwidthLimiter::new(0), rx, |_| {}).await;
+        let done = download_hls_stream(rec, &cfg, &[], BandwidthLimiter::new(0), rx, |_| {}).await;
         assert_eq!(
             done.state,
             DownloadState::Completed,
@@ -1440,6 +2136,451 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.join("protected.ts")).unwrap(),
             seg_payload
+        );
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_hls_or_dash_record(
+        url: String,
+        dir: &Path,
+        file_name: &str,
+        dtype: DownloadType,
+    ) -> DownloadRecord {
+        DownloadRecord {
+            id: 10,
+            uuid: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            children_ids: vec![],
+            order_index: 10,
+            download_type: dtype,
+            state: DownloadState::Queued,
+            priority: DownloadPriority::Normal,
+            resume_support: ResumeSupport::Present,
+            flags: DownloadFlags::default(),
+            title: file_name.into(),
+            url: url.clone(),
+            target_dir: dir.to_path_buf(),
+            file_name: file_name.into(),
+            partial_suffix: ".part".into(),
+            total_bytes: None,
+            downloaded_bytes: 0,
+            uploaded_bytes: 0,
+            download_speed_bps: 0,
+            upload_speed_bps: 0,
+            eta_secs: None,
+            connections_active: 0,
+            etag: None,
+            last_modified: None,
+            file_type: ferrite_core::FileType::Video,
+            http: HttpRequestOptions {
+                url,
+                ..Default::default()
+            },
+            torrent_info_hash: None,
+            torrent_source: None,
+            tags: vec![],
+            files: vec![],
+            segments: vec![],
+            peers: vec![],
+            trackers: vec![],
+            schedule: None,
+            retry_count: 0,
+            forbid_auto_retry_count: 0,
+            last_error: None,
+            abort_reason: DownloadAbortReason::None,
+            preview_path: None,
+            module_data: serde_json::Value::Null,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            completed_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn hls_byterange_tracks_cumulative_offset_across_segments() {
+        let full_blob = Arc::new(b"AAAAAA_BBBB_CCCCC".to_vec());
+        let blob_srv = Arc::clone(&full_blob);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let blob = Arc::clone(&blob_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    if path == "/range.m3u8" {
+                        let m3u8 = b"#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\n#EXT-X-BYTERANGE:6@0\n/stream.mp4\n#EXTINF:4.0,\n#EXT-X-BYTERANGE:5\n/stream.mp4\n#EXTINF:4.0,\n#EXT-X-BYTERANGE:6\n/stream.mp4\n#EXT-X-ENDLIST\n";
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            m3u8.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(m3u8).await;
+                        return;
+                    }
+                    let range_hdr = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string());
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(blob.len() - 1)
+                            .min(blob.len() - 1);
+                        let slice = &blob[start..=end];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            blob.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(slice).await;
+                    }
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_hls_br_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.auto_retry_failed = false;
+
+        let rec = make_hls_or_dash_record(
+            format!("http://{addr}/range.m3u8"),
+            &dir,
+            "range.mp4",
+            DownloadType::HlsM3u8,
+        );
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done = download_hls_stream(rec, &cfg, &[], BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(std::fs::read(dir.join("range.mp4")).unwrap(), *full_blob);
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hls_rejects_unsupported_encryption_method() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let body = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"/key.bin\"\n#EXTINF:4.0,\n/seg0.ts\n#EXT-X-ENDLIST\n";
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(body).await;
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_hls_enc_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.auto_retry_failed = false;
+
+        let rec = make_hls_or_dash_record(
+            format!("http://{addr}/sample.m3u8"),
+            &dir,
+            "sample.ts",
+            DownloadType::HlsM3u8,
+        );
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done = download_hls_stream(rec, &cfg, &[], BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(done.state, DownloadState::Error);
+        assert!(
+            done.last_error
+                .as_deref()
+                .is_some_and(|m| m.contains("Unsupported HLS encryption method")),
+            "unexpected error: {:?}",
+            done.last_error
+        );
+        assert!(!dir.join("sample.ts").exists());
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hls_fails_when_aes_key_endpoint_returns_http_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    match path {
+                        "/media.m3u8" => {
+                            let body = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-KEY:METHOD=AES-128,URI=\"/key.bin\"\n#EXTINF:4.0,\n/seg0.ts\n#EXT-X-ENDLIST\n";
+                            let hdr = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = sock.write_all(hdr.as_bytes()).await;
+                            let _ = sock.write_all(body).await;
+                        }
+                        "/key.bin" => {
+                            let err_body = b"0123456789abcdef"; // 16-byte 403 body!
+                            let hdr = format!(
+                                "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                err_body.len()
+                            );
+                            let _ = sock.write_all(hdr.as_bytes()).await;
+                            let _ = sock.write_all(err_body).await;
+                        }
+                        _ => {
+                            let body = [0xAAu8; 16];
+                            let hdr = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = sock.write_all(hdr.as_bytes()).await;
+                            let _ = sock.write_all(&body).await;
+                        }
+                    }
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_hls_key403_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.auto_retry_failed = false;
+
+        let rec = make_hls_or_dash_record(
+            format!("http://{addr}/media.m3u8"),
+            &dir,
+            "k403.ts",
+            DownloadType::HlsM3u8,
+        );
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done = download_hls_stream(rec, &cfg, &[], BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(done.state, DownloadState::Error);
+        assert!(
+            done.last_error
+                .as_deref()
+                .is_some_and(|m| m.contains("Key fetch HTTP error")),
+            "expected Key fetch HTTP error, got: {:?}",
+            done.last_error
+        );
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_dash_duration_template_formatting_and_baseurl_inheritance() {
+        let xml = r#"<?xml version="1.0"?>
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <BaseURL>https://cdn.example.com/root/</BaseURL>
+          <Period>
+            <BaseURL>v1/</BaseURL>
+            <AdaptationSet mimeType="video/mp4">
+              <BaseURL>media/</BaseURL>
+              <Representation id="hd" bandwidth="2500000" width="1280" height="720">
+                <SegmentTemplate
+                  initialization="init-$RepresentationID$-$Bandwidth$.mp4"
+                  media="chunk-$RepresentationID$-$Number%04d$-$Bandwidth$.m4s"
+                  startNumber="1"
+                  duration="5000"
+                  timescale="1000"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>"#;
+        let reps = parse_dash_mpd("https://origin.example.com/manifest.mpd", xml).unwrap();
+        assert_eq!(reps.len(), 1);
+        assert_eq!(
+            reps[0].init_url.as_deref(),
+            Some("https://cdn.example.com/root/v1/media/init-hd-2500000.mp4")
+        );
+        assert_eq!(
+            reps[0].segment_urls,
+            vec![
+                "https://cdn.example.com/root/v1/media/chunk-hd-0001-2500000.m4s",
+                "https://cdn.example.com/root/v1/media/chunk-hd-0002-2500000.m4s",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_dash_segment_base_byte_ranges() {
+        let xml = r#"<?xml version="1.0"?>
+        <MPD type="static" mediaPresentationDuration="PT30S">
+          <Period>
+            <AdaptationSet mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000000" width="640" height="360">
+                <BaseURL>single.mp4</BaseURL>
+                <SegmentBase indexRange="500-699">
+                  <Initialization range="0-499"/>
+                </SegmentBase>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>"#;
+        let reps = parse_dash_mpd("https://cdn.example.com/dash/manifest.mpd", xml).unwrap();
+        assert_eq!(reps.len(), 1);
+        assert_eq!(
+            reps[0].init_url.as_deref(),
+            Some("https://cdn.example.com/dash/single.mp4")
+        );
+        assert_eq!(reps[0].init_range, Some((0, Some(499))));
+        assert_eq!(
+            reps[0].segment_urls,
+            vec!["https://cdn.example.com/dash/single.mp4"]
+        );
+        assert_eq!(reps[0].segment_ranges, vec![Some((500, None))]);
+    }
+
+    #[tokio::test]
+    async fn dash_pause_returns_paused_and_emits_segment_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    if path == "/manifest.mpd" {
+                        let xml = br#"<?xml version="1.0"?>
+                        <MPD type="static" mediaPresentationDuration="PT6S">
+                          <Period>
+                            <AdaptationSet mimeType="video/mp4">
+                              <Representation id="v1" bandwidth="500000" width="640" height="360">
+                                <SegmentTemplate initialization="init.mp4" media="seg-$Number%02d$.m4s" startNumber="1" duration="2000" timescale="1000"/>
+                              </Representation>
+                            </AdaptationSet>
+                          </Period>
+                        </MPD>"#;
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/dash+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            xml.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(xml).await;
+                        return;
+                    }
+                    let chunk = vec![0x5Au8; 16 * 1024];
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        chunk.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&chunk).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_dash_pause_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.delete_service_files_when_finished = true;
+
+        // Part 1: Verify full completion emits SegmentProgress entries.
+        let rec_ok = make_hls_or_dash_record(
+            format!("http://{addr}/manifest.mpd"),
+            &dir,
+            "dash_full.mp4",
+            DownloadType::Dash,
+        );
+        let (_tx1, rx1) = watch::channel(ControlCommand::Run);
+        let mut saw_segments = false;
+        let done = download_dash_stream(rec_ok, &cfg, &[], BandwidthLimiter::new(0), rx1, |snap| {
+            if !snap.segments.is_empty() {
+                saw_segments = true;
+            }
+        })
+        .await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert!(saw_segments, "expected DASH progress updates with segments");
+        assert_eq!(done.downloaded_bytes, 4 * 16 * 1024);
+
+        // Part 2: Verify ControlCommand::Pause results in DownloadState::Paused (not Error).
+        let rec_pause = make_hls_or_dash_record(
+            format!("http://{addr}/manifest.mpd"),
+            &dir,
+            "dash_paused.mp4",
+            DownloadType::Dash,
+        );
+        let (tx2, rx2) = watch::channel(ControlCommand::Run);
+        let sent_pause = Arc::new(AtomicBool::new(false));
+        let paused = download_dash_stream(
+            rec_pause,
+            &cfg,
+            &[],
+            BandwidthLimiter::new(0),
+            rx2,
+            |snap| {
+                if snap.downloaded_bytes >= 16 * 1024 && !sent_pause.swap(true, Ordering::SeqCst) {
+                    let _ = tx2.send(ControlCommand::Pause);
+                }
+            },
+        )
+        .await;
+        assert_eq!(
+            paused.state,
+            DownloadState::Paused,
+            "expected Paused state, got {:?} (err={:?})",
+            paused.state,
+            paused.last_error
         );
 
         srv.abort();

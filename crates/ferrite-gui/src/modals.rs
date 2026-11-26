@@ -1,17 +1,17 @@
 use crate::app::{ActiveModal, FerriteApp};
-use crate::helpers::{available_disk_space_bytes, expand_path_preview, format_bytes};
+use crate::helpers::{expand_path_preview, format_bytes};
 use crate::i18n;
 use crate::qr_view::render_qr_element;
 use crate::theme::{ThemePalette, parse_hex_color};
 use crate::ui_widgets::{
-    action_btn, badge_themed, chip_toggle, danger_btn, ellipsis_text, fdm_checkbox, ghost_icon_btn,
-    labeled_field, password_field_row, svg_icon, switch_row,
+    action_btn, badge_themed, chip_toggle, danger_btn, ellipsis_text, ferrite_checkbox,
+    ghost_icon_btn, labeled_field, password_field_row, svg_icon, switch_row,
 };
 use ferrite_batch::{expand_batch_pattern, parse_batch_text_input};
 use ferrite_core::{DownloadId, DownloadPriority, FileExistsAction, HashAlgorithm};
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, FontWeight, MouseButton, SharedString,
-    Window, div, ease_out_quint, prelude::*, px,
+    Window, div, ease_out_quint, prelude::*, px, uniform_list,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -120,7 +120,7 @@ pub fn render_active_modal(
         ActiveModal::RemoteQr => Some(render_remote_qr_modal(app, cx)),
         ActiveModal::EditTag { id } => Some(render_edit_tag_modal(app, id, cx)),
         ActiveModal::ChangeSource { id } => Some(render_change_source_modal(app, id, cx)),
-        ActiveModal::MoveDir { id } => Some(render_move_dir_modal(app, id, cx)),
+        ActiveModal::MoveDir { ids } => Some(render_move_dir_modal(app, ids, cx)),
         ActiveModal::RenameDownload { id } => Some(render_rename_modal(app, id, cx)),
         ActiveModal::DownloadSchedule { id } => Some(render_schedule_modal(app, id, cx)),
         ActiveModal::DeleteConfirm { ids } => Some(render_delete_confirm_modal(app, ids, cx)),
@@ -150,7 +150,11 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
     let dir_str = app.add_dir_input.read(cx).text();
     let name_str = app.add_name_input.read(cx).text();
     let expanded_dir = expand_path_preview(&dir_str, &raw_url, &name_str);
-    let free_space_txt = available_disk_space_bytes(std::path::Path::new(&expanded_dir))
+    let free_space_txt = app
+        .cached_add_disk_free
+        .as_ref()
+        .filter(|(cached_dir, _)| cached_dir == &expanded_dir)
+        .and_then(|(_, b)| *b)
         .map(|b| format!("Free space: {}", format_bytes(b)))
         .unwrap_or_else(|| "Free space: --".into());
 
@@ -299,58 +303,70 @@ fn render_add_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> AnyEl
                                 ),
                         )
                         .child(
-                            div()
-                                .max_h(p.spx(145.))
-                                .id("add-torrent-files-scroll")
-                                .overflow_y_scroll()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .children(out.files.iter().map(|f| {
-                                    let fi = f.index;
-                                    let checked = sel_files.contains(&fi);
-                                    div()
-                                        .id(SharedString::from(format!("add-tf-{fi}")))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .px_2()
-                                        .py(px(3.))
-                                        .rounded_sm()
-                                        .bg(p.bg_surface)
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if this.add_selected_files.contains(&fi) {
-                                                this.add_selected_files.remove(&fi);
-                                            } else {
-                                                this.add_selected_files.insert(fi);
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .child(
+                            uniform_list(
+                                "add-torrent-files-list",
+                                out.files.len(),
+                                cx.processor(|this, range: std::ops::Range<usize>, _w, cx| {
+                                    let p = this.theme;
+                                    let Some(ref out) = this.add_probe_outcome else {
+                                        return Vec::new();
+                                    };
+                                    let mut rows = Vec::with_capacity(range.len());
+                                    for idx in range {
+                                        let Some(f) = out.files.get(idx) else {
+                                            continue;
+                                        };
+                                        let fi = f.index;
+                                        let checked = this.add_selected_files.contains(&fi);
+                                        rows.push(
                                             div()
+                                                .id(SharedString::from(format!("add-tf-{fi}")))
+                                                .w_full()
+                                                .h(p.spx(26.))
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .gap_1p5()
-                                                .min_w_0()
-                                                .child(fdm_checkbox(checked, &p))
+                                                .justify_between()
+                                                .px_2()
+                                                .rounded_sm()
+                                                .bg(p.bg_surface)
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if this.add_selected_files.contains(&fi) {
+                                                        this.add_selected_files.remove(&fi);
+                                                    } else {
+                                                        this.add_selected_files.insert(fi);
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap_1p5()
+                                                        .min_w_0()
+                                                        .child(ferrite_checkbox(checked, &p))
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(p.text_primary)
+                                                                .truncate()
+                                                                .child(f.relative_path.clone()),
+                                                        ),
+                                                )
                                                 .child(
                                                     div()
                                                         .text_xs()
-                                                        .text_color(p.text_primary)
-                                                        .truncate()
-                                                        .child(f.relative_path.clone()),
+                                                        .text_color(p.text_muted)
+                                                        .child(format_bytes(f.size_bytes)),
                                                 ),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(p.text_muted)
-                                                .child(format_bytes(f.size_bytes)),
-                                        )
-                                })),
+                                        );
+                                    }
+                                    rows
+                                }),
+                            )
+                            .h(p.spx(145.)),
                         ),
                 );
             }
@@ -1152,16 +1168,16 @@ fn render_remote_qr_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) ->
             .child("Starting local TLS/WebSocket Remote Control server...")
             .into_any_element()
     } else if let Some(pair) = pairing {
-        let fdm_uri = pair.fdm_uri.clone();
+        let pairing_uri = pair.pairing_uri.clone();
         let https_url = pair.https_url.clone();
-        let fdm_copy = fdm_uri.clone();
+        let pairing_copy = pairing_uri.clone();
         let web_copy = https_url.clone();
         div()
             .flex()
             .flex_row()
             .gap_4()
             .items_center()
-            .child(render_qr_element(&fdm_uri, 4.5))
+            .child(render_qr_element(&pairing_uri, 4.5))
             .child(
                 div()
                     .flex_1()
@@ -1174,7 +1190,7 @@ fn render_remote_qr_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) ->
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.text_primary)
-                            .child("Scan with FDM Remote Mobile App or open LAN Web UI"),
+                            .child("Scan with Ferrite Remote or open LAN Web UI"),
                     )
                     .child(
                         div()
@@ -1188,7 +1204,7 @@ fn render_remote_qr_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) ->
                             .overflow_hidden()
                             .text_xs()
                             .text_color(p.accent)
-                            .child(ellipsis_text(fdm_uri)),
+                            .child(ellipsis_text(pairing_uri)),
                     )
                     .child(
                         div()
@@ -1217,15 +1233,15 @@ fn render_remote_qr_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) ->
                             .flex_wrap()
                             .gap_1p5()
                             .child(action_btn(
-                                "qr-copy-fdm",
-                                "Copy fdm:// URI",
+                                "qr-copy-pairing",
+                                "Copy ferrite:// URI",
                                 &p,
                                 false,
                                 cx,
                                 move |this, _, _, cx| {
                                     this.copy_to_clipboard(
-                                        fdm_copy.clone(),
-                                        "Copied fdm:// pairing URI",
+                                        pairing_copy.clone(),
+                                        "Copied ferrite:// pairing URI",
                                         cx,
                                     );
                                 },
@@ -1483,14 +1499,23 @@ fn render_change_source_modal(
 
 fn render_move_dir_modal(
     app: &mut FerriteApp,
-    id: DownloadId,
+    ids: Vec<DownloadId>,
     cx: &mut Context<FerriteApp>,
 ) -> AnyElement {
     let p = app.theme;
+    let count = ids.len();
     let body = div()
         .flex()
         .flex_col()
         .gap_3()
+        .when(count > 1, |el| {
+            el.child(
+                div()
+                    .text_xs()
+                    .text_color(p.text_muted)
+                    .child(format!("Moving {count} selected downloads.")),
+            )
+        })
         .child(labeled_field(
             "New Destination Folder",
             app.move_dir_input.clone().into_any_element(),
@@ -1519,14 +1544,18 @@ fn render_move_dir_modal(
             true,
             cx,
             move |this, _, w, cx| {
-                this.submit_move_dir(id, w, cx);
+                this.submit_move_dir(ids.clone(), w, cx);
             },
         ))
         .into_any_element();
 
     modal_shell(
         "modal-move",
-        "Move Download Files",
+        if count > 1 {
+            "Move Selected Downloads"
+        } else {
+            "Move Download Files"
+        },
         480.0,
         app.modal_anim_epoch,
         &p,
@@ -1727,7 +1756,7 @@ fn render_delete_confirm_modal(
                     this.delete_remember_choice = !this.delete_remember_choice;
                     cx.notify();
                 }))
-                .child(fdm_checkbox(rem, &p))
+                .child(ferrite_checkbox(rem, &p))
                 .child(
                     div()
                         .text_xs()
@@ -1887,15 +1916,10 @@ fn render_about_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> Any
                                 .text_color(p.text_primary)
                                 .child("Ferrite"),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(p.text_muted)
-                                .child(format!(
-                                    "Version {} · Clean-room Rust engine with 100% FDM feature compatibility",
-                                    env!("CARGO_PKG_VERSION")
-                                )),
-                        ),
+                        .child(div().text_xs().text_color(p.text_muted).child(format!(
+                            "Version {} · Clean-room Rust download engine",
+                            env!("CARGO_PKG_VERSION")
+                        ))),
                 ),
         )
         .child(
@@ -1908,11 +1932,34 @@ fn render_about_modal(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -> Any
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(p.success).child("Privacy & Safety Guarantees"))
-                .child(div().text_xs().text_color(p.text_secondary).child("• Zero telemetry, zero analytics pings, zero cloud accounts"))
-                .child(div().text_xs().text_color(p.text_secondary).child("• Zero sponsored offers or bundled installers"))
-                .child(div().text_xs().text_color(p.text_secondary).child("• Local SQLite state store & FDM legacy db.sqlite migration"))
-                .child(div().text_xs().text_color(p.text_secondary).child("• Multi-connection HTTP/FTP, BitTorrent, HLS/DASH, JS Add-ons & LAN QR Remote")),
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.success)
+                        .child("Privacy & Safety Guarantees"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_secondary)
+                        .child("• Zero telemetry, zero analytics pings, zero cloud accounts"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_secondary)
+                        .child("• Zero sponsored offers or bundled installers"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_secondary)
+                        .child("• Local SQLite state store & JSON/CSV export & import"),
+                )
+                .child(div().text_xs().text_color(p.text_secondary).child(
+                    "• Multi-connection HTTP/FTP, BitTorrent, HLS/DASH, JS Add-ons & LAN QR Remote",
+                )),
         )
         .into_any_element();
 

@@ -30,7 +30,7 @@ context.restoreGState()
 let squirclePath = NSBezierPath(roundedRect: squircleRect, xRadius: cornerRadius, yRadius: cornerRadius)
 squirclePath.addClip()
 
-// Primary gradient: Deep cobalt blue to bright cyan-blue (FDM modern aesthetic)
+// Primary gradient: Deep cobalt blue to bright cyan-blue (Ferrite modern aesthetic)
 let grad = NSGradient(
     colorsAndLocations:
     (NSColor(red: 0.12, green: 0.38, blue: 0.88, alpha: 1.0), 0.0), // #1F61E0
@@ -192,7 +192,7 @@ try? FileManager.default.createDirectory(atPath: scalableDir, withIntermediateDi
 let svgContent = """
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
-    <linearGradient id="fdm-grad" x1="0%" y1="100%" x2="0%" y2="0%">
+    <linearGradient id="ferrite-grad" x1="0%" y1="100%" x2="0%" y2="0%">
       <stop offset="0%" stop-color="#1F61E0"/>
       <stop offset="50%" stop-color="#147BF5"/>
       <stop offset="100%" stop-color="#0DA6FA"/>
@@ -208,7 +208,7 @@ let svgContent = """
       <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#000000" flood-opacity="0.25"/>
     </filter>
   </defs>
-  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#fdm-grad)" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#ferrite-grad)" filter="url(#shadow)"/>
   <path d="M 100 285 C 100 183 183 100 285 100 L 739 100 C 841 100 924 183 924 285 L 924 380 L 100 380 Z" fill="url(#sheen)"/>
   <g transform="translate(282, 292) scale(19.166667)" filter="url(#symbol-shadow)">
     <path fill="#ffffff" fill-rule="evenodd" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 5v6.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 1.4-1.42l2.3 2.3V7a1 1 0 1 1 2 0zM7 17.5a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1z"/>

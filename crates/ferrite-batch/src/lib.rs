@@ -7,7 +7,7 @@ const MAX_BATCH_URLS: usize = 10_000;
 
 static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\[[^\]]+\]|\{[^}]+\})").unwrap());
 
-/// Expand FDM-style batch URL patterns:
+/// Expand batch URL patterns:
 /// - Numeric ranges with optional zero-padding and step: `[1-10]`, `[001-020:2]`
 /// - Single-character alphabetic ranges: `[a-f]`, `[A-Z:2]`
 /// - Alternation lists: `{linux,macos,windows}`
@@ -94,39 +94,34 @@ fn parse_token(token: &str) -> Result<Vec<String>> {
                 if start_n <= end_n {
                     let mut cur = start_n;
                     while cur <= end_n {
+                        if out.len() >= MAX_BATCH_URLS {
+                            bail!("Numeric batch range too large");
+                        }
                         if width > 0 {
                             out.push(format!("{cur:0width$}"));
                         } else {
                             out.push(cur.to_string());
                         }
-                        if out.len() > MAX_BATCH_URLS {
-                            bail!("Numeric batch range too large");
-                        }
-                        cur = cur.saturating_add(step);
-                        if step == 0 {
+                        let Some(next) = cur.checked_add(step) else {
                             break;
-                        }
+                        };
+                        cur = next;
                     }
                 } else {
                     let mut cur = start_n;
-                    loop {
+                    while cur >= end_n {
+                        if out.len() >= MAX_BATCH_URLS {
+                            bail!("Numeric batch range too large");
+                        }
                         if width > 0 {
                             out.push(format!("{cur:0width$}"));
                         } else {
                             out.push(cur.to_string());
                         }
-                        if out.len() > MAX_BATCH_URLS || cur < end_n.saturating_add(step) {
-                            if cur >= end_n + step {
-                                cur -= step;
-                                continue;
-                            }
-                            if cur > end_n && cur.saturating_sub(step) >= end_n {
-                                cur -= step;
-                                continue;
-                            }
+                        let Some(next) = cur.checked_sub(step) else {
                             break;
-                        }
-                        cur -= step;
+                        };
+                        cur = next;
                     }
                 }
                 return Ok(out);
@@ -237,5 +232,31 @@ mod tests {
                 "https://example.org/b_2.tar.gz",
             ]
         );
+    }
+
+    #[test]
+    fn descending_numeric_range_works_and_enforces_limit() {
+        let urls = expand_batch_pattern("https://cdn.test/part_[05-01:2].bin").unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://cdn.test/part_05.bin",
+                "https://cdn.test/part_03.bin",
+                "https://cdn.test/part_01.bin",
+            ]
+        );
+
+        let zero_end = expand_batch_pattern("https://cdn.test/n_[2-0].bin").unwrap();
+        assert_eq!(
+            zero_end,
+            vec![
+                "https://cdn.test/n_2.bin",
+                "https://cdn.test/n_1.bin",
+                "https://cdn.test/n_0.bin",
+            ]
+        );
+
+        let err = expand_batch_pattern("https://cdn.test/[1000000-1].bin").unwrap_err();
+        assert!(err.to_string().contains("too large"));
     }
 }

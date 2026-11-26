@@ -2,13 +2,16 @@ use crate::model::{
     AuthCredential, DownloadRecord, DownloadState, FileType, FilterQuery, MissingFilesFilter,
     SortField, SslException, StateFilter, Tag,
 };
-use crate::settings::FdmConfig;
+use crate::settings::FerriteConfig;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+const CONFIG_KEY: &str = "ferrite_config";
+const LEGACY_CONFIG_KEY: &str = "fdm_config";
 
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
@@ -23,6 +26,9 @@ impl Clone for Database {
 }
 
 impl Database {
+    fn lock_conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -56,7 +62,7 @@ impl Database {
     }
 
     fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS schema_meta (
@@ -165,7 +171,7 @@ impl Database {
             (-106, "Images", "#06B6D4", vec![FileType::Image]),
             (-107, "Torrents", "#22C55E", vec![FileType::Torrent]),
         ];
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         for (id, name, color, fts) in builtins {
             let fts_json = serde_json::to_string(&fts)?;
             conn.execute(
@@ -180,7 +186,7 @@ impl Database {
         &self,
         mut record: DownloadRecord,
     ) -> Result<DownloadRecord> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let max_order: i64 = tx.query_row(
             "SELECT COALESCE(MAX(order_index), 0) + 1 FROM downloads",
@@ -239,7 +245,7 @@ impl Database {
     }
 
     pub fn upsert_download(&self, record: &DownloadRecord) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let dt_str = serde_json::to_string(&record.download_type)?;
         let st_str = serde_json::to_string(&record.state)?;
@@ -288,7 +294,7 @@ impl Database {
     }
 
     pub fn get_download(&self, id: i64) -> Result<Option<DownloadRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT payload_json FROM downloads WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
@@ -301,7 +307,7 @@ impl Database {
     }
 
     pub fn list_all_downloads(&self) -> Result<Vec<DownloadRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT id, payload_json FROM downloads ORDER BY id ASC")?;
         let rows = stmt.query_map([], |row| {
             let id: i64 = row.get(0)?;
@@ -320,13 +326,13 @@ impl Database {
     }
 
     pub fn remove_download(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute("DELETE FROM downloads WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     pub fn list_tags(&self) -> Result<Vec<Tag>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, color_hex, is_builtin, file_types_json, default_extensions_json, default_download_folder FROM tags ORDER BY is_builtin DESC, id ASC",
         )?;
@@ -363,7 +369,7 @@ impl Database {
     }
 
     pub fn create_or_update_tag(&self, name: &str, color_hex: &str) -> Result<Tag> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO tags (id, name, color_hex, is_builtin, file_types_json, default_extensions_json, default_download_folder)
              VALUES ((SELECT COALESCE(MAX(CASE WHEN id > 0 THEN id END), 0) + 1 FROM tags), ?1, ?2, 0, '[]', '[]', NULL)
@@ -413,7 +419,7 @@ impl Database {
             .collect();
         let exts_json = serde_json::to_string(&exts_clean)?;
         let folder_str = default_download_folder.map(|p| p.to_string_lossy().into_owned());
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE tags SET name = ?1, color_hex = ?2, default_extensions_json = ?3, default_download_folder = ?4 WHERE id = ?5",
             params![name.trim(), color_hex, exts_json, folder_str, tag_id],
@@ -447,7 +453,7 @@ impl Database {
     }
 
     pub fn delete_tag(&self, tag_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM tags WHERE id = ?1 AND is_builtin = 0",
             params![tag_id],
@@ -455,30 +461,32 @@ impl Database {
         Ok(())
     }
 
-    pub fn load_config(&self) -> Result<FdmConfig> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT value_json FROM settings WHERE key = 'fdm_config'")?;
-        let mut rows = stmt.query([])?;
-        if let Some(row) = rows.next()? {
-            let json: String = row.get(0)?;
-            let cfg: FdmConfig = serde_json::from_str(&json)?;
-            return Ok(cfg);
+    pub fn load_config(&self) -> Result<FerriteConfig> {
+        let conn = self.lock_conn();
+        for key in [CONFIG_KEY, LEGACY_CONFIG_KEY] {
+            let mut stmt = conn.prepare("SELECT value_json FROM settings WHERE key = ?1")?;
+            let mut rows = stmt.query(params![key])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                let cfg: FerriteConfig = serde_json::from_str(&json)?;
+                return Ok(cfg);
+            }
         }
-        Ok(FdmConfig::default())
+        Ok(FerriteConfig::default())
     }
 
-    pub fn save_config(&self, config: &FdmConfig) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub fn save_config(&self, config: &FerriteConfig) -> Result<()> {
+        let conn = self.lock_conn();
         let json = serde_json::to_string_pretty(config)?;
         conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value_json) VALUES ('fdm_config', ?1)",
-            params![json],
+            "INSERT OR REPLACE INTO settings (key, value_json) VALUES (?1, ?2)",
+            params![CONFIG_KEY, json],
         )?;
         Ok(())
     }
 
     pub fn add_ssl_exception(&self, exc: &SslException) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT OR REPLACE INTO ssl_known_hosts (host_port, sha256_fingerprint, added_at) VALUES (?1, ?2, ?3)",
             params![exc.host_port, exc.sha256_fingerprint, exc.added_at.to_rfc3339()],
@@ -487,7 +495,7 @@ impl Database {
     }
 
     pub fn list_ssl_exceptions(&self) -> Result<Vec<SslException>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT host_port, sha256_fingerprint, added_at FROM ssl_known_hosts ORDER BY host_port",
         )?;
@@ -512,7 +520,7 @@ impl Database {
     }
 
     pub fn remove_ssl_exception(&self, host_port: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM ssl_known_hosts WHERE host_port = ?1",
             params![host_port],
@@ -521,13 +529,13 @@ impl Database {
     }
 
     pub fn clear_ssl_exceptions(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute("DELETE FROM ssl_known_hosts", [])?;
         Ok(())
     }
 
     pub fn save_credential(&self, cred: &AuthCredential) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT OR REPLACE INTO network_passwords (scope, username, password) VALUES (?1, ?2, ?3)",
             params![cred.scope, cred.username, cred.password],
@@ -536,7 +544,7 @@ impl Database {
     }
 
     pub fn get_credential(&self, scope: &str) -> Result<Option<AuthCredential>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn
             .prepare("SELECT scope, username, password FROM network_passwords WHERE scope = ?1")?;
         let mut rows = stmt.query(params![scope])?;
@@ -551,7 +559,7 @@ impl Database {
     }
 
     pub fn save_rc_password_hash(&self, client_id: &str, hash: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT OR REPLACE INTO rc_passwords (client_id, password_hash, created_at) VALUES (?1, ?2, ?3)",
             params![client_id, hash, Utc::now().to_rfc3339()],
@@ -560,7 +568,7 @@ impl Database {
     }
 
     pub fn list_rc_passwords(&self) -> Result<BTreeMap<String, String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare("SELECT client_id, password_hash FROM rc_passwords")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -577,7 +585,7 @@ impl Database {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut dst = Connection::open(dest)?;
         let backup = rusqlite::backup::Backup::new(&conn, &mut dst)?;
         backup.run_to_completion(64, std::time::Duration::from_millis(5), None)?;
@@ -585,19 +593,19 @@ impl Database {
     }
 
     pub fn verify_integrity(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let status: String = conn.query_row("PRAGMA integrity_check;", [], |r| r.get(0))?;
         Ok(status.eq_ignore_ascii_case("ok"))
     }
 
     pub fn vacuum(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute_batch("VACUUM;")?;
         Ok(())
     }
 
     pub fn checkpoint_wal(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
@@ -718,7 +726,7 @@ mod tests {
             url: "https://example.org/ubuntu.iso".into(),
             target_dir: "/tmp".into(),
             file_name: "ubuntu.iso".into(),
-            partial_suffix: ".fdmdownload".into(),
+            partial_suffix: ".part".into(),
             total_bytes: Some(1024),
             downloaded_bytes: 512,
             uploaded_bytes: 0,
@@ -783,10 +791,49 @@ mod tests {
         );
 
         // Legacy partial config JSON deserializes via #[serde(default)]
-        let legacy_cfg: FdmConfig =
+        let legacy_cfg: FerriteConfig =
             serde_json::from_str(r#"{"app":{"quit_confirmation":false}}"#).unwrap();
         assert!(!legacy_cfg.app.quit_confirmation);
         assert!(legacy_cfg.app.show_save_as_button);
         assert!(!legacy_cfg.app.show_support_button);
+    }
+
+    #[test]
+    fn load_config_falls_back_to_legacy_key_and_saves_ferrite_config() {
+        let db = Database::open_in_memory().unwrap();
+        let mut legacy = FerriteConfig::default();
+        legacy.app.quit_confirmation = false;
+        legacy.core.max_auto_retries = 7;
+        let legacy_json = serde_json::to_string(&legacy).unwrap();
+
+        {
+            let conn = db.lock_conn();
+            conn.execute(
+                "INSERT INTO settings (key, value_json) VALUES ('fdm_config', ?1)",
+                params![legacy_json],
+            )
+            .unwrap();
+        }
+
+        let loaded = db.load_config().unwrap();
+        assert!(!loaded.app.quit_confirmation);
+        assert_eq!(loaded.core.max_auto_retries, 7);
+
+        let mut updated = loaded.clone();
+        updated.core.max_auto_retries = 9;
+        db.save_config(&updated).unwrap();
+
+        let reloaded = db.load_config().unwrap();
+        assert_eq!(reloaded.core.max_auto_retries, 9);
+
+        let stored_key_count: i64 = db
+            .lock_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = 'ferrite_config'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_key_count, 1);
     }
 }

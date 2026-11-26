@@ -1,6 +1,6 @@
 use crate::hash::sha256_str;
 use crate::model::{ExistingFileReaction, FileType};
-use crate::settings::FdmConfig;
+use crate::settings::FerriteConfig;
 use chrono::Local;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -49,7 +49,7 @@ pub fn url_host_hash(url_str: &str) -> Option<String> {
         .and_then(|u| u.host_str().map(|h| sha256_str(&h.to_ascii_lowercase())))
 }
 
-/// Expand FDM-style path macros (`%date%`, `%year%`, `%month%`, `%day%`, `%host%`, `%server%`, `%path_on_server%`, `%ext%`, `%type%`, `%content_type%`).
+/// Expand path macros (`%date%`, `%year%`, `%month%`, `%day%`, `%host%`, `%server%`, `%path_on_server%`, `%ext%`, `%type%`, `%content_type%`).
 pub fn expand_path_macros(
     template: &str,
     url_str: Option<&str>,
@@ -104,7 +104,7 @@ pub fn expand_path_macros(
 }
 
 pub fn resolve_target_dir(
-    config: &FdmConfig,
+    config: &FerriteConfig,
     explicit_dir: Option<&PathBuf>,
     url_str: &str,
     file_name: &str,
@@ -154,7 +154,7 @@ pub fn resolve_target_dir(
 /// Record the chosen folder for a URL host when `download_path_depends_on_source_url`
 /// is active and update `recent_folders`. Returns `true` if config changed.
 pub fn remember_target_dir_preference(
-    config: &mut FdmConfig,
+    config: &mut FerriteConfig,
     url_str: &str,
     chosen_dir: &Path,
 ) -> bool {
@@ -189,8 +189,13 @@ pub fn remember_target_dir_preference(
 }
 
 pub fn sanitize_filename(name: &str) -> String {
-    let trimmed = name.trim();
-    let cleaned: String = trimmed
+    let candidate = name
+        .trim()
+        .split(['/', '\\'])
+        .rfind(|seg| !seg.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("");
+    let cleaned: String = candidate
         .chars()
         .map(|c| match c {
             '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
@@ -200,6 +205,29 @@ pub fn sanitize_filename(name: &str) -> String {
         .collect();
     if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
         "download.bin".into()
+    } else {
+        cleaned
+    }
+}
+
+/// Sanitize a partial-download filename suffix so it cannot contain path separators or `..` traversal.
+pub fn sanitize_partial_suffix(suffix: &str) -> String {
+    let trimmed = suffix.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let cleaned: String = trimmed
+        .replace("..", "")
+        .chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+            ) && !c.is_control()
+        })
+        .collect();
+    if cleaned == "." {
+        String::new()
     } else {
         cleaned
     }
@@ -309,7 +337,7 @@ mod tests {
 
     #[test]
     fn remembers_per_host_folder_when_enabled() {
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.fixed_download_path = false;
         cfg.core.download_path_depends_on_source_url = true;
         cfg.core.default_download_path = PathBuf::from("/tmp/default");
@@ -329,5 +357,20 @@ mod tests {
         );
         assert_eq!(resolved, custom);
         assert_eq!(cfg.recent_folders.first(), Some(&custom));
+    }
+
+    #[test]
+    fn sanitizes_filenames_and_partial_suffixes() {
+        assert_eq!(sanitize_filename("ubuntu.iso"), "ubuntu.iso");
+        assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_filename("..\\..\\win.ini"), "win.ini");
+        assert_eq!(sanitize_filename(".."), "download.bin");
+        assert_eq!(sanitize_filename("."), "download.bin");
+        assert_eq!(sanitize_filename("../../"), "download.bin");
+
+        assert_eq!(sanitize_partial_suffix(".part"), ".part");
+        assert_eq!(sanitize_partial_suffix("/../../evil"), "evil");
+        assert_eq!(sanitize_partial_suffix("..\\..\\.part"), ".part");
+        assert_eq!(sanitize_partial_suffix(".."), "");
     }
 }

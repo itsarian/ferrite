@@ -1,4 +1,4 @@
-use ferrite_core::FdmConfig;
+use ferrite_core::FerriteConfig;
 use ferrite_native_host::{
     UnixDaemonBridge, dispatch_native_task, read_native_message, write_native_message,
 };
@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
-    let data_dir = data_dir.unwrap_or_else(|| FdmConfig::data_dir(portable));
+    let data_dir = data_dir.unwrap_or_else(|| FerriteConfig::data_dir(portable));
     let bridge = UnixDaemonBridge::from_data_dir(data_dir, true);
 
     let stdin = io::stdin();

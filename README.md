@@ -27,7 +27,7 @@
 
 <div align="center">
   <img src="resources/screenshot.png" width="100%" alt="Ferrite native GPUI desktop interface running on macOS" />
-  <p><em>Native GPUI desktop interface with real-time transfer throughput and the 6-tab diagnostic inspector (<a href="resources/demo.mp4">watch 14s demo clip</a>).</em></p>
+  <p><em>Native GPUI desktop interface with real-time transfer throughput and the 6-tab diagnostic inspector.</em></p>
 </div>
 
 ---
@@ -73,7 +73,7 @@
 ### 1. Install or run from terminal
 
 ```bash
-# macOS installer via script (or download .dmg / .pkg from Releases)
+# macOS & Linux installer via script (verifies SHA-256 checksums against GitHub Releases)
 curl -fsSL https://raw.githubusercontent.com/itsarian/ferrite/main/scripts/install-cli.sh | bash
 ```
 
@@ -92,14 +92,14 @@ ferrite add "https://cdn1.example.com/installer.dmg" \
 
 ### 3. Connect your browser
 
-Integrate one-click download capture with Chrome, Firefox, Edge, Brave, Opera, or Vivaldi:
+Register the WebExtension Native Messaging host manifest (`org.ferrite.cnh.json`, pointing to `ferrite-native-host`) for Chrome, Firefox, Edge, Brave, Opera, or Vivaldi:
 
 ```bash
 ferrite native-host-install --browser all
 ```
 
 > [!NOTE]
-> When you click a download link in your browser, the native host automatically spawns `ferrite daemon` in the background if neither the GUI nor daemon is already running.
+> `ferrite-native-host` implements the `org.ferrite.cnh` Native Messaging protocol for compatible WebExtensions (no standalone Ferrite browser extension is currently published in browser extension stores). When triggered from a connected browser extension, the native host automatically spawns `ferrite daemon` in the background if neither the GUI nor daemon is already running.
 
 ---
 
@@ -171,11 +171,11 @@ The GUI (`ferrite-gui`) requires the following native libraries at runtime:
 
 | Distro | Install Command |
 | :--- | :--- |
-| **Debian / Ubuntu** | `sudo apt install libx11-6 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libfontconfig1 libasound2 libpulse0` |
-| **Fedora / RHEL** | `sudo dnf install libX11 libxkbcommon libxkbcommon-x11 wayland-libs fontconfig alsa-lib pulseaudio-libs` |
-| **Arch** | `sudo pacman -Sy libx11 libxkbcommon wayland fontconfig alsa-lib libpulse` |
+| **Debian / Ubuntu** | `sudo apt install libx11-6 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libfontconfig1` |
+| **Fedora / RHEL** | `sudo dnf install libX11 libxkbcommon libxkbcommon-x11 wayland-client fontconfig` |
+| **Arch** | `sudo pacman -Sy libx11 libxkbcommon wayland fontconfig` |
 
-The `.deb` and `.rpm` packages declare these as package-manager dependencies and install them automatically.
+The `.deb` and `.rpm` packages declare these (along with OpenSSL runtime libraries) as package-manager dependencies and install them automatically. Optional media utilities (`ffmpeg`, `yt-dlp`) and desktop notification sound players (`paplay`, `aplay`, or `canberra-gtk-play`) are invoked as external commands when enabled rather than linked directly.
 
 ### Building from Source
 
@@ -190,10 +190,10 @@ cd ferrite
 # Debian / Ubuntu:
 sudo apt-get install -y cmake pkg-config libssl-dev \
   libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
-  libwayland-dev libfontconfig1-dev libasound2-dev libpulse-dev
+  libwayland-dev libfontconfig1-dev
 
 # Build all workspace binaries in release mode
-cargo build --release --workspace
+cargo build --release --locked --workspace
 
 # Run the offline loopback self-test suite
 ./target/release/ferrite self-test
@@ -256,7 +256,7 @@ Ferrite is an independent project exploring GPUI outside of a code editor — ap
 | [`crates/ferrite-gui`](crates/ferrite-gui) | Native GPUI desktop application interface (`ferrite-gui` / `Ferrite.app`) |
 | [`docs/CI_CD.md`](docs/CI_CD.md) | Continuous Integration, security audit, release pipelines, and contributor pre-flight guide |
 | [`scripts/`](scripts/) | Packaging scripts (`package-macos.sh`, `package-linux-*.sh`), installers, `PKGBUILD`, and icon generation |
-| [`resources/`](resources/) | Application icon (`Ferrite-1024.png`, `Ferrite.icns`), screenshots, demo video, and `Info.plist` |
+| [`resources/`](resources/) | Application icon (`Ferrite-1024.png`, `Ferrite.icns`), screenshots, Linux desktop assets, and `Info.plist` |
 
 ---
 
@@ -366,8 +366,7 @@ State, history, and configuration are stored in your operating system's standard
 - **Portable Mode (`--portable`):** `./ferrite-data` adjacent to the executable binary.
 
 Files stored inside the data folder:
-- `ferrite.sqlite` — SQLite database with WAL journaling (downloads, history, chunk maps, tags).
-- `config.json` — Persistent settings and bandwidth profiles.
+- `ferrite.sqlite` — SQLite database with WAL journaling (downloads, history, chunk maps, tags, persistent settings, and bandwidth profiles).
 - `ferrite.sock` — Unix domain socket for IPC communication.
 - `plugins/` — JavaScript media site parser add-ons.
 

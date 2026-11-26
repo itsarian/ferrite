@@ -242,3 +242,55 @@ async fn e2e_engine_hls_aes128_stream() {
     srv.abort();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[tokio::test]
+async fn cli_binary_settings_show_redacts_secrets_and_respects_daemon_ipc() {
+    let tmp = std::env::temp_dir().join(format!("ferrite_cli_bin_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let data_dir = tmp.join("data");
+
+    let eng = DownloadEngine::open(&data_dir, true).unwrap();
+    let mut cfg = eng.get_config();
+    cfg.app.remote_access_password = "cli-rc-password".into();
+    cfg.app.proxy.http.password = "cli-http-password".into();
+    cfg.app.proxy.https.password = "cli-https-password".into();
+    cfg.app.proxy.socks5.password = "cli-socks5-password".into();
+    eng.update_config(cfg).unwrap();
+
+    let ipc_srv = eng.start_ipc_listener().await.unwrap();
+    let bin = env!("CARGO_BIN_EXE_ferrite");
+
+    // 1. Default `settings show` over live daemon IPC must redact all secrets
+    let out_redacted = tokio::process::Command::new(bin)
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args(["settings", "show"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out_redacted.status.success());
+    let stdout_redacted = String::from_utf8(out_redacted.stdout).unwrap();
+    assert!(!stdout_redacted.contains("cli-rc-password"));
+    assert!(!stdout_redacted.contains("cli-http-password"));
+    assert!(!stdout_redacted.contains("cli-https-password"));
+    assert!(!stdout_redacted.contains("cli-socks5-password"));
+    assert!(stdout_redacted.contains("***REDACTED***"));
+
+    // 2. `--show-secrets` opts into showing plaintext secrets
+    let out_revealed = tokio::process::Command::new(bin)
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args(["settings", "show", "--show-secrets"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out_revealed.status.success());
+    let stdout_revealed = String::from_utf8(out_revealed.stdout).unwrap();
+    assert!(stdout_revealed.contains("cli-rc-password"));
+    assert!(stdout_revealed.contains("cli-http-password"));
+    assert!(stdout_revealed.contains("cli-https-password"));
+    assert!(stdout_revealed.contains("cli-socks5-password"));
+
+    ipc_srv.abort();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

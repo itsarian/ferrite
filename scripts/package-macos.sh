@@ -16,7 +16,10 @@ elif [[ "${GITHUB_REF_NAME:-}" == v* ]]; then
     RAW_VERSION="$GITHUB_REF_NAME"
 else
     RAW_VERSION="$(grep -m1 '^version = ' "$ROOT_DIR/Cargo.toml" | cut -d '"' -f2 || true)"
-    RAW_VERSION="${RAW_VERSION:-0.1.0}"
+    if [ -z "$RAW_VERSION" ]; then
+        echo "Error: Could not determine version from VERSION, GITHUB_REF_NAME, or Cargo.toml." >&2
+        exit 1
+    fi
 fi
 VERSION="${RAW_VERSION#v}"
 
@@ -114,16 +117,13 @@ fi
 
 mkdir -p "$DIST_DIR" "$RESOURCES_DIR"
 
-# Remove any stale legacy-named macOS artifacts in dist/
-rm -f "$DIST_DIR"/Ferrite-DM-*.dmg "$DIST_DIR"/Ferrite-DM-*.pkg "$DIST_DIR"/Ferrite-DM-*.zip
-
 # 1. Build release binaries
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building macOS release binaries for $ARCH_LABEL ($RUST_TARGET)..."
     if command -v rustup >/dev/null 2>&1; then
         rustup target add "$RUST_TARGET"
     fi
-    cargo build --release --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
+    cargo build --release --locked --target "$RUST_TARGET" -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 else
     echo "==> Skipping cargo build (using existing release binaries for $ARCH_LABEL)..."
 fi

@@ -1,7 +1,9 @@
 use ferrite_core::{ThemeMode, UiStyle};
 use gpui::{Hsla, Pixels, px, rgb, rgba};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Visual palette faithfully matching Free Download Manager 6.34.4 (`Theme_V2` light & dark, plus `Classic`).
+/// Visual palette for Ferrite (`Modern` & `Classic` in Light & Dark modes).
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct ThemePalette {
@@ -9,7 +11,7 @@ pub struct ThemePalette {
     pub ui_style: UiStyle,
     pub overall_zoom_pct: u16,
     pub fonts_zoom_pct: u16,
-    // FDM V2 token scale (100 = primary canvas -> 1000 = highest contrast foreground)
+    // Surface & foreground scale (100 = primary canvas -> 1000 = highest contrast foreground)
     pub bg_100: Hsla,
     pub bg_200: Hsla,
     pub bg_300: Hsla,
@@ -160,7 +162,7 @@ impl ThemePalette {
         px((base * self.ui_scale()).round().max(1.0))
     }
 
-    /// Detect macOS system Dark/Light mode on startup, matching FDM's `'system'` theme default.
+    /// Cached system Dark/Light mode detection (avoids spawning `defaults`/`gsettings` per frame).
     pub fn system_default() -> Self {
         if let Ok(override_theme) = std::env::var("FERRITE_THEME") {
             if override_theme.eq_ignore_ascii_case("dark") {
@@ -169,166 +171,165 @@ impl ThemePalette {
                 return Self::light();
             }
         }
-        #[cfg(target_os = "macos")]
-        {
-            if let Ok(out) = std::process::Command::new("defaults")
-                .args(["read", "-g", "AppleInterfaceStyle"])
-                .output()
-            {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                if stdout.trim().eq_ignore_ascii_case("dark") {
-                    return Self::dark();
-                }
-            }
-            Self::light()
-        }
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(out) = std::process::Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-                .output()
-            {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                if stdout.contains("prefer-light")
-                    || (stdout.contains("default") && !stdout.contains("prefer-dark"))
-                {
-                    return Self::light();
-                } else if stdout.contains("prefer-dark") {
-                    return Self::dark();
-                }
-            }
-            Self::dark()
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            Self::dark()
-        }
+        static CACHED_DARK: OnceLock<AtomicBool> = OnceLock::new();
+        let is_dark = CACHED_DARK
+            .get_or_init(|| AtomicBool::new(detect_system_dark_blocking()))
+            .load(Ordering::Relaxed);
+        if is_dark { Self::dark() } else { Self::light() }
     }
 
     pub fn dark() -> Self {
-        // FDM 6.34.4 Theme_V2 Dark:
-        // bg100=#141415, bg200=#1C1D1F, bg300=#27282A, bg400=#383A3D, bg500=#54575C,
-        // bg600=#7A7E85, bg700=#9D9FA3, bg800=#B0B3B8, bg900=#E1E4EB, bg1000=#F4F5F5
-        // primary=#73CEFC, secondary=#4EC284, amber=#C29B4E, danger=#C24E5D
         Self {
             is_dark: true,
-            ui_style: UiStyle::New,
+            ui_style: UiStyle::Modern,
             overall_zoom_pct: 100,
             fonts_zoom_pct: 100,
-            bg_100: rgb(0x141415).into(),
-            bg_200: rgb(0x1c1d1f).into(),
-            bg_300: rgb(0x27282a).into(),
-            bg_400: rgb(0x383a3d).into(),
-            bg_500: rgb(0x54575c).into(),
-            bg_600: rgb(0x7a7e85).into(),
-            bg_700: rgb(0x9d9fa3).into(),
-            bg_800: rgb(0xb0b3b8).into(),
-            bg_900: rgb(0xe1e4eb).into(),
-            bg_1000: rgb(0xf4f5f5).into(),
+            bg_100: rgb(0x111318).into(),
+            bg_200: rgb(0x171a21).into(),
+            bg_300: rgb(0x1f242e).into(),
+            bg_400: rgb(0x2b3240).into(),
+            bg_500: rgb(0x475166).into(),
+            bg_600: rgb(0x6e788d).into(),
+            bg_700: rgb(0x949eb3).into(),
+            bg_800: rgb(0xb4bdcf).into(),
+            bg_900: rgb(0xdde3ee).into(),
+            bg_1000: rgb(0xf1f5f9).into(),
 
-            bg_app: rgb(0x141415).into(),
-            bg_sidebar: rgb(0x1c1d1f).into(),
-            bg_surface: rgb(0x27282a).into(),
-            bg_elevated: rgb(0x383a3d).into(),
-            bg_row_alt: rgb(0x17181a).into(),
-            bg_row_hover: rgb(0x1f2023).into(),
-            bg_row_selected: rgba(0x73cefc22).into(),
-            bg_input: rgb(0x1c1d1f).into(),
-            border: rgb(0x383a3d).into(),
-            border_focus: rgb(0x73cefc).into(),
-            separator: rgb(0x27282a).into(),
-            text_primary: rgb(0xf4f5f5).into(),
-            text_secondary: rgb(0xe1e4eb).into(),
-            text_muted: rgb(0xb0b3b8).into(),
-            text_subtle: rgb(0x9d9fa3).into(),
-            accent: rgb(0x73cefc).into(),
-            accent_hover: rgb(0x8cd7fd).into(),
-            accent_soft: rgba(0x73cefc24).into(),
-            on_accent: rgb(0x141415).into(),
-            success: rgb(0x4ec284).into(),
-            amber: rgb(0xc29b4e).into(),
-            warning: rgb(0xc29b4e).into(),
-            danger: rgb(0xc24e5d).into(),
-            info: rgb(0x73cefc).into(),
+            bg_app: rgb(0x111318).into(),
+            bg_sidebar: rgb(0x15181f).into(),
+            bg_surface: rgb(0x1c212b).into(),
+            bg_elevated: rgb(0x252c38).into(),
+            bg_row_alt: rgb(0x14171d).into(),
+            bg_row_hover: rgb(0x1c212c).into(),
+            bg_row_selected: rgba(0x38bdf822).into(),
+            bg_input: rgb(0x171b23).into(),
+            border: rgb(0x2b3240).into(),
+            border_focus: rgb(0x38bdf8).into(),
+            separator: rgb(0x212631).into(),
+            text_primary: rgb(0xf1f5f9).into(),
+            text_secondary: rgb(0xd4dce8).into(),
+            text_muted: rgb(0x94a3b8).into(),
+            text_subtle: rgb(0x64748b).into(),
+            accent: rgb(0x38bdf8).into(),
+            accent_hover: rgb(0x56cbf9).into(),
+            accent_soft: rgba(0x38bdf820).into(),
+            on_accent: rgb(0x0b121c).into(),
+            success: rgb(0x2dd4bf).into(),
+            amber: rgb(0xf59e0b).into(),
+            warning: rgb(0xf59e0b).into(),
+            danger: rgb(0xf43f5e).into(),
+            info: rgb(0x38bdf8).into(),
 
-            dialog_special_area: rgb(0x1c1d1f).into(),
-            snail_bg: rgb(0x8f6d28).into(),
-            snail_border: rgb(0xc29b4e).into(),
-            snail_text: rgb(0xfff1d6).into(),
-            snail_on_bg: rgb(0xffebc4).into(),
-            snail_on_border: rgb(0x8f6d28).into(),
-            snail_on_fg: rgb(0x8f6d28).into(),
-            snail_off_track: rgb(0x27282a).into(),
-            snail_off_border: rgb(0x383a3d).into(),
-            snail_off_thumb: rgb(0x969ba3).into(),
-            snail_off_thumb_text: rgb(0x141415).into(),
-            tooltip_bg: rgb(0x27282a).into(),
-            tooltip_fg: rgb(0xf4f5f5).into(),
-            modal_backdrop: gpui::hsla(0.0, 0.0, 0.03, 0.68),
+            dialog_special_area: rgb(0x171b23).into(),
+            snail_bg: rgb(0x78551a).into(),
+            snail_border: rgb(0xd99b26).into(),
+            snail_text: rgb(0xfff4db).into(),
+            snail_on_bg: rgb(0xfef0d2).into(),
+            snail_on_border: rgb(0x78551a).into(),
+            snail_on_fg: rgb(0x78551a).into(),
+            snail_off_track: rgb(0x1f242e).into(),
+            snail_off_border: rgb(0x2b3240).into(),
+            snail_off_thumb: rgb(0x94a3b8).into(),
+            snail_off_thumb_text: rgb(0x111318).into(),
+            tooltip_bg: rgb(0x1f242e).into(),
+            tooltip_fg: rgb(0xf1f5f9).into(),
+            modal_backdrop: gpui::hsla(0.61, 0.25, 0.04, 0.68),
         }
     }
 
     pub fn light() -> Self {
-        // FDM 6.34.4 Theme_V2 Light:
-        // bg100=#FDFDFD, bg200=#ECEFF3, bg300=#ECEFF3, bg400=#CED6E0, bg500=#929DAD,
-        // bg600=#5A6677, bg700=#424B57, bg800=#272C33, bg900=#1F2329, bg1000=#171A1F
-        // primary=#3F80E0, secondary=#288F58, amber=#8F6D28, danger=#C93B4B
         Self {
             is_dark: false,
-            ui_style: UiStyle::New,
+            ui_style: UiStyle::Modern,
             overall_zoom_pct: 100,
             fonts_zoom_pct: 100,
-            bg_100: rgb(0xfdfdfd).into(),
-            bg_200: rgb(0xf2f4f7).into(),
-            bg_300: rgb(0xeceff3).into(),
-            bg_400: rgb(0xced6e0).into(),
-            bg_500: rgb(0x929dad).into(),
-            bg_600: rgb(0x5a6677).into(),
-            bg_700: rgb(0x424b57).into(),
-            bg_800: rgb(0x272c33).into(),
-            bg_900: rgb(0x1f2329).into(),
-            bg_1000: rgb(0x171a1f).into(),
+            bg_100: rgb(0xfcfdfe).into(),
+            bg_200: rgb(0xf1f5f9).into(),
+            bg_300: rgb(0xe6ecf4).into(),
+            bg_400: rgb(0xcbd5e1).into(),
+            bg_500: rgb(0x94a3b8).into(),
+            bg_600: rgb(0x64748b).into(),
+            bg_700: rgb(0x475569).into(),
+            bg_800: rgb(0x334155).into(),
+            bg_900: rgb(0x1e293b).into(),
+            bg_1000: rgb(0x0f172a).into(),
 
-            bg_app: rgb(0xfdfdfd).into(),
-            bg_sidebar: rgb(0xf2f4f7).into(),
-            bg_surface: rgb(0xeceff3).into(),
-            bg_elevated: rgb(0xdfe5ec).into(),
-            bg_row_alt: rgb(0xf8f9fb).into(),
-            bg_row_hover: rgb(0xeef2f7).into(),
-            bg_row_selected: rgba(0x3f80e01e).into(),
-            bg_input: rgb(0xfdfdfd).into(),
-            border: rgb(0xced6e0).into(),
-            border_focus: rgb(0x3f80e0).into(),
-            separator: rgb(0xe2e6ec).into(),
-            text_primary: rgb(0x171a1f).into(),
-            text_secondary: rgb(0x272c33).into(),
-            text_muted: rgb(0x5a6677).into(),
-            text_subtle: rgb(0x929dad).into(),
-            accent: rgb(0x3f80e0).into(),
-            accent_hover: rgb(0x316cc7).into(),
-            accent_soft: rgba(0x3f80e018).into(),
-            on_accent: rgb(0xfdfdfd).into(),
-            success: rgb(0x288f58).into(),
-            amber: rgb(0x8f6d28).into(),
-            warning: rgb(0x8f6d28).into(),
-            danger: rgb(0xc93b4b).into(),
-            info: rgb(0x3f80e0).into(),
+            bg_app: rgb(0xfcfdfe).into(),
+            bg_sidebar: rgb(0xf1f5f9).into(),
+            bg_surface: rgb(0xeef2f7).into(),
+            bg_elevated: rgb(0xe2e8f0).into(),
+            bg_row_alt: rgb(0xf8fafc).into(),
+            bg_row_hover: rgb(0xedf2f8).into(),
+            bg_row_selected: rgba(0x0284c71a).into(),
+            bg_input: rgb(0xffffff).into(),
+            border: rgb(0xcbd5e1).into(),
+            border_focus: rgb(0x0284c7).into(),
+            separator: rgb(0xe2e8f0).into(),
+            text_primary: rgb(0x0f172a).into(),
+            text_secondary: rgb(0x334155).into(),
+            text_muted: rgb(0x64748b).into(),
+            text_subtle: rgb(0x94a3b8).into(),
+            accent: rgb(0x0284c7).into(),
+            accent_hover: rgb(0x0369a1).into(),
+            accent_soft: rgba(0x0284c716).into(),
+            on_accent: rgb(0xffffff).into(),
+            success: rgb(0x0d9488).into(),
+            amber: rgb(0xb45309).into(),
+            warning: rgb(0xb45309).into(),
+            danger: rgb(0xe11d48).into(),
+            info: rgb(0x0284c7).into(),
 
-            dialog_special_area: rgb(0xeceff3).into(),
-            snail_bg: rgb(0x8f6d28).into(),
-            snail_border: rgb(0x8f6d28).into(),
-            snail_text: rgb(0xffebc4).into(),
-            snail_on_bg: rgb(0xffebc4).into(),
-            snail_on_border: rgb(0x8f6d28).into(),
-            snail_on_fg: rgb(0x8f6d28).into(),
-            snail_off_track: rgb(0xfdfdfd).into(),
-            snail_off_border: rgb(0x929dad).into(),
-            snail_off_thumb: rgb(0xacb5c3).into(),
-            snail_off_thumb_text: rgb(0xf7fafd).into(),
-            tooltip_bg: rgb(0x272c33).into(),
-            tooltip_fg: rgb(0xfdfdfd).into(),
+            dialog_special_area: rgb(0xf1f5f9).into(),
+            snail_bg: rgb(0x926012).into(),
+            snail_border: rgb(0x926012).into(),
+            snail_text: rgb(0xfff3d6).into(),
+            snail_on_bg: rgb(0xfef0d2).into(),
+            snail_on_border: rgb(0x926012).into(),
+            snail_on_fg: rgb(0x926012).into(),
+            snail_off_track: rgb(0xffffff).into(),
+            snail_off_border: rgb(0x94a3b8).into(),
+            snail_off_thumb: rgb(0x94a3b8).into(),
+            snail_off_thumb_text: rgb(0xf8fafc).into(),
+            tooltip_bg: rgb(0x1e293b).into(),
+            tooltip_fg: rgb(0xf8fafc).into(),
             modal_backdrop: gpui::hsla(0.6, 0.15, 0.1, 0.36),
         }
+    }
+}
+
+fn detect_system_dark_blocking() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+        {
+            return String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .eq_ignore_ascii_case("dark");
+        }
+        false
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(out) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.contains("prefer-light")
+                || (stdout.contains("default") && !stdout.contains("prefer-dark"))
+            {
+                return false;
+            } else if stdout.contains("prefer-dark") {
+                return true;
+            }
+        }
+        true
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        true
     }
 }
 

@@ -111,12 +111,27 @@ install_bin() {
         echo "  -> Installing $bin_name to $BIN_DIR"
         install -m 755 "$found" "$BIN_DIR/$bin_name" 2>/dev/null || cp "$found" "$BIN_DIR/$bin_name"
         chmod +x "$BIN_DIR/$bin_name" 2>/dev/null || true
+        return 0
     fi
+    return 1
 }
 
-install_bin "ferrite-gui"
-install_bin "ferrite"
-install_bin "ferrite-native-host"
+MISSING_REQUIRED=0
+if ! install_bin "ferrite-gui"; then
+    echo "Warning: ferrite-gui binary not found in build output or script directory." >&2
+fi
+if ! install_bin "ferrite"; then
+    echo "Error: Required binary 'ferrite' not found in $SCRIPT_DIR, target/*/release, or $PWD." >&2
+    MISSING_REQUIRED=1
+fi
+if ! install_bin "ferrite-native-host"; then
+    echo "Error: Required binary 'ferrite-native-host' not found in $SCRIPT_DIR, target/*/release, or $PWD." >&2
+    MISSING_REQUIRED=1
+fi
+if [ "$MISSING_REQUIRED" -ne 0 ]; then
+    echo "Build the binaries first (cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host) or run from an extracted release tarball." >&2
+    exit 1
+fi
 
 # Locate resources
 RES_DIR=""
@@ -133,7 +148,9 @@ if [ -n "$RES_DIR" ]; then
     # Install .desktop file
     if [ -f "$RES_DIR/ferrite.desktop" ]; then
         echo "  -> Installing application launcher to $APP_DIR/ferrite.desktop"
-        sed "s|^Exec=ferrite-gui|Exec=$BIN_DIR/ferrite-gui|" "$RES_DIR/ferrite.desktop" > "$APP_DIR/ferrite.desktop" 2>/dev/null || \
+        sed -e "s|^Exec=ferrite-gui|Exec=$BIN_DIR/ferrite-gui|" \
+            -e "s|^Exec=ferrite |Exec=$BIN_DIR/ferrite |" \
+            "$RES_DIR/ferrite.desktop" > "$APP_DIR/ferrite.desktop" 2>/dev/null || \
             install -m 644 "$RES_DIR/ferrite.desktop" "$APP_DIR/ferrite.desktop"
         chmod 644 "$APP_DIR/ferrite.desktop" 2>/dev/null || true
     fi

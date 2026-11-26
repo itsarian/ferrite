@@ -2,7 +2,7 @@ use anyhow::Result;
 use base64::Engine as _;
 use ferrite_core::{
     AuthCredential, BandwidthLimiter, DownloadAbortReason, DownloadFileEntry, DownloadPriority,
-    DownloadRecord, DownloadState, FdmConfig, NetworkProxyMode, ProxySettings, ResumeSupport,
+    DownloadRecord, DownloadState, FerriteConfig, NetworkProxyMode, ProxySettings, ResumeSupport,
     SegmentProgress, SegmentState, SslException,
     hash::sha256_str,
     os_integration::set_mark_of_the_web,
@@ -20,17 +20,23 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
+use std::net::{IpAddr, SocketAddr};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::watch;
 use url::Url;
+
+fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 pub fn ensure_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -58,7 +64,46 @@ pub enum ControlCommand {
 #[derive(Debug)]
 struct HostPinVerifier {
     pinned_sha256_by_host: Vec<SslException>,
+    target_port: u16,
     inner: Arc<dyn ServerCertVerifier>,
+}
+
+fn parse_ssl_host_port(raw: &str) -> Option<(String, u16)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let (host_part, tail) = rest.split_once(']')?;
+        let normalized_host = IpAddr::from_str(host_part)
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|_| host_part.trim_end_matches('.').to_ascii_lowercase());
+        if normalized_host.is_empty() {
+            return None;
+        }
+        let port = if tail.is_empty() {
+            443
+        } else {
+            let p_str = tail.strip_prefix(':')?;
+            p_str.parse::<u16>().ok()?
+        };
+        return Some((normalized_host, port));
+    }
+    if let Ok(sock) = SocketAddr::from_str(trimmed) {
+        return Some((sock.ip().to_string(), sock.port()));
+    }
+    if let Ok(ip) = IpAddr::from_str(trimmed) {
+        return Some((ip.to_string(), 443));
+    }
+    if let Some((host, p_str)) = trimmed.rsplit_once(':') {
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            return None;
+        }
+        let port = p_str.parse::<u16>().ok()?;
+        return Some((host, port));
+    }
+    Some((trimmed.trim_end_matches('.').to_ascii_lowercase(), 443))
 }
 
 impl ServerCertVerifier for HostPinVerifier {
@@ -83,19 +128,19 @@ impl ServerCertVerifier for HostPinVerifier {
                 h.update(end_entity.as_ref());
                 let fp = hex::encode(h.finalize());
                 let sni = match server_name {
-                    ServerName::DnsName(d) => d.as_ref().to_ascii_lowercase(),
+                    ServerName::DnsName(d) => d.as_ref().trim_end_matches('.').to_ascii_lowercase(),
                     ServerName::IpAddress(ip) => std::net::IpAddr::from(*ip).to_string(),
                     _ => String::new(),
                 };
-                for exc in &self.pinned_sha256_by_host {
-                    let host_only = exc
-                        .host_port
-                        .split(':')
-                        .next()
-                        .unwrap_or("")
-                        .to_ascii_lowercase();
-                    if host_only == sni && exc.sha256_fingerprint.eq_ignore_ascii_case(&fp) {
-                        return Ok(ServerCertVerified::assertion());
+                if !sni.is_empty() {
+                    for exc in &self.pinned_sha256_by_host {
+                        if let Some((exc_host, exc_port)) = parse_ssl_host_port(&exc.host_port)
+                            && exc_host == sni
+                            && exc_port == self.target_port
+                            && exc.sha256_fingerprint.eq_ignore_ascii_case(&fp)
+                        {
+                            return Ok(ServerCertVerified::assertion());
+                        }
                     }
                 }
                 Err(orig_err)
@@ -135,7 +180,10 @@ fn load_native_root_store() -> rustls::RootCertStore {
     root_store
 }
 
-fn build_rustls_client_config(ssl_exceptions: &[SslException]) -> Option<rustls::ClientConfig> {
+fn build_rustls_client_config(
+    ssl_exceptions: &[SslException],
+    target_port: u16,
+) -> Option<rustls::ClientConfig> {
     ensure_crypto_provider();
     let root_store = load_native_root_store();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -152,6 +200,7 @@ fn build_rustls_client_config(ssl_exceptions: &[SslException]) -> Option<rustls:
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(HostPinVerifier {
             pinned_sha256_by_host: ssl_exceptions.to_vec(),
+            target_port,
             inner: base_verifier,
         }))
         .with_no_client_auth();
@@ -159,10 +208,17 @@ fn build_rustls_client_config(ssl_exceptions: &[SslException]) -> Option<rustls:
     Some(cfg)
 }
 
-pub const DEFAULT_CLIENT_USER_AGENT: &str = concat!("FerriteDM/", env!("CARGO_PKG_VERSION"));
+pub const DEFAULT_CLIENT_USER_AGENT: &str = concat!("Ferrite/", env!("CARGO_PKG_VERSION"));
+
+fn url_target_port(url_str: &str, default_port: u16) -> u16 {
+    Url::parse(url_str)
+        .ok()
+        .and_then(|u| u.port_or_known_default())
+        .unwrap_or(default_port)
+}
 
 fn resolve_default_user_agent<'a>(
-    config: &FdmConfig,
+    config: &FerriteConfig,
     user_agent_override: Option<&'a str>,
 ) -> &'a str {
     user_agent_override
@@ -178,10 +234,11 @@ fn resolve_default_user_agent<'a>(
 }
 
 fn build_http_client_inner(
-    config: &FdmConfig,
+    config: &FerriteConfig,
     ssl_exceptions: &[SslException],
     user_agent_override: Option<&str>,
     follow_redirects: bool,
+    target_port: u16,
 ) -> Result<Client> {
     ensure_crypto_provider();
     let redirect_policy = if follow_redirects {
@@ -203,7 +260,7 @@ fn build_http_client_inner(
     builder = builder.user_agent(ua);
 
     if !ssl_exceptions.is_empty()
-        && let Some(tls_cfg) = build_rustls_client_config(ssl_exceptions)
+        && let Some(tls_cfg) = build_rustls_client_config(ssl_exceptions, target_port)
     {
         builder = builder.use_preconfigured_tls(tls_cfg);
     }
@@ -213,11 +270,26 @@ fn build_http_client_inner(
 }
 
 pub fn build_http_client(
-    config: &FdmConfig,
+    config: &FerriteConfig,
     ssl_exceptions: &[SslException],
     user_agent_override: Option<&str>,
 ) -> Result<Client> {
-    build_http_client_inner(config, ssl_exceptions, user_agent_override, true)
+    build_http_client_inner(config, ssl_exceptions, user_agent_override, true, 443)
+}
+
+pub fn build_http_client_for_url(
+    config: &FerriteConfig,
+    ssl_exceptions: &[SslException],
+    user_agent_override: Option<&str>,
+    target_url: &str,
+) -> Result<Client> {
+    build_http_client_inner(
+        config,
+        ssl_exceptions,
+        user_agent_override,
+        true,
+        url_target_port(target_url, 443),
+    )
 }
 
 fn apply_proxy_settings(
@@ -547,7 +619,7 @@ static BARE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*([^;\s]+)"#).unwrap());
 
 pub fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
-    // Matches FDM's filename*=UTF-8'', RFC 2047 =?utf-8?b?...?=, quoted filename="..." and bare filename=...
+    // Matches RFC 5987 filename*=UTF-8'', RFC 2047 =?utf-8?b?...?=, quoted filename="..." and bare filename=...
     if let Some(caps) = UTF8_EXT_RE.captures(header_val) {
         let decoded = urlencoding_decode(&caps[1]);
         if !decoded.is_empty() {
@@ -583,6 +655,17 @@ fn parse_content_range_total(val: &str) -> Option<u64> {
     })
 }
 
+fn is_ftp_url(url_str: &str) -> bool {
+    Url::parse(url_str).ok().is_some_and(|u| {
+        u.scheme().eq_ignore_ascii_case("ftp") || u.scheme().eq_ignore_ascii_case("ftps")
+    }) || url_str
+        .get(..6)
+        .is_some_and(|p| p.eq_ignore_ascii_case("ftp://"))
+        || url_str
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("ftps://"))
+}
+
 async fn probe_http_resource_inner(
     client: &Client,
     record: &DownloadRecord,
@@ -590,7 +673,7 @@ async fn probe_http_resource_inner(
     cred: Option<&AuthCredential>,
     jar: Option<&RedirectCookieJar>,
 ) -> Result<(ProbeResult, Option<&'static str>)> {
-    if record.url.starts_with("ftp://") || record.url.starts_with("ftps://") {
+    if is_ftp_url(&record.url) {
         let p = probe_ftp_resource(&record.url, ssl_exceptions, cred).await?;
         return Ok((p, None));
     }
@@ -852,7 +935,7 @@ pub fn build_initial_segments(
 
 pub async fn download_http_or_ftp<F>(
     mut record: DownloadRecord,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     ssl_exceptions: &[SslException],
     cred: Option<AuthCredential>,
     limiter: BandwidthLimiter,
@@ -862,7 +945,7 @@ pub async fn download_http_or_ftp<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
-    if record.url.starts_with("ftp://") || record.url.starts_with("ftps://") {
+    if is_ftp_url(&record.url) {
         return download_ftp(
             record,
             config,
@@ -877,8 +960,14 @@ where
 
     let mut active_ua =
         resolve_default_user_agent(config, record.http.user_agent.as_deref()).to_string();
-    let mut client = match build_http_client_inner(config, ssl_exceptions, Some(&active_ua), false)
-    {
+    let mut active_tls_port = url_target_port(&record.url, 443);
+    let mut client = match build_http_client_inner(
+        config,
+        ssl_exceptions,
+        Some(&active_ua),
+        false,
+        active_tls_port,
+    ) {
         Ok(c) => c,
         Err(e) => {
             record.state = DownloadState::Error;
@@ -931,12 +1020,22 @@ where
                 return record;
             }
         };
-        if let Some(ua) = winning_ua
-            && ua != active_ua
-            && let Ok(switched) = build_http_client_inner(config, ssl_exceptions, Some(ua), false)
+        let resolved_tls_port = url_target_port(&probe.final_url, active_tls_port);
+        let next_ua = winning_ua.unwrap_or(&active_ua);
+        let ua_changed = next_ua != active_ua;
+        let port_changed = resolved_tls_port != active_tls_port && !ssl_exceptions.is_empty();
+        if (ua_changed || port_changed)
+            && let Ok(switched) = build_http_client_inner(
+                config,
+                ssl_exceptions,
+                Some(next_ua),
+                false,
+                resolved_tls_port,
+            )
         {
             client = switched;
-            active_ua = ua.to_string();
+            active_ua = next_ua.to_string();
+            active_tls_port = resolved_tls_port;
         }
 
         // Detect remote resource change if previously probed
@@ -947,6 +1046,12 @@ where
             .map(|(old, new)| old != new)
             .unwrap_or(false)
             || record
+                .last_modified
+                .as_deref()
+                .zip(probe.last_modified.as_deref())
+                .map(|(old, new)| old != new)
+                .unwrap_or(false)
+            || record
                 .total_bytes
                 .zip(probe.total_bytes)
                 .map(|(old, new)| old != new)
@@ -955,7 +1060,7 @@ where
             if config.core.auto_restart_if_remote_changed {
                 record.segments.clear();
                 record.downloaded_bytes = 0;
-                let _ = std::fs::remove_file(record.partial_path());
+                let _ = tokio::fs::remove_file(record.partial_path()).await;
             } else {
                 record.state = DownloadState::Error;
                 record.abort_reason = DownloadAbortReason::RemoteResourceChanged;
@@ -979,7 +1084,7 @@ where
         record.etag = probe.etag.clone();
         record.last_modified = probe.last_modified.clone();
 
-        if let Err(e) = std::fs::create_dir_all(&record.target_dir) {
+        if let Err(e) = tokio::fs::create_dir_all(&record.target_dir).await {
             record.state = DownloadState::Error;
             record.last_error = Some(format!("Create dir failed: {e}"));
             return record;
@@ -1012,7 +1117,7 @@ where
                     // Multi-section range burst was forbidden or range ignored; fall back to plain single-stream GET.
                     record.segments.clear();
                     record.downloaded_bytes = 0;
-                    let _ = std::fs::remove_file(&partial_path);
+                    let _ = tokio::fs::remove_file(&partial_path).await;
                     download_single_stream(
                         &client,
                         &mut record,
@@ -1032,8 +1137,8 @@ where
                 other => other,
             }
         } else {
-            used_range_in_single =
-                probe.resume_support == ResumeSupport::Present && partial_path.exists();
+            used_range_in_single = probe.resume_support == ResumeSupport::Present
+                && tokio::fs::try_exists(&partial_path).await.unwrap_or(false);
             download_single_stream(
                 &client,
                 &mut record,
@@ -1079,10 +1184,10 @@ where
             Ok(Outcome::Completed) => {
                 let output_path = record.output_path();
                 if partial_path != output_path {
-                    if output_path.exists() {
-                        let _ = std::fs::remove_file(&output_path);
+                    if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+                        let _ = tokio::fs::remove_file(&output_path).await;
                     }
-                    if let Err(e) = std::fs::rename(&partial_path, &output_path) {
+                    if let Err(e) = tokio::fs::rename(&partial_path, &output_path).await {
                         record.state = DownloadState::Error;
                         record.last_error = Some(format!("Finalize rename failed: {e}"));
                         return record;
@@ -1093,10 +1198,18 @@ where
                     && let Ok(st) = httpdate::parse_http_date(lm)
                 {
                     let ft = filetime::FileTime::from_system_time(st);
-                    let _ = filetime::set_file_mtime(&output_path, ft);
+                    let out_c = output_path.clone();
+                    let _ =
+                        tokio::task::spawn_blocking(move || filetime::set_file_mtime(&out_c, ft))
+                            .await;
                 }
                 if config.core.set_mark_of_the_web {
-                    let _ = set_mark_of_the_web(&output_path, &record.url, "FerriteDM");
+                    let out_c = output_path.clone();
+                    let url_c = record.url.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        set_mark_of_the_web(&out_c, &url_c, "Ferrite")
+                    })
+                    .await;
                 }
                 record.state = DownloadState::Completed;
                 record.download_speed_bps = 0;
@@ -1221,7 +1334,7 @@ async fn try_download_403_fallbacks<F>(
     partial_path: &Path,
     probe: &ProbeResult,
     cred: Option<&AuthCredential>,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     ssl_exceptions: &[SslException],
     limiter: &BandwidthLimiter,
     cookie_jar: &RedirectCookieJar,
@@ -1232,6 +1345,14 @@ async fn try_download_403_fallbacks<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
+    let tls_port = url_target_port(
+        if !probe.final_url.is_empty() {
+            &probe.final_url
+        } else {
+            &record.url
+        },
+        443,
+    );
     // 1. If the failed single-stream attempt sent a resume Range header, retry plain GET without Range.
     if used_range_in_single {
         if matches!(
@@ -1284,7 +1405,8 @@ where
         } else {
             sys_ua
         };
-        if let Ok(alt_client) = build_http_client_inner(config, ssl_exceptions, Some(alt_ua), false)
+        if let Ok(alt_client) =
+            build_http_client_inner(config, ssl_exceptions, Some(alt_ua), false, tls_port)
         {
             match download_single_stream(
                 &alt_client,
@@ -1331,6 +1453,7 @@ where
                 ssl_exceptions,
                 Some(ferrite_core::os_integration::system_default_user_agent()),
                 false,
+                tls_port,
             )
             .unwrap_or_else(|_| initial_client.clone())
         };
@@ -1366,7 +1489,7 @@ async fn download_multi_section<F>(
     probe: &ProbeResult,
     sections_limit: u32,
     cred: Option<&AuthCredential>,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     limiter: &BandwidthLimiter,
     cookie_jar: &RedirectCookieJar,
     control_rx: &mut watch::Receiver<ControlCommand>,
@@ -1376,16 +1499,23 @@ where
     F: FnMut(&DownloadRecord) + Send,
 {
     let total = record.total_bytes.unwrap_or(0);
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .read(true)
-        .truncate(false)
-        .open(partial_path)
-        .map_err(|e| DownloadFailure::network(format!("Open partial file failed: {e}")))?;
-    file.set_len(total).map_err(|e| {
-        DownloadFailure::network(format!("Preallocate {} bytes failed: {e}", total))
-    })?;
+    let partial_buf = partial_path.to_path_buf();
+    let file =
+        tokio::task::spawn_blocking(move || -> std::result::Result<File, DownloadFailure> {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .read(true)
+                .truncate(false)
+                .open(&partial_buf)
+                .map_err(|e| DownloadFailure::network(format!("Open partial file failed: {e}")))?;
+            f.set_len(total).map_err(|e| {
+                DownloadFailure::network(format!("Preallocate {} bytes failed: {e}", total))
+            })?;
+            Ok(f)
+        })
+        .await
+        .map_err(|e| DownloadFailure::network(format!("Open partial task panicked: {e}")))??;
     let file = Arc::new(file);
 
     let primary_url = if !probe.final_url.is_empty() {
@@ -1446,21 +1576,22 @@ where
                 }
                 // Pick this worker's segment first, else steal half of largest pending/slow remainder!
                 let job = {
-                    let mut segs = shared_segments.lock().unwrap();
+                    let mut segs = lock_mutex(&shared_segments);
                     let mine = &mut segs[idx];
                     if mine.start + mine.downloaded <= mine.end {
                         mine.state = SegmentState::Active;
-                        let start_at = mine.start + mine.downloaded;
-                        let end_at = mine.end;
                         let u = mine
                             .mirror_url
                             .clone()
                             .unwrap_or_else(|| urls_pool[0].clone());
-                        Some((idx, start_at, end_at, u))
+                        Some((idx, u))
                     } else {
                         // Work-stealing: find segment with > 512 KiB left and split its tail!
                         let mut best: Option<(usize, u64)> = None;
                         for (j, s) in segs.iter().enumerate() {
+                            if s.state == SegmentState::Failed {
+                                continue;
+                            }
                             let cur = s.start + s.downloaded;
                             if cur <= s.end {
                                 let rem = s.end - cur + 1;
@@ -1485,41 +1616,47 @@ where
                                 speed_bps: 0,
                                 mirror_url: Some(u.clone()),
                             });
-                            Some((segs.len() - 1, split_point, victim_end, u))
+                            Some((segs.len() - 1, u))
                         } else {
                             None
                         }
                     }
                 };
 
-                let Some((seg_idx, range_start, _orig_end, target_url)) = job else {
+                let Some((seg_idx, target_url)) = job else {
                     break;
                 };
 
-                // Execute HTTP Range GET (fallback to primary URL and original URL if mirror/redirect fails)
+                // Execute HTTP Range GET (fallback across all mirrors, primary URL, and original URL)
                 let mut try_urls = vec![target_url];
-                if try_urls[0] != urls_pool[0] {
-                    try_urls.push(urls_pool[0].clone());
+                for u in urls_pool.iter() {
+                    if !try_urls.iter().any(|existing| existing == u) {
+                        try_urls.push(u.clone());
+                    }
                 }
                 if !try_urls.iter().any(|u| u == original_url.as_str()) {
                     try_urls.push((*original_url).clone());
                 }
 
                 let mut seg_ok = false;
-                let last_idx = try_urls.len().saturating_sub(1);
-                for (attempt_i, try_url) in try_urls.into_iter().enumerate() {
-                    let is_last_url = attempt_i == last_idx;
-                    let current_end = {
-                        let segs = shared_segments.lock().unwrap();
-                        segs[seg_idx].end
+                let mut seg_last_err: Option<DownloadFailure> = None;
+                let mut unrecoverable_err = false;
+                for try_url in try_urls {
+                    if cancel_flag.load(Ordering::Relaxed) || pause_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let (current_start, current_end) = {
+                        let segs = lock_mutex(&shared_segments);
+                        let s = &segs[seg_idx];
+                        (s.start + s.downloaded, s.end)
                     };
-                    if range_start > current_end {
+                    if current_start > current_end {
                         seg_ok = true;
                         break;
                     }
                     let mut h = headers.clone();
                     if let Ok(hv) =
-                        HeaderValue::from_str(&format!("bytes={range_start}-{current_end}"))
+                        HeaderValue::from_str(&format!("bytes={current_start}-{current_end}"))
                     {
                         h.insert(RANGE, hv);
                     }
@@ -1536,58 +1673,39 @@ where
                     {
                         Ok((r, _)) => r,
                         Err(e) => {
-                            if is_last_url {
-                                let mut g = failed_err.lock().unwrap();
-                                if g.is_none() {
-                                    *g = Some(DownloadFailure::network(format!(
-                                        "Section {seg_idx} request error: {e}"
-                                    )));
-                                }
-                            }
+                            seg_last_err = Some(DownloadFailure::network(format!(
+                                "Section {seg_idx} request error: {e}"
+                            )));
                             continue;
                         }
                     };
 
                     let st = resp.status();
-                    if range_start > 0 && st == StatusCode::OK {
-                        let mut g = failed_err.lock().unwrap();
-                        if g.is_none() {
-                            *g = Some(DownloadFailure {
-                                message: format!(
-                                    "Server ignored Range header on section {seg_idx} (HTTP 200)"
-                                ),
-                                reason: DownloadAbortReason::NetworkError,
-                                unwanted: false,
-                                status: Some(st),
-                                range_rejected: true,
-                            });
-                        }
+                    if current_start > 0 && st == StatusCode::OK {
+                        seg_last_err = Some(DownloadFailure {
+                            message: format!(
+                                "Server ignored Range header on section {seg_idx} (HTTP 200)"
+                            ),
+                            reason: DownloadAbortReason::NetworkError,
+                            unwanted: false,
+                            status: Some(st),
+                            range_rejected: true,
+                        });
                         cancel_flag.store(true, Ordering::Relaxed);
                         break;
                     }
 
                     if !(st == StatusCode::PARTIAL_CONTENT || st == StatusCode::OK) {
-                        let fail = DownloadFailure::http_status(
+                        seg_last_err = Some(DownloadFailure::http_status(
                             st,
                             format!("HTTP status {} on section {}", st, seg_idx),
                             detect_unwanted,
-                        );
-                        let is_unwanted = fail.unwanted;
-                        if is_last_url {
-                            let mut g = failed_err.lock().unwrap();
-                            if g.is_none() {
-                                *g = Some(fail);
-                            }
-                            if is_unwanted {
-                                cancel_flag.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
+                        ));
                         continue;
                     }
 
                     let mut stream = resp.bytes_stream();
-                    let mut offset = range_start;
+                    let mut offset = current_start;
                     let mut chunk_err = false;
                     while let Some(item) = stream.next().await {
                         if cancel_flag.load(Ordering::Relaxed) || pause_flag.load(Ordering::Relaxed)
@@ -1597,51 +1715,85 @@ where
                         let bytes = match item {
                             Ok(b) => b,
                             Err(e) => {
-                                let mut g = failed_err.lock().unwrap();
-                                if g.is_none() {
-                                    *g = Some(DownloadFailure::network(format!(
-                                        "Stream read error: {e}"
-                                    )));
-                                }
+                                seg_last_err = Some(DownloadFailure::network(format!(
+                                    "Stream read error: {e}"
+                                )));
                                 chunk_err = true;
                                 break;
                             }
                         };
-                        let cur_end = {
-                            let segs = shared_segments.lock().unwrap();
-                            segs[seg_idx].end
-                        };
-                        if offset > cur_end {
-                            break;
-                        }
-                        let allowed_len = ((cur_end - offset + 1) as usize).min(bytes.len());
-                        if allowed_len == 0 {
-                            break;
-                        }
-                        limiter.acquire(allowed_len).await;
-                        let slice = &bytes[..allowed_len];
-                        if let Err(e) = write_at_exact(&file, slice, offset) {
-                            let mut g = failed_err.lock().unwrap();
-                            if g.is_none() {
-                                *g = Some(DownloadFailure::network(format!(
-                                    "Disk write failed: {e}"
-                                )));
+                        let pre_allowed = {
+                            let segs = lock_mutex(&shared_segments);
+                            let cur_end = segs[seg_idx].end;
+                            if offset > cur_end {
+                                0
+                            } else {
+                                ((cur_end - offset + 1) as usize).min(bytes.len())
                             }
+                        };
+                        if pre_allowed == 0 {
+                            break;
+                        }
+                        limiter.acquire(pre_allowed).await;
+                        if cancel_flag.load(Ordering::Relaxed) || pause_flag.load(Ordering::Relaxed)
+                        {
+                            break;
+                        }
+
+                        // Re-check segment bounds under lock after limiter.acquire and reserve
+                        // [offset, offset + write_len) so work-stealing cannot split across an
+                        // in-flight write or write past cur_end.
+                        let (write_len, reserved_end) = {
+                            let mut segs = lock_mutex(&shared_segments);
+                            let s = &mut segs[seg_idx];
+                            let cur_end = s.end;
+                            if offset > cur_end {
+                                (0, cur_end)
+                            } else {
+                                let wl = ((cur_end - offset + 1) as usize).min(pre_allowed);
+                                if wl > 0 {
+                                    s.downloaded = (offset + wl as u64).saturating_sub(s.start);
+                                }
+                                (wl, cur_end)
+                            }
+                        };
+                        if write_len == 0 {
+                            break;
+                        }
+
+                        let file_c = Arc::clone(&file);
+                        let chunk_slice = bytes.slice(..write_len);
+                        let write_res = tokio::task::spawn_blocking(move || {
+                            write_at_exact(&file_c, &chunk_slice, offset)
+                        })
+                        .await;
+                        let write_err = match write_res {
+                            Ok(Ok(())) => None,
+                            Ok(Err(e)) => Some(format!("Disk write failed: {e}")),
+                            Err(e) => Some(format!("Disk write task panicked: {e}")),
+                        };
+                        if let Some(msg) = write_err {
+                            {
+                                let mut segs = lock_mutex(&shared_segments);
+                                let s = &mut segs[seg_idx];
+                                s.downloaded = offset.saturating_sub(s.start);
+                            }
+                            seg_last_err = Some(DownloadFailure::network(msg));
+                            unrecoverable_err = true;
                             cancel_flag.store(true, Ordering::Relaxed);
                             chunk_err = true;
                             break;
                         }
-                        offset += allowed_len as u64;
-                        total_downloaded.fetch_add(allowed_len as u64, Ordering::Relaxed);
+                        offset += write_len as u64;
+                        total_downloaded.fetch_add(write_len as u64, Ordering::Relaxed);
                         {
-                            let mut segs = shared_segments.lock().unwrap();
+                            let mut segs = lock_mutex(&shared_segments);
                             let s = &mut segs[seg_idx];
-                            s.downloaded = offset.saturating_sub(s.start);
                             if offset > s.end {
                                 s.state = SegmentState::Completed;
                             }
                         }
-                        if offset > cur_end {
+                        if offset > reserved_end {
                             break;
                         }
                     }
@@ -1650,10 +1802,30 @@ where
                         seg_ok = true;
                         break;
                     }
+                    if unrecoverable_err {
+                        break;
+                    }
                 }
 
-                if !seg_ok {
-                    let mut segs = shared_segments.lock().unwrap();
+                if seg_ok {
+                    // Ensure transient errors from earlier mirror attempts do not stick if a fallback succeeded.
+                    let mut g = lock_mutex(&failed_err);
+                    if !cancel_flag.load(Ordering::Relaxed) {
+                        *g = None;
+                    }
+                } else {
+                    if !pause_flag.load(Ordering::Relaxed) {
+                        let mut g = lock_mutex(&failed_err);
+                        if g.is_none() {
+                            *g = Some(seg_last_err.unwrap_or_else(|| {
+                                DownloadFailure::network(format!(
+                                    "Section {seg_idx} failed on all mirrors"
+                                ))
+                            }));
+                        }
+                        cancel_flag.store(true, Ordering::Relaxed);
+                    }
+                    let mut segs = lock_mutex(&shared_segments);
                     if segs[seg_idx].start + segs[seg_idx].downloaded <= segs[seg_idx].end {
                         segs[seg_idx].state = SegmentState::Failed;
                     }
@@ -1673,7 +1845,8 @@ where
             _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
             changed = control_rx.changed() => {
                 if changed.is_ok() {
-                    match *control_rx.borrow() {
+                    let cmd = control_rx.borrow().clone();
+                    match cmd {
                         ControlCommand::Pause => {
                             pause_flag.store(true, Ordering::Relaxed);
                         }
@@ -1695,7 +1868,7 @@ where
         last_tick = now;
 
         {
-            let segs = shared_segments.lock().unwrap();
+            let segs = lock_mutex(&shared_segments);
             record.segments = segs.clone();
         }
         record.downloaded_bytes = cur.min(total);
@@ -1740,10 +1913,11 @@ where
     }
 
     {
-        let segs = shared_segments.lock().unwrap();
+        let segs = lock_mutex(&shared_segments);
         record.segments = segs.clone();
     }
-    let _ = file.sync_all();
+    let file_sync = Arc::clone(&file);
+    let _ = tokio::task::spawn_blocking(move || file_sync.sync_all()).await;
 
     if matches!(*control_rx.borrow(), ControlCommand::Cancel) {
         return Ok(Outcome::Cancelled);
@@ -1751,7 +1925,7 @@ where
     if matches!(*control_rx.borrow(), ControlCommand::Pause) {
         return Ok(Outcome::Paused);
     }
-    if let Some(err) = failed_err.lock().unwrap().take() {
+    if let Some(err) = lock_mutex(&failed_err).take() {
         return Err(err);
     }
     if total_downloaded.load(Ordering::Relaxed) >= total {
@@ -1769,7 +1943,7 @@ async fn download_single_stream<F>(
     partial_path: &Path,
     probe: &ProbeResult,
     cred: Option<&AuthCredential>,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     limiter: &BandwidthLimiter,
     cookie_jar: &RedirectCookieJar,
     allow_range: bool,
@@ -1780,14 +1954,14 @@ async fn download_single_stream<F>(
 where
     F: FnMut(&DownloadRecord) + Send,
 {
-    let existing_len =
-        if allow_range && probe.resume_support == ResumeSupport::Present && partial_path.exists() {
-            std::fs::metadata(partial_path)
-                .map(|m| m.len())
-                .unwrap_or(0)
-        } else {
-            0
-        };
+    let existing_len = if allow_range && probe.resume_support == ResumeSupport::Present {
+        tokio::fs::metadata(partial_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     let mut headers = build_request_headers(record, cred);
     ensure_identity_encoding(&mut headers);
@@ -1874,17 +2048,28 @@ where
     } else {
         0
     };
-    let file = if append_offset > 0 {
-        OpenOptions::new()
+    let mut file = if append_offset > 0 {
+        let mut f = tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .read(true)
             .truncate(false)
             .open(partial_path)
+            .await
+            .map_err(|e| DownloadFailure::network(format!("Open partial file failed: {e}")))?;
+        f.seek(std::io::SeekFrom::Start(append_offset))
+            .await
+            .map_err(|e| DownloadFailure::network(format!("Seek partial file failed: {e}")))?;
+        f
     } else {
-        File::create(partial_path)
-    }
-    .map_err(|e| DownloadFailure::network(format!("Open partial file failed: {e}")))?;
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(partial_path)
+            .await
+            .map_err(|e| DownloadFailure::network(format!("Create partial file failed: {e}")))?
+    };
 
     let mut written = append_offset;
     record.state = DownloadState::Downloading;
@@ -1918,7 +2103,8 @@ where
             if let Some(s0) = record.segments.get_mut(0) {
                 s0.downloaded = written;
             }
-            let _ = file.sync_all();
+            let _ = file.flush().await;
+            let _ = file.sync_all().await;
             return Ok(Outcome::Paused);
         }
         if matches!(*control_rx.borrow(), ControlCommand::Cancel) {
@@ -1967,13 +2153,15 @@ where
                 }
             }
             _ = control_rx.changed() => {
-                match *control_rx.borrow() {
+                let cmd = control_rx.borrow().clone();
+                match cmd {
                     ControlCommand::Pause => {
                         record.downloaded_bytes = written;
                         if let Some(s0) = record.segments.get_mut(0) {
                             s0.downloaded = written;
                         }
-                        let _ = file.sync_all();
+                        let _ = file.flush().await;
+                        let _ = file.sync_all().await;
                         return Ok(Outcome::Paused);
                     }
                     ControlCommand::Cancel => {
@@ -1990,7 +2178,8 @@ where
                 match next_chunk {
                     Some(Ok(chunk)) => {
                         limiter.acquire(chunk.len()).await;
-                        write_at_exact(&file, &chunk, written)
+                        file.write_all(&chunk)
+                            .await
                             .map_err(|e| DownloadFailure::network(format!("Disk write error: {e}")))?;
                         written += chunk.len() as u64;
                         bytes_in_window += chunk.len() as u64;
@@ -2042,7 +2231,8 @@ where
         }
     }
 
-    let _ = file.sync_all();
+    let _ = file.flush().await;
+    let _ = file.sync_all().await;
     record.downloaded_bytes = written;
     if record.total_bytes.is_none() {
         record.total_bytes = Some(written);
@@ -2080,24 +2270,23 @@ async fn connect_ftp_stream(
     let host = parsed.host_str().unwrap_or("localhost");
     let is_ftps = parsed.scheme().eq_ignore_ascii_case("ftps");
     let port = parsed.port().unwrap_or(21);
+    let decoded_url_user =
+        (!parsed.username().is_empty()).then(|| urlencoding_decode(parsed.username()));
     let user = cred
         .map(|c| c.username.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            if parsed.username().is_empty() {
-                "anonymous"
-            } else {
-                parsed.username()
-            }
-        });
+        .or(decoded_url_user.as_deref())
+        .unwrap_or("anonymous");
+    let decoded_url_pass = parsed.password().map(urlencoding_decode);
     let pass = cred
         .map(|c| c.password.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| parsed.password().unwrap_or("ferrite@example.com"));
+        .or(decoded_url_pass.as_deref())
+        .unwrap_or("ferrite@example.com");
 
     let mut ftp = AsyncRustlsFtpStream::connect(format!("{host}:{port}")).await?;
     if is_ftps {
-        let mut tls_cfg = build_rustls_client_config(ssl_exceptions).unwrap_or_else(|| {
+        let mut tls_cfg = build_rustls_client_config(ssl_exceptions, port).unwrap_or_else(|| {
             ensure_crypto_provider();
             rustls::ClientConfig::builder()
                 .with_root_certificates(load_native_root_store())
@@ -2119,7 +2308,7 @@ async fn probe_ftp_resource(
     cred: Option<&AuthCredential>,
 ) -> Result<ProbeResult> {
     let parsed = Url::parse(url_str)?;
-    let path = parsed.path().to_string();
+    let path = urlencoding_decode(parsed.path());
 
     let mut ftp = connect_ftp_stream(&parsed, ssl_exceptions, cred).await?;
     let size = ftp.size(&path).await.ok().map(|s| s as u64);
@@ -2143,7 +2332,7 @@ async fn probe_ftp_resource(
 
 async fn download_ftp<F>(
     mut record: DownloadRecord,
-    config: &FdmConfig,
+    config: &FerriteConfig,
     ssl_exceptions: &[SslException],
     cred: Option<AuthCredential>,
     limiter: BandwidthLimiter,
@@ -2159,7 +2348,14 @@ where
         record.last_error = Some("Invalid FTP URL".into());
         return record;
     };
-    let remote_path = parsed.path().to_string();
+    if !parsed.scheme().eq_ignore_ascii_case("ftp") && !parsed.scheme().eq_ignore_ascii_case("ftps")
+    {
+        record.state = DownloadState::Error;
+        record.abort_reason = DownloadAbortReason::InvalidUrl;
+        record.last_error = Some(format!("Unsupported FTP scheme: {}", parsed.scheme()));
+        return record;
+    }
+    let remote_path = urlencoding_decode(parsed.path());
 
     record.state = DownloadState::Starting;
     on_progress(&record);
@@ -2171,6 +2367,18 @@ where
     };
 
     for attempt in 0..max_attempts {
+        if matches!(*control_rx.borrow(), ControlCommand::Pause) {
+            record.state = DownloadState::Paused;
+            on_progress(&record);
+            return record;
+        }
+        if matches!(*control_rx.borrow(), ControlCommand::Cancel) {
+            record.state = DownloadState::Stopped;
+            record.abort_reason = DownloadAbortReason::AbortedByUser;
+            on_progress(&record);
+            return record;
+        }
+
         let mut ftp = match connect_ftp_stream(&parsed, ssl_exceptions, cred.as_ref()).await {
             Ok(f) => f,
             Err(e) => {
@@ -2181,6 +2389,7 @@ where
                     continue;
                 }
                 record.state = DownloadState::Error;
+                on_progress(&record);
                 return record;
             }
         };
@@ -2189,15 +2398,36 @@ where
             record.total_bytes = Some(sz as u64);
         }
 
-        let _ = std::fs::create_dir_all(&record.target_dir);
+        if let Err(e) = tokio::fs::create_dir_all(&record.target_dir).await {
+            record.state = DownloadState::Error;
+            record.last_error = Some(format!("Create dir failed: {e}"));
+            on_progress(&record);
+            return record;
+        }
         let partial_path = record.partial_path();
-        let offset = std::fs::metadata(&partial_path)
+        let mut offset = tokio::fs::metadata(&partial_path)
+            .await
             .map(|m| m.len())
             .unwrap_or(0);
-        if offset > 0 {
-            let _ = ftp.resume_transfer(offset as usize).await;
+        if offset > 0
+            && let Err(e) = ftp.resume_transfer(offset as usize).await
+        {
+            tracing::warn!("FTP server rejected REST {offset} ({e}); restarting from byte 0");
+            offset = 0;
         }
-        let mut reader = match ftp.retr_as_stream(&remote_path).await {
+        let retr_res = match ftp.retr_as_stream(&remote_path).await {
+            Ok(r) => Ok(r),
+            Err(e) if offset > 0 => {
+                tracing::warn!(
+                    "FTP RETR with REST {offset} failed ({e}); truncating partial file and restarting from byte 0"
+                );
+                offset = 0;
+                let _ = ftp.resume_transfer(0).await;
+                ftp.retr_as_stream(&remote_path).await
+            }
+            Err(e) => Err(e),
+        };
+        let mut reader = match retr_res {
             Ok(r) => r,
             Err(e) => {
                 record.last_error = Some(format!("FTP RETR error: {e}"));
@@ -2207,29 +2437,43 @@ where
                     continue;
                 }
                 record.state = DownloadState::Error;
+                on_progress(&record);
                 return record;
             }
         };
 
         let file = if offset > 0 {
-            OpenOptions::new()
+            async {
+                let mut f = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(&partial_path)
+                    .await?;
+                f.seek(std::io::SeekFrom::Start(offset)).await?;
+                Ok::<_, std::io::Error>(f)
+            }
+            .await
+        } else {
+            tokio::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
-                .truncate(false)
+                .truncate(true)
                 .open(&partial_path)
-        } else {
-            File::create(&partial_path)
+                .await
         };
-        let file = match file {
+        let mut file = match file {
             Ok(f) => f,
             Err(e) => {
                 record.state = DownloadState::Error;
                 record.last_error = Some(format!("Open file failed: {e}"));
+                on_progress(&record);
                 return record;
             }
         };
 
         let mut written = offset;
+        record.downloaded_bytes = written;
         record.state = DownloadState::Downloading;
         record.connections_active = 1;
         let mut buf = vec![0u8; 64 * 1024];
@@ -2243,6 +2487,8 @@ where
         let mut eof = false;
         while !eof {
             if matches!(*control_rx.borrow(), ControlCommand::Pause) {
+                let _ = file.flush().await;
+                let _ = file.sync_all().await;
                 record.state = DownloadState::Paused;
                 record.connections_active = 0;
                 record.download_speed_bps = 0;
@@ -2297,11 +2543,12 @@ where
                         }
                         Ok(n) => {
                             limiter.acquire(n).await;
-                            if let Err(e) = write_at_exact(&file, &buf[..n], written) {
+                            if let Err(e) = file.write_all(&buf[..n]).await {
                                 record.state = DownloadState::Error;
                                 record.connections_active = 0;
                                 record.download_speed_bps = 0;
                                 record.last_error = Some(format!("Disk write error: {e}"));
+                                on_progress(&record);
                                 return record;
                             }
                             written += n as u64;
@@ -2332,15 +2579,31 @@ where
             return record;
         }
 
+        let _ = file.flush().await;
+        let _ = file.sync_all().await;
         let _ = reader.finish().await;
         let _ = ftp.quit().await;
 
         let output_path = record.output_path();
         if partial_path != output_path {
-            let _ = std::fs::rename(&partial_path, &output_path);
+            if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+                let _ = tokio::fs::remove_file(&output_path).await;
+            }
+            if let Err(e) = tokio::fs::rename(&partial_path, &output_path).await {
+                record.state = DownloadState::Error;
+                record.connections_active = 0;
+                record.download_speed_bps = 0;
+                record.last_error = Some(format!("Finalize rename failed: {e}"));
+                on_progress(&record);
+                return record;
+            }
         }
         if config.core.set_mark_of_the_web {
-            let _ = set_mark_of_the_web(&output_path, &record.url, "FerriteDM");
+            let out_c = output_path.clone();
+            let url_c = record.url.clone();
+            let _ =
+                tokio::task::spawn_blocking(move || set_mark_of_the_web(&out_c, &url_c, "Ferrite"))
+                    .await;
         }
         record.state = DownloadState::Completed;
         record.connections_active = 0;
@@ -2440,7 +2703,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.default_download_path = dir.clone();
         cfg.core.current_tum = TrafficUsageMode::Medium; // 8 connections max
         cfg.core.set_mark_of_the_web = false;
@@ -2461,7 +2724,7 @@ mod tests {
             url: url.clone(),
             target_dir: dir.clone(),
             file_name: "bundle.bin".into(),
-            partial_suffix: ".fdmdownload".into(),
+            partial_suffix: ".part".into(),
             total_bytes: None,
             downloaded_bytes: 0,
             uploaded_bytes: 0,
@@ -2534,7 +2797,7 @@ mod tests {
             url: url.clone(),
             target_dir: dir.to_path_buf(),
             file_name: file_name.into(),
-            partial_suffix: ".fdmdownload".into(),
+            partial_suffix: ".part".into(),
             total_bytes: None,
             downloaded_bytes: 0,
             uploaded_bytes: 0,
@@ -2645,7 +2908,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.default_download_path = dir.clone();
         cfg.core.set_mark_of_the_web = false;
 
@@ -2661,7 +2924,7 @@ mod tests {
             })
             .await;
         assert_eq!(paused.state, DownloadState::Paused);
-        assert!(dir.join("paused.bin.fdmdownload").exists());
+        assert!(dir.join("paused.bin.part").exists());
         assert!(paused.downloaded_bytes > 0);
         assert!(paused.downloaded_bytes < payload.len() as u64);
 
@@ -2720,7 +2983,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.auto_retry_failed = true;
         cfg.core.max_auto_retries = 5;
         cfg.core.detect_unwanted_errors = true;
@@ -2760,7 +3023,7 @@ mod tests {
                         .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
                         && let Some((_, val)) = ua_line.split_once(':')
                     {
-                        *seen_ua.lock().unwrap() = val.trim().to_string();
+                        *lock_mutex(&seen_ua) = val.trim().to_string();
                     }
                     let resp =
                         "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
@@ -2769,7 +3032,7 @@ mod tests {
             }
         });
 
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.use_system_default_user_agent = true;
         let client = build_http_client(&cfg, &[], None).unwrap();
         let _ = client
@@ -2777,7 +3040,7 @@ mod tests {
             .send()
             .await
             .unwrap();
-        let captured = seen_ua.lock().unwrap().clone();
+        let captured = lock_mutex(&seen_ua).clone();
         assert_eq!(
             captured,
             ferrite_core::os_integration::system_default_user_agent()
@@ -2830,7 +3093,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.auto_retry_failed = true;
         cfg.core.max_auto_retries = 3;
         cfg.core.set_mark_of_the_web = false;
@@ -2913,7 +3176,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
 
         let url = format!("http://{addr}/signed-get-only");
@@ -2988,7 +3251,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferrite_http_403_multi_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
         cfg.core.current_tum = TrafficUsageMode::Medium;
 
@@ -3039,9 +3302,7 @@ mod tests {
 
                     let allowed = match path {
                         "/browser-only" => ua.starts_with("Mozilla/5.0") && has_accept_lang,
-                        "/client-only" => {
-                            !ua.starts_with("Mozilla/5.0") && ua.contains("FerriteDM")
-                        }
+                        "/client-only" => !ua.starts_with("Mozilla/5.0") && ua.contains("Ferrite/"),
                         _ => false,
                     };
                     if !allowed {
@@ -3067,7 +3328,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Case A: Config disables browser UA, server requires browser UA -> falls back to browser UA.
-        let mut cfg_a = FdmConfig::default();
+        let mut cfg_a = FerriteConfig::default();
         cfg_a.core.use_system_default_user_agent = false;
         cfg_a.core.set_mark_of_the_web = false;
         let rec_a = make_test_record(format!("http://{addr}/browser-only"), &dir, "a.bin");
@@ -3090,8 +3351,8 @@ mod tests {
         );
         assert_eq!(std::fs::read(dir.join("a.bin")).unwrap(), b"OK-UA-FALLBACK");
 
-        // Case B: Config enables browser UA (default), server blocks Mozilla/5.0 (like SourceForge) -> falls back to FerriteDM UA.
-        let mut cfg_b = FdmConfig::default();
+        // Case B: Config enables browser UA (default), server blocks Mozilla/5.0 -> falls back to Ferrite UA.
+        let mut cfg_b = FerriteConfig::default();
         cfg_b.core.use_system_default_user_agent = true;
         cfg_b.core.set_mark_of_the_web = false;
         let rec_b = make_test_record(format!("http://{addr}/client-only"), &dir, "b.bin");
@@ -3161,7 +3422,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferrite_http_403_ref_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
 
         let rec = make_test_record(format!("http://{addr}/protected/img.png"), &dir, "img.png");
@@ -3208,7 +3469,7 @@ mod tests {
                         .and_then(|l| l.split_once(':'))
                         .map(|(_, v)| v.trim().to_string())
                     {
-                        seen_enc.lock().unwrap().push(ae);
+                        lock_mutex(&seen_enc).push(ae);
                     }
                     if path == "/gate" {
                         let resp = "HTTP/1.1 302 Found\r\nSet-Cookie: dl_gate=allowed42; Path=/\r\nLocation: /payload.bin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -3240,7 +3501,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferrite_http_cookie_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
 
         let rec = make_test_record(format!("http://{addr}/gate"), &dir, "payload.bin");
@@ -3257,7 +3518,7 @@ mod tests {
             std::fs::read(dir.join("payload.bin")).unwrap(),
             b"COOKIE-GATED-CONTENT"
         );
-        let encodings = seen_encodings.lock().unwrap();
+        let encodings = lock_mutex(&seen_encodings);
         assert!(!encodings.is_empty());
         assert!(
             encodings.iter().all(|e| e == "identity"),
@@ -3302,7 +3563,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferrite_http_perm403_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.auto_retry_failed = true;
         cfg.core.max_auto_retries = 5;
         cfg.core.detect_unwanted_errors = true;
@@ -3419,7 +3680,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferrite_http_xorigin_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.set_mark_of_the_web = false;
         cfg.core.current_tum = TrafficUsageMode::Medium;
 
@@ -3556,7 +3817,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferrite_http_probe_ua_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.use_system_default_user_agent = true;
         cfg.core.set_mark_of_the_web = false;
         cfg.core.current_tum = TrafficUsageMode::Medium;
@@ -3578,6 +3839,387 @@ mod tests {
         );
         assert!(done.segments.len() >= 4, "expected multi-section download");
         assert_eq!(std::fs::read(dir.join("sf.tar.xz")).unwrap(), *payload);
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn host_pin_verifier_enforces_exact_port_isolation() {
+        ensure_crypto_provider();
+        let dummy_cert = CertificateDer::from(vec![0x30u8, 0x82, 0x01, 0x00, 0xAA, 0xBB]);
+        let mut h = Sha256::new();
+        h.update(dummy_cert.as_ref());
+        let fp = hex::encode(h.finalize());
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.roots.push(rustls::pki_types::TrustAnchor {
+            subject: rustls::pki_types::Der::from_slice(b"test-subject"),
+            subject_public_key_info: rustls::pki_types::Der::from_slice(b"test-spki"),
+            name_constraints: None,
+        });
+        let base_verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .unwrap();
+
+        let make_verifier = |exceptions: Vec<SslException>, target_port: u16| HostPinVerifier {
+            pinned_sha256_by_host: exceptions,
+            target_port,
+            inner: base_verifier.clone(),
+        };
+
+        let explicit_exc = vec![SslException {
+            host_port: "pinned.example.com:8443".into(),
+            sha256_fingerprint: fp.clone(),
+            added_at: chrono::Utc::now(),
+        }];
+        let sni = ServerName::try_from("pinned.example.com").unwrap();
+        let now = UnixTime::now();
+
+        assert!(
+            make_verifier(explicit_exc.clone(), 8443)
+                .verify_server_cert(&dummy_cert, &[], &sni, &[], now)
+                .is_ok()
+        );
+        assert!(
+            make_verifier(explicit_exc.clone(), 443)
+                .verify_server_cert(&dummy_cert, &[], &sni, &[], now)
+                .is_err(),
+            "exception for :8443 must not leak to :443"
+        );
+        assert!(
+            make_verifier(explicit_exc, 9443)
+                .verify_server_cert(&dummy_cert, &[], &sni, &[], now)
+                .is_err(),
+            "exception for :8443 must not leak to :9443"
+        );
+
+        let default_port_exc = vec![SslException {
+            host_port: "default.example.com".into(),
+            sha256_fingerprint: fp.clone(),
+            added_at: chrono::Utc::now(),
+        }];
+        let default_sni = ServerName::try_from("default.example.com").unwrap();
+        assert!(
+            make_verifier(default_port_exc.clone(), 443)
+                .verify_server_cert(&dummy_cert, &[], &default_sni, &[], now)
+                .is_ok()
+        );
+        assert!(
+            make_verifier(default_port_exc, 8443)
+                .verify_server_cert(&dummy_cert, &[], &default_sni, &[], now)
+                .is_err(),
+            "omitted port must default to :443 and reject :8443"
+        );
+
+        let ipv6_exc = vec![SslException {
+            host_port: "[::1]:8443".into(),
+            sha256_fingerprint: fp,
+            added_at: chrono::Utc::now(),
+        }];
+        let v6_sni = ServerName::IpAddress(std::net::Ipv6Addr::LOCALHOST.into());
+        assert!(
+            make_verifier(ipv6_exc.clone(), 8443)
+                .verify_server_cert(&dummy_cert, &[], &v6_sni, &[], now)
+                .is_ok()
+        );
+        assert!(
+            make_verifier(ipv6_exc, 443)
+                .verify_server_cert(&dummy_cert, &[], &v6_sni, &[], now)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_section_mirror_fallback_clears_error_and_resumes_from_offset() {
+        let payload: Arc<Vec<u8>> = Arc::new((0..(512 * 1024)).map(|i| (i % 251) as u8).collect());
+        let payload_primary = Arc::clone(&payload);
+        let payload_mirror = Arc::clone(&payload);
+        let mirror_requests = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
+        let mirror_reqs_srv = Arc::clone(&mirror_requests);
+
+        // Primary server: answers HEAD & Range 0-0, then drops TCP mid-stream on Range requests!
+        let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let primary_addr = primary_listener.local_addr().unwrap();
+        let primary_srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = primary_listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_primary);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let range_hdr = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string());
+                    if req.starts_with("HEAD ") {
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        return;
+                    }
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(data.len() - 1)
+                            .min(data.len() - 1);
+                        let full_len = end - start + 1;
+                        let partial_send = (full_len / 2).max(1);
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {full_len}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        // Truncate response mid-stream to force stream read error and mirror fallback!
+                        let _ = sock.write_all(&data[start..start + partial_send]).await;
+                    }
+                });
+            }
+        });
+
+        // Fallback mirror: serves exact requested Range cleanly.
+        let mirror_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mirror_addr = mirror_listener.local_addr().unwrap();
+        let mirror_srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = mirror_listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_mirror);
+                let log = Arc::clone(&mirror_reqs_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let range_hdr = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim().to_string());
+                    if let Some(rh) = range_hdr
+                        && let Some(spec) = rh.strip_prefix("bytes=")
+                        && let Some((a, b)) = spec.split_once('-')
+                    {
+                        let start: usize = a.parse().unwrap_or(0);
+                        let end: usize = b
+                            .parse::<usize>()
+                            .unwrap_or(data.len() - 1)
+                            .min(data.len() - 1);
+                        lock_mutex(&log).push((start, end));
+                        let slice = &data[start..=end];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            data.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(slice).await;
+                    }
+                });
+            }
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("ferrite_http_mirror_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.auto_retry_failed = false;
+        cfg.core.current_tum = TrafficUsageMode::Low; // 4 connections per server
+
+        let mut rec = make_test_record(
+            format!("http://{primary_addr}/mirror.bin"),
+            &dir,
+            "mirror.bin",
+        );
+        rec.http.mirrors = vec![format!("http://{mirror_addr}/mirror.bin")];
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "mirror fallback should complete cleanly without stale failed_err: {:?}",
+            done.last_error
+        );
+        assert_eq!(done.downloaded_bytes, payload.len() as u64);
+        assert_eq!(std::fs::read(dir.join("mirror.bin")).unwrap(), *payload);
+        // Segment 0 started at 0 on primary, received half, and fallback resumed at > 0!
+        let reqs = lock_mutex(&mirror_requests);
+        assert!(
+            reqs.iter().any(|&(s, _)| s > 0),
+            "expected fallback retries to resume from non-zero offset: {reqs:?}"
+        );
+
+        primary_srv.abort();
+        mirror_srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remote_change_detection_checks_last_modified() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let resp = "HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nLast-Modified: Wed, 21 Oct 2026 07:28:00 GMT\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_http_lm_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.auto_restart_if_remote_changed = false;
+        cfg.core.auto_retry_failed = false;
+
+        let mut rec = make_test_record(format!("http://{addr}/asset.bin"), &dir, "asset.bin");
+        rec.total_bytes = Some(1024);
+        rec.downloaded_bytes = 256;
+        rec.last_modified = Some("Tue, 20 Oct 2026 07:28:00 GMT".into());
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(done.state, DownloadState::Error);
+        assert_eq!(
+            done.abort_reason,
+            DownloadAbortReason::RemoteResourceChanged
+        );
+
+        srv.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ftp_case_insensitive_percent_decoded_and_rest_rejected_restarts_cleanly() {
+        let payload = b"CLEAN-FTP-PAYLOAD-WITHOUT-DUP-PREFIX".to_vec();
+        let payload_srv = Arc::new(payload.clone());
+        let seen_cmds = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_cmds_srv = Arc::clone(&seen_cmds);
+
+        let ctrl_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ctrl_addr = ctrl_listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut ctrl, _)) = ctrl_listener.accept().await else {
+                    break;
+                };
+                let data = Arc::clone(&payload_srv);
+                let cmds = Arc::clone(&seen_cmds_srv);
+                tokio::spawn(async move {
+                    let _ = ctrl.write_all(b"220 Mock FTP ready\r\n").await;
+                    let mut data_listener: Option<TcpListener> = None;
+                    let mut buf = vec![0u8; 4096];
+                    let mut pending = String::new();
+                    while let Ok(n) = ctrl.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        while let Some(pos) = pending.find('\n') {
+                            let line = pending[..pos].trim_end_matches('\r').to_string();
+                            pending.drain(..=pos);
+                            if line.is_empty() {
+                                continue;
+                            }
+                            lock_mutex(&cmds).push(line.clone());
+                            let upper = line.to_ascii_uppercase();
+                            if upper.starts_with("USER ") {
+                                let _ = ctrl.write_all(b"331 Password required\r\n").await;
+                            } else if upper.starts_with("PASS ") {
+                                let _ = ctrl.write_all(b"230 Logged in\r\n").await;
+                            } else if upper.starts_with("TYPE ") {
+                                let _ = ctrl.write_all(b"200 Type set\r\n").await;
+                            } else if upper.starts_with("SIZE ") {
+                                let resp = format!("213 {}\r\n", data.len());
+                                let _ = ctrl.write_all(resp.as_bytes()).await;
+                            } else if upper == "EPSV" {
+                                let dl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                                let port = dl.local_addr().unwrap().port();
+                                data_listener = Some(dl);
+                                let resp =
+                                    format!("229 Entering Extended Passive Mode (|||{port}|)\r\n");
+                                let _ = ctrl.write_all(resp.as_bytes()).await;
+                            } else if upper == "PASV" {
+                                let dl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                                let port = dl.local_addr().unwrap().port();
+                                data_listener = Some(dl);
+                                let resp = format!(
+                                    "227 Entering Passive Mode (127,0,0,1,{},{})\r\n",
+                                    port >> 8,
+                                    port & 0xff
+                                );
+                                let _ = ctrl.write_all(resp.as_bytes()).await;
+                            } else if upper.starts_with("REST ") {
+                                let _ = ctrl.write_all(b"502 REST not supported\r\n").await;
+                            } else if upper.starts_with("RETR ") {
+                                let _ = ctrl.write_all(b"150 Opening data connection\r\n").await;
+                                if let Some(dl) = data_listener.take()
+                                    && let Ok((mut ds, _)) = dl.accept().await
+                                {
+                                    let _ = ds.write_all(&data).await;
+                                    let _ = ds.shutdown().await;
+                                }
+                                let _ = ctrl.write_all(b"226 Transfer complete\r\n").await;
+                            } else if upper == "QUIT" {
+                                let _ = ctrl.write_all(b"221 Bye\r\n").await;
+                                return;
+                            } else {
+                                let _ = ctrl.write_all(b"500 Unknown\r\n").await;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ferrite_ftp_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = FerriteConfig::default();
+        cfg.core.set_mark_of_the_web = false;
+        cfg.core.auto_retry_failed = false;
+
+        let url = format!("FTP://alice%20u:p%40ss%20word@{ctrl_addr}/my%20dir/file%20name.bin");
+        let rec = make_test_record(url, &dir, "file name.bin");
+        // Seed stale partial bytes so REST will be attempted, rejected, and truncated back to 0!
+        std::fs::write(rec.partial_path(), b"STALE-PARTIAL-DATA").unwrap();
+
+        let (_tx, rx) = watch::channel(ControlCommand::Run);
+        let done =
+            download_http_or_ftp(rec, &cfg, &[], None, BandwidthLimiter::new(0), rx, |_| {}).await;
+        assert_eq!(
+            done.state,
+            DownloadState::Completed,
+            "err={:?}",
+            done.last_error
+        );
+        assert_eq!(std::fs::read(dir.join("file name.bin")).unwrap(), payload);
+
+        let cmds = lock_mutex(&seen_cmds);
+        assert!(cmds.iter().any(|c| c == "USER alice u"));
+        assert!(cmds.iter().any(|c| c == "PASS p@ss word"));
+        assert!(cmds.iter().any(|c| c == "RETR /my dir/file name.bin"));
 
         srv.abort();
         let _ = std::fs::remove_dir_all(&dir);

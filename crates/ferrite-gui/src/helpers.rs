@@ -2,7 +2,7 @@ use crate::theme::ThemePalette;
 use ferrite_cli::{AddProbeOutcome, DownloadEngine};
 use ferrite_core::{
     AutoStartPreventer, DownloadId, DownloadRecord, DownloadState, DownloadType,
-    ExistingFileReaction, FdmConfig, FileType, HashAlgorithm, KnownWebBrowser, SortField,
+    ExistingFileReaction, FerriteConfig, FileType, HashAlgorithm, KnownWebBrowser, SortField,
     StateFilter, TrafficUsageMode, TrafficUsageProfile,
 };
 use ferrite_ipc::RemotePairingInfo;
@@ -498,9 +498,10 @@ pub fn sync_portable_marker(enabled: bool) -> anyhow::Result<()> {
 }
 
 #[allow(deprecated, unexpected_cfgs)]
-pub fn update_macos_dock_badge(label: Option<&str>) {
+pub fn update_macos_dock_badge(label: Option<&str>, active_count: usize) {
     #[cfg(target_os = "macos")]
     unsafe {
+        let _ = active_count;
         use cocoa::appkit::NSApp;
         use cocoa::base::{id, nil};
         use cocoa::foundation::{NSAutoreleasePool, NSString};
@@ -528,21 +529,24 @@ pub fn update_macos_dock_badge(label: Option<&str>) {
     {
         // On Linux desktop environments supporting Unity LauncherEntry (Ubuntu Dock,
         // GNOME Dash-to-Dock, KDE Task Manager), update the application badge count via DBus.
-        if let Some(txt) = label {
-            if let Ok(count) = txt.parse::<i64>() {
-                let _ = Command::new("dbus-send")
-                    .args([
-                        "--type=method_call",
-                        "--dest=com.canonical.Unity",
-                        "/com/canonical/unity/launcherentry",
-                        "com.canonical.Unity.LauncherEntry.Update",
-                        "string:application://ferrite.desktop",
-                        &format!(
-                            "dict:string:variant:count,int64:{count},count-visible,boolean:true"
-                        ),
-                    ])
-                    .spawn();
+        let badge_count = label.and_then(|txt| txt.parse::<i64>().ok()).or_else(|| {
+            if label.is_some() && active_count > 0 {
+                Some(active_count as i64)
+            } else {
+                None
             }
+        });
+        if let Some(count) = badge_count {
+            let _ = Command::new("dbus-send")
+                .args([
+                    "--type=method_call",
+                    "--dest=com.canonical.Unity",
+                    "/com/canonical/unity/launcherentry",
+                    "com.canonical.Unity.LauncherEntry.Update",
+                    "string:application://ferrite.desktop",
+                    &format!("dict:string:variant:count,int64:{count},count-visible,boolean:true"),
+                ])
+                .spawn();
         } else {
             let _ = Command::new("dbus-send")
                 .args([
@@ -558,7 +562,7 @@ pub fn update_macos_dock_badge(label: Option<&str>) {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = label;
+        let _ = (label, active_count);
     }
 }
 
@@ -1059,29 +1063,10 @@ pub enum UiAsyncMsg {
     },
     QuitRequested,
     RaiseRequested,
-}
-
-pub fn available_disk_space_bytes(path: &Path) -> Option<u64> {
-    let mut probe = path.to_path_buf();
-    while !probe.exists() {
-        if !probe.pop() {
-            probe = PathBuf::from("/");
-            break;
-        }
-    }
-    let out = Command::new("df").arg("-Pk").arg(&probe).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let data_line = stdout.lines().rev().find(|l| !l.trim().is_empty())?;
-    let tokens: Vec<&str> = data_line.split_whitespace().collect();
-    let pct_idx = tokens.iter().position(|t| t.ends_with('%'))?;
-    if pct_idx == 0 {
-        return None;
-    }
-    let avail_kb = tokens[pct_idx - 1].parse::<u64>().ok()?;
-    Some(avail_kb.saturating_mul(1024))
+    DiskSpaceUpdated {
+        path: String,
+        free_bytes: Option<u64>,
+    },
 }
 
 pub fn format_ratio(downloaded: u64, uploaded: u64) -> String {
@@ -1163,7 +1148,7 @@ impl UiMsgQueue {
 }
 
 #[allow(dead_code)]
-pub fn default_profile_for(cfg: &FdmConfig, tum: TrafficUsageMode) -> TrafficUsageProfile {
+pub fn default_profile_for(cfg: &FerriteConfig, tum: TrafficUsageMode) -> TrafficUsageProfile {
     cfg.core
         .tum_profiles
         .get(&tum)
@@ -1245,7 +1230,7 @@ mod tests {
             url: "https://example.com/a.zip".into(),
             target_dir: PathBuf::from("/tmp"),
             file_name: "a.zip".into(),
-            partial_suffix: ".fdmdownload".into(),
+            partial_suffix: ".part".into(),
             total_bytes: Some(100),
             downloaded_bytes: 50,
             uploaded_bytes: 0,
@@ -1301,7 +1286,8 @@ mod tests {
         assert!(expanded.contains("/cdn.example.com/"));
         assert!(expanded.contains("Program"));
 
-        let free = available_disk_space_bytes(Path::new("/tmp"));
+        let free = ferrite_core::os_integration::disk_space_stats(Path::new("/tmp"))
+            .map(|s| s.available_bytes);
         assert!(free.unwrap_or(0) > 0);
     }
 

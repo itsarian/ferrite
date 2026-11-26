@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::{
     App, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler,
@@ -78,6 +80,8 @@ struct InputSnapshot {
 
 const MAX_UNDO_HISTORY: usize = 64;
 
+type InputPaintCache = Rc<RefCell<(Option<ShapedLine>, Option<Bounds<Pixels>>)>>;
+
 pub struct TextInput {
     pub focus_handle: FocusHandle,
     pub content: SharedString,
@@ -96,8 +100,7 @@ pub struct TextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<ShapedLine>,
-    last_bounds: Option<Bounds<Pixels>>,
+    paint_cache: InputPaintCache,
     is_selecting: bool,
     undo_stack: Vec<InputSnapshot>,
     redo_stack: Vec<InputSnapshot>,
@@ -194,8 +197,7 @@ impl TextInput {
             selected_range: len..len,
             selection_reversed: false,
             marked_range: None,
-            last_layout: None,
-            last_bounds: None,
+            paint_cache: Rc::new(RefCell::new((None, None))),
             is_selecting: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -471,8 +473,8 @@ impl TextInput {
         if self.content.is_empty() {
             return 0;
         }
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
+        let cache = self.paint_cache.borrow();
+        let (Some(line), Some(bounds)) = (cache.0.as_ref(), cache.1.as_ref()) else {
             return 0;
         };
         if position.y < bounds.top() {
@@ -643,7 +645,8 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
+        let cache = self.paint_cache.borrow();
+        let last_layout = cache.0.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
         let vs = content_byte_to_visual_byte(&self.content, range.start, self.masked);
         let ve = content_byte_to_visual_byte(&self.content, range.end, self.masked);
@@ -659,8 +662,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
-        let line_point = self.last_bounds?.localize(&pt)?;
-        let last_layout = self.last_layout.as_ref()?;
+        let cache = self.paint_cache.borrow();
+        let line_point = cache.1?.localize(&pt)?;
+        let last_layout = cache.0.as_ref()?;
         let visual_index = last_layout.index_for_x(pt.x - line_point.x)?;
         let utf8_index = visual_byte_to_content_byte(&self.content, visual_index, self.masked);
         Some(self.offset_to_utf16(utf8_index))
@@ -669,6 +673,7 @@ impl EntityInputHandler for TextInput {
 
 struct InputTextElement {
     input: Entity<TextInput>,
+    paint_cache: InputPaintCache,
 }
 
 struct InputPrepaint {
@@ -829,17 +834,16 @@ impl Element for InputTextElement {
         if let Some(sel) = prepaint.selection.take() {
             window.paint_quad(sel);
         }
-        let line = prepaint.line.take().unwrap();
+        let Some(line) = prepaint.line.take() else {
+            return;
+        };
         let _ = line.paint(bounds.origin, window.line_height(), window, cx);
         if focus_handle.is_focused(window)
             && let Some(c) = prepaint.cursor.take()
         {
             window.paint_quad(c);
         }
-        self.input.update(cx, |inp, _| {
-            inp.last_layout = Some(line);
-            inp.last_bounds = Some(bounds);
-        });
+        *self.paint_cache.borrow_mut() = (Some(line), Some(bounds));
     }
 }
 
@@ -893,7 +897,10 @@ impl Render for TextInput {
         el.line_height(px(line_h))
             .text_size(px(font_sz))
             .overflow_hidden()
-            .child(InputTextElement { input: cx.entity() })
+            .child(InputTextElement {
+                input: cx.entity(),
+                paint_cache: Rc::clone(&self.paint_cache),
+            })
     }
 }
 

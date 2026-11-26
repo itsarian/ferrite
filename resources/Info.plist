@@ -47,7 +47,7 @@
             <string>Ferrite Download Protocol</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>fdm</string>
+                <string>ferrite</string>
             </array>
             <key>LSHandlerRank</key>
             <string>Owner</string>

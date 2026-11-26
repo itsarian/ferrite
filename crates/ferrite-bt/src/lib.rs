@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use ferrite_core::{
-    DownloadAbortReason, DownloadFileEntry, DownloadPriority, DownloadRecord, DownloadState,
-    FdmConfig, FileType, PeerInfo, TrackerInfo, os_integration::set_mark_of_the_web,
-    routing::classify_file_type,
+    DownloadAbortReason, DownloadFileEntry, DownloadFlags, DownloadPriority, DownloadRecord,
+    DownloadState, ExistingFileReaction, FerriteConfig, FileType, PeerInfo, TrackerInfo,
+    os_integration::set_mark_of_the_web,
+    routing::{classify_file_type, sanitize_filename},
 };
 use ferrite_http::ControlCommand;
 use librqbit::api::TorrentIdOrHash;
@@ -14,15 +15,100 @@ use librqbit::{
     ListenerOptions, Magnet, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
     TorrentStatsState, dht::DhtPersistenceConfig, torrent_from_bytes,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::watch;
 
 type ManagedTorrentHandle = Arc<ManagedTorrent>;
+
+fn sanitize_relative_path(raw: &str) -> String {
+    let mut parts = Vec::new();
+    for seg in raw.split(['/', '\\']) {
+        let trimmed = seg.trim();
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+            continue;
+        }
+        let cleaned: String = trimmed
+            .chars()
+            .map(|c| match c {
+                '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                c if c.is_control() => '_',
+                c => c,
+            })
+            .collect();
+        if !cleaned.is_empty() && cleaned != "." && cleaned != ".." {
+            parts.push(cleaned);
+        }
+    }
+    if parts.is_empty() {
+        "download.bin".into()
+    } else {
+        parts.join("/")
+    }
+}
+
+fn should_stop_seeding(
+    flags: &DownloadFlags,
+    max_ratio: f32,
+    uploaded_bytes: u64,
+    downloaded_bytes: u64,
+) -> bool {
+    if flags.bt_disable_seeding {
+        return true;
+    }
+    if flags.bt_ignore_upload_ratio || max_ratio <= 0.0 {
+        return false;
+    }
+    downloaded_bytes > 0
+        && (uploaded_bytes as f64) >= (downloaded_bytes as f64) * (max_ratio as f64)
+}
+
+fn compute_peer_speeds<I>(
+    peers: I,
+    prev_counters: &HashMap<String, (u64, u64)>,
+    dt_secs: f64,
+) -> (Vec<PeerInfo>, HashMap<String, (u64, u64)>)
+where
+    I: IntoIterator<Item = (String, String, u64, u64, String)>,
+{
+    let mut next_counters = HashMap::new();
+    let mut out = Vec::new();
+    for (addr, client, fetched_bytes, uploaded_bytes, flags) in peers {
+        next_counters.insert(addr.clone(), (fetched_bytes, uploaded_bytes));
+        let (download_bps, upload_bps) = if dt_secs > 0.0 {
+            if let Some(&(prev_dl, prev_ul)) = prev_counters.get(&addr) {
+                (
+                    (fetched_bytes.saturating_sub(prev_dl) as f64 / dt_secs) as u64,
+                    (uploaded_bytes.saturating_sub(prev_ul) as f64 / dt_secs) as u64,
+                )
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        };
+        out.push(PeerInfo {
+            address: addr,
+            client,
+            download_bps,
+            upload_bps,
+            progress: 0.0,
+            flags,
+        });
+    }
+    out.sort_by(|a, b| {
+        (b.download_bps + b.upload_bps)
+            .cmp(&(a.download_bps + a.upload_bps))
+            .then_with(|| a.address.cmp(&b.address))
+    });
+    out.truncate(64);
+    (out, next_counters)
+}
 
 #[derive(Debug, Clone)]
 pub struct TorrentInspection {
@@ -50,7 +136,7 @@ fn non_zero_limit(bps: u64) -> Option<NonZeroU32> {
 }
 
 pub fn build_session_options(
-    config: &FdmConfig,
+    config: &FerriteConfig,
     persistence_dir: Option<PathBuf>,
 ) -> SessionOptions {
     let profile = config.active_profile();
@@ -134,23 +220,23 @@ pub fn build_session_options(
         peer_limit: Some(profile.max_connections.max(4) as usize),
         disable_local_service_discovery: !config.core.bt_enable_lsd,
         connect,
-        client_name_and_version: Some("Ferrite/1.0 (Free Download Manager compatible)".into()),
+        client_name_and_version: Some(concat!("Ferrite/", env!("CARGO_PKG_VERSION")).into()),
         ..Default::default()
     }
 }
 
 /// Stable signature of BitTorrent session-level settings requiring session reload when changed.
-pub fn bt_session_signature(config: &FdmConfig) -> String {
+pub fn bt_session_signature(config: &FerriteConfig) -> String {
+    let peer_limit = config.active_profile().max_connections.max(4);
     format!(
-        "port={};rand={};dht={};utp={};lsd={};upnp={};pex={};enc={:?};trk_en={};trks={};proxy={:?}:{}:{}:{}:{}",
+        "port={};rand={};dht={};utp={};lsd={};upnp={};peer_limit={};trk_en={};trks={};proxy={:?}:{}:{}:{}:{}",
         config.core.bt_session_port,
         config.core.bt_use_random_port,
         config.core.bt_enable_dht,
         config.core.bt_enable_utp,
         config.core.bt_enable_lsd,
         config.core.bt_enable_port_forwarding,
-        config.core.bt_enable_pex,
-        config.core.bt_encryption_policy,
+        peer_limit,
         config.core.bt_enable_tracker_list,
         config.core.bt_tracker_list.join(","),
         config.app.proxy.mode,
@@ -164,31 +250,34 @@ pub fn bt_session_signature(config: &FdmConfig) -> String {
 pub struct BtSessionManager {
     pub session: Arc<Session>,
     pub default_dir: PathBuf,
+    active_max_upload_ratio: Arc<AtomicU32>,
 }
 
 impl BtSessionManager {
     pub async fn new(
         default_download_dir: PathBuf,
-        config: &FdmConfig,
+        config: &FerriteConfig,
         persistence_dir: Option<PathBuf>,
     ) -> Result<Self> {
-        std::fs::create_dir_all(&default_download_dir)?;
+        tokio::fs::create_dir_all(&default_download_dir).await?;
         if let Some(ref pdir) = persistence_dir {
-            std::fs::create_dir_all(pdir)?;
+            tokio::fs::create_dir_all(pdir).await?;
         }
         let opts = build_session_options(config, persistence_dir);
         let session = Session::new_with_opts(default_download_dir.clone(), opts)
             .await
             .context("Failed to initialize BitTorrent session")?;
+        let ratio = config.active_profile().max_upload_ratio;
         Ok(Self {
             session,
             default_dir: default_download_dir,
+            active_max_upload_ratio: Arc::new(AtomicU32::new(ratio.to_bits())),
         })
     }
 
     /// Create an ephemeral localhost session suitable for offline metadata inspection / unit tests
     pub async fn new_ephemeral(default_download_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&default_download_dir)?;
+        tokio::fs::create_dir_all(&default_download_dir).await?;
         let opts = SessionOptions {
             dht: None,
             disable_trackers: true,
@@ -208,10 +297,11 @@ impl BtSessionManager {
         Ok(Self {
             session,
             default_dir: default_download_dir,
+            active_max_upload_ratio: Arc::new(AtomicU32::new(0.0f32.to_bits())),
         })
     }
 
-    pub fn apply_rate_limits(&self, config: &FdmConfig) {
+    pub fn apply_rate_limits(&self, config: &FerriteConfig) {
         let profile = config.active_profile();
         self.session
             .ratelimits
@@ -219,13 +309,19 @@ impl BtSessionManager {
         self.session
             .ratelimits
             .set_upload_bps(non_zero_limit(profile.max_upload_speed_bps));
+        self.active_max_upload_ratio
+            .store(profile.max_upload_ratio.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn active_max_upload_ratio(&self) -> f32 {
+        f32::from_bits(self.active_max_upload_ratio.load(Ordering::Relaxed))
     }
 
     pub async fn inspect_source(&self, source: &str) -> Result<TorrentInspection> {
         let trimmed = source.trim();
         let path = Path::new(trimmed);
-        if path.is_file() {
-            let raw = std::fs::read(path)?;
+        if tokio::fs::try_exists(path).await.unwrap_or(false) && path.is_file() {
+            let raw = tokio::fs::read(path).await?;
             return inspect_torrent_bytes(&raw);
         }
 
@@ -253,7 +349,7 @@ impl BtSessionManager {
                         name: lo
                             .info
                             .name()
-                            .map(|c| c.into_owned())
+                            .map(|c| sanitize_filename(&c))
                             .unwrap_or_else(|| "Torrent".into()),
                         total_bytes: 0,
                         files: vec![],
@@ -267,7 +363,9 @@ impl BtSessionManager {
                             .enumerate()
                             .map(|(i, fd)| DownloadFileEntry {
                                 index: i,
-                                relative_path: fd.details.filename.to_string(),
+                                relative_path: sanitize_relative_path(
+                                    &fd.details.filename.to_string(),
+                                ),
                                 size_bytes: fd.details.len,
                                 downloaded_bytes: 0,
                                 priority: DownloadPriority::Normal,
@@ -310,7 +408,7 @@ impl BtSessionManager {
     pub async fn run_torrent_download<F>(
         &self,
         mut record: DownloadRecord,
-        config: &FdmConfig,
+        config: &FerriteConfig,
         mut control_rx: watch::Receiver<ControlCommand>,
         mut on_progress: F,
     ) -> DownloadRecord
@@ -318,7 +416,7 @@ impl BtSessionManager {
         F: FnMut(&DownloadRecord) + Send,
     {
         self.apply_rate_limits(config);
-        std::fs::create_dir_all(&record.target_dir).ok();
+        tokio::fs::create_dir_all(&record.target_dir).await.ok();
 
         let only_files: Option<Vec<usize>> = {
             let selected: Vec<usize> = record
@@ -345,7 +443,7 @@ impl BtSessionManager {
             }
         }
         let mut opts = AddTorrentOptions {
-            overwrite: true,
+            overwrite: config.core.existing_file_reaction == ExistingFileReaction::Overwrite,
             paused: false,
             output_folder: Some(record.target_dir.to_string_lossy().into_owned()),
             only_files,
@@ -383,7 +481,19 @@ impl BtSessionManager {
         on_progress(&record);
 
         let handle = match self.session.add_torrent(add_torrent, Some(opts)).await {
-            Ok(AddTorrentResponse::Added(_, h)) | Ok(AddTorrentResponse::AlreadyManaged(_, h)) => h,
+            Ok(AddTorrentResponse::Added(_, h)) => h,
+            Ok(AddTorrentResponse::AlreadyManaged(_, h)) => {
+                if !matches!(h.stats().state, TorrentStatsState::Live)
+                    && let Err(e) = self.session.unpause(&h).await
+                {
+                    record.state = DownloadState::Error;
+                    record.abort_reason = DownloadAbortReason::NetworkError;
+                    record.last_error = Some(format!("Torrent resume failed: {e}"));
+                    on_progress(&record);
+                    return record;
+                }
+                h
+            }
             Ok(AddTorrentResponse::ListOnly(_)) => {
                 record.state = DownloadState::Error;
                 record.last_error = Some("Unexpected ListOnly response".into());
@@ -403,11 +513,19 @@ impl BtSessionManager {
         if !meta_info.name.is_empty()
             && (record.file_name.is_empty() || record.file_name == "download.bin")
         {
-            record.file_name = meta_info.name.clone();
-            record.title = meta_info.name.clone();
+            let safe_name = sanitize_filename(&meta_info.name);
+            record.file_name = safe_name.clone();
+            record.title = safe_name;
         }
         if record.files.is_empty() && !meta_info.files.is_empty() {
-            record.files = meta_info.files;
+            record.files = meta_info
+                .files
+                .into_iter()
+                .map(|mut f| {
+                    f.relative_path = sanitize_relative_path(&f.relative_path);
+                    f
+                })
+                .collect();
         }
         if !meta_info.trackers.is_empty() {
             record.trackers = meta_info
@@ -436,10 +554,8 @@ impl BtSessionManager {
             }
         }
 
-        let max_ratio = config.active_profile().max_upload_ratio;
-        let default_stop_when_done = !record.flags.sequential_play_asap && max_ratio <= 0.001;
-        let stop_when_done = record.flags.bt_disable_seeding
-            || (default_stop_when_done && !record.flags.bt_ignore_upload_ratio);
+        let mut prev_peer_counters: HashMap<String, (u64, u64)> = HashMap::new();
+        let mut last_peer_tick = tokio::time::Instant::now();
 
         loop {
             let cmd = control_rx.borrow_and_update().clone();
@@ -495,20 +611,25 @@ impl BtSessionManager {
                     rem.checked_div(record.download_speed_bps)
                 });
                 if let Some(live_handle) = handle.live() {
+                    let now = tokio::time::Instant::now();
+                    let dt = now.duration_since(last_peer_tick).as_secs_f64();
                     let snap = live_handle.per_peer_stats_snapshot(Default::default());
-                    record.peers = snap
-                        .peers
-                        .into_iter()
-                        .take(64)
-                        .map(|(addr, p)| PeerInfo {
-                            address: addr,
-                            client: p.client_name.unwrap_or_else(|| "BitTorrent".into()),
-                            download_bps: p.counters.fetched_bytes,
-                            upload_bps: p.counters.uploaded_bytes,
-                            progress: 0.0,
-                            flags: p.state.to_string(),
-                        })
-                        .collect();
+                    let (peers, next_counters) = compute_peer_speeds(
+                        snap.peers.into_iter().map(|(addr, p)| {
+                            (
+                                addr,
+                                p.client_name.unwrap_or_else(|| "BitTorrent".into()),
+                                p.counters.fetched_bytes,
+                                p.counters.uploaded_bytes,
+                                p.state.to_string(),
+                            )
+                        }),
+                        &prev_peer_counters,
+                        dt,
+                    );
+                    record.peers = peers;
+                    prev_peer_counters = next_counters;
+                    last_peer_tick = now;
                 }
             } else {
                 record.download_speed_bps = 0;
@@ -532,20 +653,27 @@ impl BtSessionManager {
                 }
                 TorrentStatsState::Live => {
                     if stats.finished {
-                        let ratio = if stats.total_bytes > 0 {
-                            stats.uploaded_bytes as f32 / stats.total_bytes as f32
+                        let active_max_ratio = self.active_max_upload_ratio();
+                        let downloaded_ref = if stats.progress_bytes > 0 {
+                            stats.progress_bytes
                         } else {
-                            0.0
+                            stats.total_bytes
                         };
-                        let reached_ratio = !record.flags.bt_ignore_upload_ratio
-                            && max_ratio > 0.0
-                            && ratio >= max_ratio;
-                        if stop_when_done || reached_ratio {
+                        if should_stop_seeding(
+                            &record.flags,
+                            active_max_ratio,
+                            stats.uploaded_bytes,
+                            downloaded_ref,
+                        ) {
                             let _ = self.session.pause(&handle).await;
                             if config.core.set_mark_of_the_web {
                                 let out = record.output_path();
-                                if out.exists() {
-                                    let _ = set_mark_of_the_web(&out, &record.url, "Ferrite");
+                                if tokio::fs::try_exists(&out).await.unwrap_or(false) {
+                                    let url_c = record.url.clone();
+                                    let _ = tokio::task::spawn_blocking(move || {
+                                        set_mark_of_the_web(&out, &url_c, "Ferrite")
+                                    })
+                                    .await;
                                 }
                             }
                             record.state = DownloadState::Completed;
@@ -605,7 +733,7 @@ fn inspection_from_handle(handle: &ManagedTorrentHandle) -> TorrentInspection {
         let name = m
             .info
             .name()
-            .map(|c| c.into_owned())
+            .map(|c| sanitize_filename(&c))
             .unwrap_or_else(|| ih.clone());
         let files: Vec<DownloadFileEntry> = m
             .file_infos
@@ -613,7 +741,7 @@ fn inspection_from_handle(handle: &ManagedTorrentHandle) -> TorrentInspection {
             .enumerate()
             .map(|(idx, f)| DownloadFileEntry {
                 index: idx,
-                relative_path: f.relative_filename.to_string_lossy().into_owned(),
+                relative_path: sanitize_relative_path(&f.relative_filename.to_string_lossy()),
                 size_bytes: f.len,
                 downloaded_bytes: 0,
                 priority: DownloadPriority::Normal,
@@ -650,7 +778,7 @@ pub fn inspect_torrent_bytes(raw: &[u8]) -> Result<TorrentInspection> {
         .data
         .name
         .as_ref()
-        .map(|b| String::from_utf8_lossy(b.as_ref()).into_owned())
+        .map(|b| sanitize_filename(&String::from_utf8_lossy(b.as_ref())))
         .unwrap_or_else(|| info_hash.clone());
     let mut trackers = Vec::new();
     if let Some(ref ann) = parsed.announce {
@@ -672,7 +800,7 @@ pub fn inspect_torrent_bytes(raw: &[u8]) -> Result<TorrentInspection> {
             .iter()
             .enumerate()
             .map(|(idx, f)| {
-                let rel = f
+                let raw_rel = f
                     .path
                     .iter()
                     .map(|seg| String::from_utf8_lossy(seg.as_ref()).into_owned())
@@ -680,7 +808,7 @@ pub fn inspect_torrent_bytes(raw: &[u8]) -> Result<TorrentInspection> {
                     .join("/");
                 DownloadFileEntry {
                     index: idx,
-                    relative_path: rel,
+                    relative_path: sanitize_relative_path(&raw_rel),
                     size_bytes: f.length,
                     downloaded_bytes: 0,
                     priority: DownloadPriority::Normal,
@@ -693,7 +821,7 @@ pub fn inspect_torrent_bytes(raw: &[u8]) -> Result<TorrentInspection> {
     } else if let Some(len) = info_ref.length {
         vec![DownloadFileEntry {
             index: 0,
-            relative_path: name.clone(),
+            relative_path: sanitize_relative_path(&name),
             size_bytes: len,
             downloaded_bytes: 0,
             priority: DownloadPriority::Normal,
@@ -722,7 +850,10 @@ pub fn inspect_magnet(magnet_uri: &str) -> Result<TorrentInspection> {
         .as_id20()
         .map(|id| id.as_string())
         .unwrap_or_else(|| "unknown".into());
-    let name = m.name.unwrap_or_else(|| info_hash.clone());
+    let name = m
+        .name
+        .map(|n| sanitize_filename(&n))
+        .unwrap_or_else(|| info_hash.clone());
     Ok(TorrentInspection {
         info_hash,
         name,
@@ -865,17 +996,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ferrite_bt_sess_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mgr = BtSessionManager::new_ephemeral(dir.clone()).await.unwrap();
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         cfg.core.current_tum = ferrite_core::TrafficUsageMode::Snail;
         mgr.apply_rate_limits(&cfg);
         assert!(mgr.session.ratelimits.get_download_bps().is_some());
+        assert_eq!(mgr.active_max_upload_ratio(), 1.0);
+        cfg.core.current_tum = ferrite_core::TrafficUsageMode::High;
+        mgr.apply_rate_limits(&cfg);
+        assert_eq!(mgr.active_max_upload_ratio(), 0.0);
         drop(mgr);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn session_options_include_manual_socks5_proxy_and_signature_tracks_changes() {
-        let mut cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
         let sig0 = bt_session_signature(&cfg);
         cfg.app.proxy.mode = ferrite_core::NetworkProxyMode::ManualProxy;
         cfg.app.proxy.socks5.host = "127.0.0.1".into();
@@ -886,6 +1021,99 @@ mod tests {
             .and_then(|c| c.proxy_url)
             .expect("expected socks5 proxy url on ConnectionOptions");
         assert_eq!(proxy_url, "socks5h://127.0.0.1:1080");
-        assert_ne!(sig0, bt_session_signature(&cfg));
+        assert_eq!(
+            opts.client_name_and_version.as_deref(),
+            Some(concat!("Ferrite/", env!("CARGO_PKG_VERSION")))
+        );
+        let sig1 = bt_session_signature(&cfg);
+        assert_ne!(sig0, sig1);
+
+        // peer_limit changes must also change signature
+        cfg.core
+            .tum_profiles
+            .get_mut(&cfg.core.current_tum)
+            .unwrap()
+            .max_connections = 128;
+        assert_ne!(sig1, bt_session_signature(&cfg));
+    }
+
+    #[test]
+    fn upload_ratio_zero_means_unlimited_and_positive_stops_at_threshold() {
+        let flags = DownloadFlags::default();
+        assert!(
+            !should_stop_seeding(&flags, 0.0, 10_000_000, 1_000),
+            "0.0 ratio must mean unlimited seeding"
+        );
+        assert!(!should_stop_seeding(&flags, 1.5, 1_499, 1_000));
+        assert!(should_stop_seeding(&flags, 1.5, 1_500, 1_000));
+
+        let no_seed = DownloadFlags {
+            bt_disable_seeding: true,
+            ..Default::default()
+        };
+        assert!(should_stop_seeding(&no_seed, 0.0, 0, 1_000));
+
+        let ignore_ratio = DownloadFlags {
+            bt_ignore_upload_ratio: true,
+            ..Default::default()
+        };
+        assert!(!should_stop_seeding(&ignore_ratio, 1.0, 5_000, 1_000));
+    }
+
+    #[test]
+    fn sanitizes_malicious_torrent_names_and_relative_paths() {
+        let ann = "https://tracker.example.org/announce";
+        let path_a = "2:..2:..3:etc6:passwd";
+        let path_b = "4:docs2:..9:readme.md";
+        let bad_name = "../../etc/shadow";
+        let mut raw = Vec::new();
+        raw.extend_from_slice(
+            format!(
+                "d8:announce{}:{ann}4:infod5:filesld6:lengthi10e4:pathl{path_a}eed6:lengthi20e4:pathl{path_b}eee4:name{}:{bad_name}12:piece lengthi16384e6:pieces20:",
+                ann.len(),
+                bad_name.len()
+            )
+            .as_bytes(),
+        );
+        raw.extend_from_slice(&[0xEFu8; 20]);
+        raw.extend_from_slice(b"ee");
+
+        let info = inspect_torrent_bytes(&raw).unwrap();
+        assert_eq!(info.name, "shadow");
+        assert!(!info.name.contains(".."));
+        assert_eq!(info.files[0].relative_path, "etc/passwd");
+        assert_eq!(info.files[1].relative_path, "docs/readme.md");
+        assert_eq!(
+            sanitize_relative_path("C:\\Windows\\..\\evil.exe"),
+            "C_/Windows/evil.exe"
+        );
+        assert_eq!(sanitize_relative_path("../../.."), "download.bin");
+    }
+
+    #[test]
+    fn computes_real_per_second_peer_speeds_from_deltas() {
+        let mut prev = HashMap::new();
+        let (first, next) = compute_peer_speeds(
+            vec![("1.2.3.4:6881".into(), "qB".into(), 1000, 500, "live".into())],
+            &prev,
+            0.5,
+        );
+        assert_eq!(first[0].download_bps, 0);
+        assert_eq!(first[0].upload_bps, 0);
+        prev = next;
+
+        let (second, _) = compute_peer_speeds(
+            vec![(
+                "1.2.3.4:6881".into(),
+                "qB".into(),
+                3000,
+                1500,
+                "live".into(),
+            )],
+            &prev,
+            0.5,
+        );
+        assert_eq!(second[0].download_bps, 4000);
+        assert_eq!(second[0].upload_bps, 2000);
     }
 }

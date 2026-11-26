@@ -1,20 +1,20 @@
-use crate::app::{
+use crate::actions::{
     CloseWindowAction, EscapeModalAction, MinimizeWindowAction, ToggleFullscreenAction,
     ZoomWindowAction,
 };
 use crate::helpers::{
-    available_disk_space_bytes, download_icon_and_color, expand_path_preview, extract_domain_label,
-    format_bytes, format_eta, format_speed, open_path_os, reveal_path_os, state_badge_info,
-    zoom_rem_size_px,
+    download_icon_and_color, expand_path_preview, extract_domain_label, format_bytes, format_eta,
+    format_speed, open_path_os, reveal_path_os, state_badge_info, zoom_rem_size_px,
 };
 use crate::i18n;
 use crate::text_input::TextInput;
 use crate::theme::ThemePalette;
 use crate::ui_widgets::{
-    action_btn, badge_themed, chip_toggle, danger_btn, ellipsis_text, fdm_checkbox, ghost_icon_btn,
-    labeled_field, slim_progress_bar_active, svg_icon, switch_row,
+    action_btn, badge_themed, chip_toggle, danger_btn, ellipsis_text, ferrite_checkbox,
+    ghost_icon_btn, labeled_field, slim_progress_bar_active, svg_icon, switch_row,
 };
 use ferrite_cli::{AddProbeOutcome, DownloadEngine};
+use ferrite_core::os_integration::disk_space_stats;
 use ferrite_core::{
     DownloadId, DownloadPriority, DownloadRecord, DownloadState, DownloadType, EngineEvent,
     NewDownloadRequest,
@@ -22,7 +22,7 @@ use ferrite_core::{
 use gpui::{
     Animation, AnimationExt as _, App, Bounds, Context, Entity, FocusHandle, Focusable, FontWeight,
     PathPromptOptions, Render, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, div, ease_out_quint, prelude::*, px, rgb, size,
+    WindowControlArea, WindowOptions, div, ease_out_quint, prelude::*, px, rgb, size, uniform_list,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -112,6 +112,7 @@ pub struct StandaloneAddWindow {
     selected_files: HashSet<usize>,
     selected_variant: usize,
     status_msg: Option<(String, bool)>,
+    cached_disk_free: Option<(String, Option<u64>)>,
     enter_epoch: u64,
     probe_anim_epoch: u64,
 }
@@ -187,12 +188,19 @@ impl StandaloneAddWindow {
             selected_files: HashSet::new(),
             selected_variant: 0,
             status_msg: None,
+            cached_disk_free: None,
             enter_epoch: 1,
             probe_anim_epoch: if !prefill_url.trim().is_empty() { 1 } else { 0 },
         };
 
+        view.refresh_disk_space(&def_dir, cx);
         cx.observe(&view.url_input, |_, _, cx| cx.notify()).detach();
-        cx.observe(&view.dir_input, |_, _, cx| cx.notify()).detach();
+        cx.observe(&view.dir_input, |this, inp, cx| {
+            let d = inp.read(cx).text();
+            this.refresh_disk_space(&d, cx);
+            cx.notify();
+        })
+        .detach();
         cx.observe(&view.name_input, |_, _, cx| cx.notify())
             .detach();
         let fh = url_input.read(cx).focus_handle.clone();
@@ -201,6 +209,39 @@ impl StandaloneAddWindow {
             view.trigger_probe(cx);
         }
         view
+    }
+
+    fn refresh_disk_space(&mut self, raw_dir: &str, cx: &mut Context<Self>) {
+        let expanded = expand_path_preview(raw_dir, "", "download.bin");
+        if let Some((ref cached_dir, _)) = self.cached_disk_free
+            && cached_dir == &expanded
+        {
+            return;
+        }
+        let (tx, rx) = oneshot::channel();
+        let path_for_task = expanded.clone();
+        self.rt.spawn_blocking(move || {
+            let mut probe = PathBuf::from(&path_for_task);
+            while !probe.exists() {
+                if !probe.pop() {
+                    probe = PathBuf::from("/");
+                    break;
+                }
+            }
+            let free = disk_space_stats(&probe).map(|s| s.available_bytes);
+            let _ = tx.send((path_for_task, free));
+        });
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok((p, free)) = rx.await {
+                    let _ = this.update(cx, |view, cx| {
+                        view.cached_disk_free = Some((p, free));
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
     }
 
     fn browse_dir(&mut self, cx: &mut Context<Self>) {
@@ -413,7 +454,11 @@ impl Render for StandaloneAddWindow {
                 &name_val
             },
         );
-        let avail_disk = available_disk_space_bytes(std::path::Path::new(&expanded_dir));
+        let avail_disk = self
+            .cached_disk_free
+            .as_ref()
+            .filter(|(cached_dir, _)| cached_dir == &expanded_dir)
+            .and_then(|(_, b)| *b);
 
         div()
             .size_full()
@@ -438,29 +483,31 @@ impl Render for StandaloneAddWindow {
             }))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .h(px(28.))
-                    .flex_shrink_0()
-                    .bg(p.bg_200)
-                    .border_b_1()
-                    .border_color(p.separator)
-                    .px_3()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .window_control_area(WindowControlArea::Drag)
-                    .child(div().w(px(72.)))
-                    .child(
-                        div()
-                            .text_size(p.fpx(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_secondary)
-                            .child(loc.new_download),
-                    )
-                    .child(div().w(px(72.))),
-            )
+            .when(cfg!(target_os = "macos"), |el| {
+                el.child(
+                    div()
+                        .h(px(28.))
+                        .flex_shrink_0()
+                        .bg(p.bg_200)
+                        .border_b_1()
+                        .border_color(p.separator)
+                        .px_3()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .window_control_area(WindowControlArea::Drag)
+                        .child(div().w(px(72.)))
+                        .child(
+                            div()
+                                .text_size(p.fpx(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.text_secondary)
+                                .child(loc.new_download),
+                        )
+                        .child(div().w(px(72.))),
+                )
+            })
             .when_some(self.status_msg.clone(), |el, (msg, is_err)| {
                 el.child(
                     div()
@@ -512,7 +559,6 @@ impl Render for StandaloneAddWindow {
                                     )),
                             )
                             .when_some(self.probe_outcome.clone(), |el, out| {
-                                let sel_files = self.selected_files.clone();
                                 let sel_var = self.selected_variant;
                                 el.child(
                                     div()
@@ -548,74 +594,101 @@ impl Render for StandaloneAddWindow {
                                         )
                                         .when(!out.files.is_empty(), |el2| {
                                             el2.child(
-                                                div()
-                                                    .max_h(p.spx(110.))
-                                                    .id("sa-bt-files")
-                                                    .overflow_y_scroll()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap_1()
-                                                    .children(out.files.into_iter().take(40).map(
-                                                        |f| {
-                                                            let f_idx = f.index;
-                                                            let checked =
-                                                                sel_files.contains(&f_idx);
-                                                            div()
-                                                                .id(SharedString::from(format!(
-                                                                    "sa-f-{f_idx}"
-                                                                )))
-                                                                .flex()
-                                                                .flex_row()
-                                                                .items_center()
-                                                                .justify_between()
-                                                                .gap_2()
-                                                                .cursor_pointer()
-                                                                .on_click(cx.listener(
-                                                                    move |this, _, _, cx| {
-                                                                        if !this
-                                                                            .selected_files
-                                                                            .remove(&f_idx)
-                                                                        {
-                                                                            this.selected_files
-                                                                                .insert(f_idx);
-                                                                        }
-                                                                        cx.notify();
-                                                                    },
-                                                                ))
-                                                                .child(
+                                                uniform_list(
+                                                    "sa-bt-files",
+                                                    out.files.len(),
+                                                    cx.processor(
+                                                        |this,
+                                                         range: std::ops::Range<usize>,
+                                                         _w,
+                                                         cx| {
+                                                            let p = this.theme;
+                                                            let Some(ref out) = this.probe_outcome
+                                                            else {
+                                                                return Vec::new();
+                                                            };
+                                                            let mut rows =
+                                                                Vec::with_capacity(range.len());
+                                                            for idx in range {
+                                                                let Some(f) = out.files.get(idx)
+                                                                else {
+                                                                    continue;
+                                                                };
+                                                                let f_idx = f.index;
+                                                                let checked = this
+                                                                    .selected_files
+                                                                    .contains(&f_idx);
+                                                                rows.push(
                                                                     div()
+                                                                        .id(SharedString::from(
+                                                                            format!("sa-f-{f_idx}"),
+                                                                        ))
+                                                                        .w_full()
+                                                                        .h(p.spx(22.))
                                                                         .flex()
                                                                         .flex_row()
                                                                         .items_center()
-                                                                        .gap_1p5()
-                                                                        .min_w_0()
-                                                                        .child(fdm_checkbox(
-                                                                            checked, &p,
+                                                                        .justify_between()
+                                                                        .gap_2()
+                                                                        .cursor_pointer()
+                                                                        .on_click(cx.listener(
+                                                                            move |this, _, _, cx| {
+                                                                                if !this
+                                                                                    .selected_files
+                                                                                    .remove(&f_idx)
+                                                                                {
+                                                                                    this.selected_files
+                                                                                        .insert(f_idx);
+                                                                                }
+                                                                                cx.notify();
+                                                                            },
                                                                         ))
+                                                                        .child(
+                                                                            div()
+                                                                                .flex()
+                                                                                .flex_row()
+                                                                                .items_center()
+                                                                                .gap_1p5()
+                                                                                .min_w_0()
+                                                                                .child(
+                                                                                    ferrite_checkbox(
+                                                                                        checked,
+                                                                                        &p,
+                                                                                    ),
+                                                                                )
+                                                                                .child(
+                                                                                    div()
+                                                                                        .text_size(
+                                                                                            p.fpx(11.),
+                                                                                        )
+                                                                                        .text_color(
+                                                                                            p.text_primary,
+                                                                                        )
+                                                                                        .truncate()
+                                                                                        .child(
+                                                                                            f.relative_path.clone(),
+                                                                                        ),
+                                                                                ),
+                                                                        )
                                                                         .child(
                                                                             div()
                                                                                 .text_size(
                                                                                     p.fpx(11.),
                                                                                 )
                                                                                 .text_color(
-                                                                                    p.text_primary,
+                                                                                    p.text_muted,
                                                                                 )
-                                                                                .truncate()
-                                                                                .child(
-                                                                                    f.relative_path,
-                                                                                ),
+                                                                                .child(format_bytes(
+                                                                                    f.size_bytes,
+                                                                                )),
                                                                         ),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .text_size(p.fpx(11.))
-                                                                        .text_color(p.text_muted)
-                                                                        .child(format_bytes(
-                                                                            f.size_bytes,
-                                                                        )),
-                                                                )
+                                                                );
+                                                            }
+                                                            rows
                                                         },
-                                                    )),
+                                                    ),
+                                                )
+                                                .h(p.spx(110.)),
                                             )
                                         })
                                         .when_some(out.media, |el2, m| {
@@ -849,6 +922,15 @@ pub struct StandaloneDownloadWindow {
     record: Option<DownloadRecord>,
     error_banner: Option<String>,
     enter_epoch: u64,
+    close_tx: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for StandaloneDownloadWindow {
+    fn drop(&mut self) {
+        if let Some(tx) = self.close_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 impl Focusable for StandaloneDownloadWindow {
@@ -876,19 +958,26 @@ impl StandaloneDownloadWindow {
 
         let mut rx = engine.subscribe();
         let (tx, mut mpsc_rx) = mpsc::unbounded_channel();
+        let (close_tx, mut close_rx) = oneshot::channel::<()>();
         rt.spawn(async move {
-            while let Ok(ev) = rx.recv().await {
-                let relevant = match &ev {
-                    EngineEvent::Updated { id: ev_id }
-                    | EngineEvent::Completed { id: ev_id }
-                    | EngineEvent::Removed { id: ev_id }
-                    | EngineEvent::Failed { id: ev_id, .. }
-                    | EngineEvent::FileConflict { id: ev_id, .. } => *ev_id == id,
-                    EngineEvent::SettingsUpdated => true,
-                    _ => false,
-                };
-                if relevant && tx.send(ev).is_err() {
-                    break;
+            loop {
+                tokio::select! {
+                    _ = &mut close_rx => break,
+                    ev = rx.recv() => {
+                        let Ok(ev) = ev else { break; };
+                        let relevant = match &ev {
+                            EngineEvent::Updated { id: ev_id }
+                            | EngineEvent::Completed { id: ev_id }
+                            | EngineEvent::Removed { id: ev_id }
+                            | EngineEvent::Failed { id: ev_id, .. }
+                            | EngineEvent::FileConflict { id: ev_id, .. } => *ev_id == id,
+                            EngineEvent::SettingsUpdated => true,
+                            _ => false,
+                        };
+                        if relevant && tx.send(ev).is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -935,6 +1024,7 @@ impl StandaloneDownloadWindow {
             record,
             error_banner: None,
             enter_epoch: 1,
+            close_tx: Some(close_tx),
         }
     }
 
@@ -1054,29 +1144,31 @@ impl Render for StandaloneDownloadWindow {
             }))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .h(px(28.))
-                    .flex_shrink_0()
-                    .bg(p.bg_200)
-                    .border_b_1()
-                    .border_color(p.separator)
-                    .px_3()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .window_control_area(WindowControlArea::Drag)
-                    .child(div().w(px(72.)))
-                    .child(
-                        div()
-                            .text_size(p.fpx(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_secondary)
-                            .child(format!("Download #{}", rec.id)),
-                    )
-                    .child(div().w(px(72.))),
-            )
+            .when(cfg!(target_os = "macos"), |el| {
+                el.child(
+                    div()
+                        .h(px(28.))
+                        .flex_shrink_0()
+                        .bg(p.bg_200)
+                        .border_b_1()
+                        .border_color(p.separator)
+                        .px_3()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .window_control_area(WindowControlArea::Drag)
+                        .child(div().w(px(72.)))
+                        .child(
+                            div()
+                                .text_size(p.fpx(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.text_secondary)
+                                .child(format!("Download #{}", rec.id)),
+                        )
+                        .child(div().w(px(72.))),
+                )
+            })
             .when_some(self.error_banner.clone(), |el, err| {
                 el.child(
                     div()

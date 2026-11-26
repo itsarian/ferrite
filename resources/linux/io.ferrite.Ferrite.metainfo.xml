@@ -30,8 +30,9 @@
     <binary>ferrite-native-host</binary>
     <mediatype>application/x-bittorrent</mediatype>
     <mediatype>x-scheme-handler/magnet</mediatype>
-    <mediatype>x-scheme-handler/http</mediatype>
-    <mediatype>x-scheme-handler/https</mediatype>
+    <mediatype>x-scheme-handler/ferrite</mediatype>
+    <mediatype>application/vnd.apple.mpegurl</mediatype>
+    <mediatype>application/x-mpegurl</mediatype>
   </provides>
   <screenshots>
     <screenshot type="default">

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v0.1.1, defaults to package version if omitted)'
+        description: 'Release Tag (e.g. v0.4.0, defaults to package version if omitted)'
         required: false
         type: string
         default: ''
@@ -60,7 +60,14 @@ jobs:
             VERSION="${RAW_TAG#v}"
             TAG_NAME="$RAW_TAG"
           else
-            PKG_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version' 2>/dev/null || echo "0.1.1")
+            PKG_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version' 2>/dev/null || true)
+            if [ -z "$PKG_VERSION" ] || [ "$PKG_VERSION" = "null" ]; then
+              PKG_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2 || true)
+            fi
+            if [ -z "$PKG_VERSION" ]; then
+              echo "ERROR: Could not determine package version from Cargo metadata or Cargo.toml." >&2
+              exit 1
+            fi
             VERSION="${PKG_VERSION}"
             TAG_NAME="v${PKG_VERSION}"
           fi
@@ -203,7 +210,7 @@ jobs:
       - name: Build Linux Binaries (GUI + CLI + Native Host)
         shell: bash
         run: |
-          cargo build --release -p ferrite-gui -p ferrite-cli -p ferrite-native-host
+          cargo build --release --locked -p ferrite-gui -p ferrite-cli -p ferrite-native-host
 
       - name: Package Linux Standalone Tarball
         shell: bash

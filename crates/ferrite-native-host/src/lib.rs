@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use ferrite_core::{
-    DownloadType, FdmConfig, HttpRequestOptions, KnownWebBrowser, NewDownloadRequest,
+    DownloadType, FerriteConfig, HttpRequestOptions, KnownWebBrowser, NewDownloadRequest,
 };
 use ferrite_ipc::{IpcClient, IpcRequest, IpcResponse, default_socket_path};
 use serde::{Deserialize, Serialize};
@@ -12,17 +12,14 @@ use std::pin::Pin;
 use std::process::{Command, Stdio};
 use url::Url;
 
-pub const NATIVE_HOST_NAME: &str = "org.freedownloadmanager.fdm5.cnh";
+pub const NATIVE_HOST_NAME: &str = "org.ferrite.cnh";
 
-pub const CHROME_ALLOWED_ORIGINS: &[&str] = &[
-    "chrome-extension://ahmpjcflkgiildlgicmcieglgoilbfdp/",
-    "chrome-extension://mdfcjfioplkdchnhcpcobaheocanedjg/",
-];
+pub const ENV_CHROME_ALLOWED_ORIGINS: &str = "FERRITE_CHROME_ALLOWED_ORIGINS";
+pub const ENV_FIREFOX_ALLOWED_EXTENSIONS: &str = "FERRITE_FIREFOX_ALLOWED_EXTENSIONS";
 
-pub const FIREFOX_ALLOWED_EXTENSIONS: &[&str] = &[
-    "fdm_ffext@freedownloadmanager.org",
-    "fdm_ffext2@freedownloadmanager.org",
-];
+pub const CHROME_ALLOWED_ORIGINS: &[&str] = &[];
+
+pub const FIREFOX_ALLOWED_EXTENSIONS: &[&str] = &["ferrite@ferrite.org"];
 
 pub const VIDEO_SNIFFER_MIME_TYPES: &[&str] = &[
     "video/x-flv",
@@ -133,7 +130,7 @@ pub struct NativeUiStrings {
     pub dlpage: String,
     #[serde(rename = "dlYtChannel")]
     pub dl_yt_channel: String,
-    pub dlbyfdm: String,
+    pub dlbyferrite: String,
 }
 
 impl Default for NativeUiStrings {
@@ -145,7 +142,7 @@ impl Default for NativeUiStrings {
             dlvideo: "Download video with Ferrite".into(),
             dlpage: "Download page media with Ferrite".into(),
             dl_yt_channel: "Download channel with Ferrite".into(),
-            dlbyfdm: "Downloaded by Ferrite".into(),
+            dlbyferrite: "Downloaded by Ferrite".into(),
         }
     }
 }
@@ -188,6 +185,23 @@ pub trait DaemonBridge: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<IpcResponse>> + Send + 'a>>;
 }
 
+pub const fn daemon_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "ferrite.exe"
+    } else {
+        "ferrite"
+    }
+}
+
+fn resolve_daemon_exe_near(current_exe: &Path) -> Option<PathBuf> {
+    let sibling = current_exe.with_file_name(daemon_binary_name());
+    if sibling.is_file() {
+        Some(sibling)
+    } else {
+        None
+    }
+}
+
 pub struct UnixDaemonBridge {
     pub socket_path: PathBuf,
     pub daemon_exe: Option<PathBuf>,
@@ -198,14 +212,9 @@ pub struct UnixDaemonBridge {
 impl UnixDaemonBridge {
     pub fn from_data_dir(data_dir: PathBuf, auto_launch: bool) -> Self {
         let socket_path = default_socket_path(&data_dir);
-        let daemon_exe = std::env::current_exe().ok().and_then(|p| {
-            let sibling = p.with_file_name("ferrite");
-            if sibling.exists() {
-                Some(sibling)
-            } else {
-                None
-            }
-        });
+        let daemon_exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| resolve_daemon_exe_near(&p));
         Self {
             socket_path,
             daemon_exe,
@@ -469,7 +478,7 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
                     "api_version": api_version,
                     "browser": browser,
                     "engine": "Ferrite",
-                    "compatible_version": "6.34.4",
+                    "compatible_version": env!("CARGO_PKG_VERSION"),
                     "daemon_connected": daemon_ok,
                 }),
             )
@@ -672,7 +681,7 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
         }
         "browser_proxy" => match bridge.call(IpcRequest::GetConfig).await {
             Ok(IpcResponse::Ok { data }) => {
-                let cfg: FdmConfig = serde_json::from_value(data).unwrap_or_default();
+                let cfg: FerriteConfig = serde_json::from_value(data).unwrap_or_default();
                 ok_reply(
                     id,
                     task_type,
@@ -707,7 +716,7 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
             let (resolved_key, enabled) = if needs_cfg {
                 match bridge.call(IpcRequest::GetConfig).await {
                     Ok(IpcResponse::Ok { data }) => {
-                        let cfg: FdmConfig = serde_json::from_value(data).unwrap_or_default();
+                        let cfg: FerriteConfig = serde_json::from_value(data).unwrap_or_default();
                         if cfg.app.wb_dont_intercept_if_key_pressed
                             && !cfg.app.wb_bypass_key.trim().is_empty()
                         {
@@ -735,7 +744,7 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
                 }),
             )
         }
-        "network_request_notification" | "browser_download_state_report" | "fdm_json_task" => {
+        "network_request_notification" | "browser_download_state_report" | "ferrite_json_task" => {
             ok_reply(id, task_type, json!({ "accepted": true }))
         }
         _ => err_reply(
@@ -747,31 +756,99 @@ pub async fn dispatch_native_task<B: DaemonBridge>(bridge: &B, task: &Value) -> 
     }
 }
 
+fn validate_chrome_origin(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('*') || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let body = trimmed
+        .strip_prefix("chrome-extension://")?
+        .trim_end_matches('/');
+    if body.is_empty() || !body.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(format!("chrome-extension://{body}/"))
+}
+
+fn validate_firefox_extension_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('*') || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+pub fn parse_allowed_chrome_origins(raw: &str) -> Vec<String> {
+    raw.split(',').filter_map(validate_chrome_origin).collect()
+}
+
+pub fn parse_allowed_firefox_extensions(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter_map(validate_firefox_extension_id)
+        .collect()
+}
+
+pub fn resolve_chrome_allowed_origins() -> Vec<String> {
+    if let Ok(raw) = std::env::var(ENV_CHROME_ALLOWED_ORIGINS)
+        && !raw.trim().is_empty()
+    {
+        return parse_allowed_chrome_origins(&raw);
+    }
+    CHROME_ALLOWED_ORIGINS
+        .iter()
+        .filter_map(|s| validate_chrome_origin(s))
+        .collect()
+}
+
+pub fn resolve_firefox_allowed_extensions() -> Vec<String> {
+    if let Ok(raw) = std::env::var(ENV_FIREFOX_ALLOWED_EXTENSIONS)
+        && !raw.trim().is_empty()
+    {
+        return parse_allowed_firefox_extensions(&raw);
+    }
+    FIREFOX_ALLOWED_EXTENSIONS
+        .iter()
+        .filter_map(|s| validate_firefox_extension_id(s))
+        .collect()
+}
+
 pub fn build_native_manifest_json(browser: KnownWebBrowser, host_exe_path: &Path) -> Value {
+    let chrome = resolve_chrome_allowed_origins();
+    let firefox = resolve_firefox_allowed_extensions();
+    let chrome_refs: Vec<&str> = chrome.iter().map(String::as_str).collect();
+    let firefox_refs: Vec<&str> = firefox.iter().map(String::as_str).collect();
+    build_native_manifest_json_with_allowlist(browser, host_exe_path, &chrome_refs, &firefox_refs)
+}
+
+pub fn build_native_manifest_json_with_allowlist(
+    browser: KnownWebBrowser,
+    host_exe_path: &Path,
+    chrome_allowed_origins: &[&str],
+    firefox_allowed_extensions: &[&str],
+) -> Value {
     let base = json!({
         "name": NATIVE_HOST_NAME,
-        "description": "Ferrite Native Messaging Host (Free Download Manager extension compatible)",
+        "description": "Ferrite Native Messaging Host",
         "path": host_exe_path.to_string_lossy(),
         "type": "stdio",
     });
     let mut obj = base.as_object().cloned().unwrap();
     match browser {
         KnownWebBrowser::Firefox => {
-            obj.insert(
-                "allowed_extensions".into(),
-                Value::Array(
-                    FIREFOX_ALLOWED_EXTENSIONS
-                        .iter()
-                        .map(|s| json!(s))
-                        .collect(),
-                ),
-            );
+            let exts: Vec<Value> = firefox_allowed_extensions
+                .iter()
+                .filter_map(|s| validate_firefox_extension_id(s))
+                .map(|s| json!(s))
+                .collect();
+            obj.insert("allowed_extensions".into(), Value::Array(exts));
         }
         _ => {
-            obj.insert(
-                "allowed_origins".into(),
-                Value::Array(CHROME_ALLOWED_ORIGINS.iter().map(|s| json!(s)).collect()),
-            );
+            let origins: Vec<Value> = chrome_allowed_origins
+                .iter()
+                .filter_map(|s| validate_chrome_origin(s))
+                .map(|s| json!(s))
+                .collect();
+            obj.insert("allowed_origins".into(), Value::Array(origins));
         }
     }
     Value::Object(obj)
@@ -828,6 +905,25 @@ pub fn install_native_manifest_to_dir(
     Ok(dest)
 }
 
+pub fn install_native_manifest_to_dir_with_allowlist(
+    browser: KnownWebBrowser,
+    host_exe_path: &Path,
+    target_dir: &Path,
+    chrome_allowed_origins: &[&str],
+    firefox_allowed_extensions: &[&str],
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(target_dir)?;
+    let dest = target_dir.join(format!("{NATIVE_HOST_NAME}.json"));
+    let manifest = build_native_manifest_json_with_allowlist(
+        browser,
+        host_exe_path,
+        chrome_allowed_origins,
+        firefox_allowed_extensions,
+    );
+    std::fs::write(&dest, serde_json::to_string_pretty(&manifest)?)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,14 +931,14 @@ mod tests {
 
     struct MockBridge {
         requests: Arc<Mutex<Vec<IpcRequest>>>,
-        settings: FdmConfig,
+        settings: FerriteConfig,
     }
 
     impl MockBridge {
         fn new() -> Self {
             Self {
                 requests: Arc::new(Mutex::new(Vec::new())),
-                settings: FdmConfig::default(),
+                settings: FerriteConfig::default(),
             }
         }
     }
@@ -895,7 +991,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handles_all_wenativehost_tasks_and_filters() {
+    async fn handles_all_webextension_native_host_tasks_and_filters() {
         let bridge = MockBridge::new();
 
         // 1. handshake & ui_strings
@@ -906,9 +1002,15 @@ mod tests {
         .await;
         assert_eq!(hs["error"], "");
         assert_eq!(hs["result"]["daemon_connected"], true);
+        assert_eq!(hs["result"]["engine"], "Ferrite");
+        assert_eq!(
+            hs["result"]["compatible_version"],
+            env!("CARGO_PKG_VERSION")
+        );
 
         let ui = dispatch_native_task(&bridge, &json!({ "id": 2, "type": "ui_strings" })).await;
         assert_eq!(ui["result"]["dlvideo"], "Download video with Ferrite");
+        assert_eq!(ui["result"]["dlbyferrite"], "Downloaded by Ferrite");
 
         // 2. create_downloads passes matching extension and preserves cookies/referer
         let create = dispatch_native_task(
@@ -982,8 +1084,13 @@ mod tests {
         assert_eq!(ks["error"], "");
         assert_eq!(ks["result"]["keyCode"], "Alt");
 
-        // 7. unknown task returns unknown_task_type
-        let unk = dispatch_native_task(&bridge, &json!({ "id": 8, "type": "nonexistent" })).await;
+        // 7. ferrite_json_task accepted, unknown task returns unknown_task_type
+        let fj =
+            dispatch_native_task(&bridge, &json!({ "id": 8, "type": "ferrite_json_task" })).await;
+        assert_eq!(fj["error"], "");
+        assert_eq!(fj["result"]["accepted"], true);
+
+        let unk = dispatch_native_task(&bridge, &json!({ "id": 9, "type": "nonexistent" })).await;
         assert_eq!(unk["error"], "unknown_task_type");
     }
 
@@ -1016,10 +1123,18 @@ mod tests {
             &dir.join("chrome"),
         )
         .unwrap();
-        let raw_chrome: Value =
-            serde_json::from_str(&std::fs::read_to_string(&chrome_path).unwrap()).unwrap();
-        assert_eq!(raw_chrome["name"], NATIVE_HOST_NAME);
-        assert!(raw_chrome["allowed_origins"].as_array().unwrap().len() >= 2);
+        let raw_chrome_str = std::fs::read_to_string(&chrome_path).unwrap();
+        let raw_chrome: Value = serde_json::from_str(&raw_chrome_str).unwrap();
+        assert_eq!(NATIVE_HOST_NAME, "org.ferrite.cnh");
+        assert_eq!(raw_chrome["name"], "org.ferrite.cnh");
+        assert!(chrome_path.ends_with("org.ferrite.cnh.json"));
+        assert!(raw_chrome["allowed_origins"].is_array());
+        assert!(!raw_chrome_str.contains('*'));
+        assert!(
+            !raw_chrome_str
+                .to_ascii_lowercase()
+                .contains("freedownloadmanager")
+        );
 
         let ff_path = install_native_manifest_to_dir(
             KnownWebBrowser::Firefox,
@@ -1027,12 +1142,56 @@ mod tests {
             &dir.join("firefox"),
         )
         .unwrap();
-        let raw_ff: Value =
-            serde_json::from_str(&std::fs::read_to_string(&ff_path).unwrap()).unwrap();
-        assert_eq!(
-            raw_ff["allowed_extensions"][0],
-            "fdm_ffext@freedownloadmanager.org"
+        let raw_ff_str = std::fs::read_to_string(&ff_path).unwrap();
+        let raw_ff: Value = serde_json::from_str(&raw_ff_str).unwrap();
+        assert_eq!(raw_ff["allowed_extensions"][0], "ferrite@ferrite.org");
+        assert!(!raw_ff_str.contains('*'));
+
+        // Custom allowlist rejects wildcard '*' and invalid origins cleanly
+        let parsed_chrome = parse_allowed_chrome_origins(
+            "*, chrome-extension://*/ , chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa , https://evil.com/",
         );
+        assert_eq!(
+            parsed_chrome,
+            vec!["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]
+        );
+        let parsed_ff = parse_allowed_firefox_extensions("*, bad*id, ext@ferrite.dev");
+        assert_eq!(parsed_ff, vec!["ext@ferrite.dev"]);
+
+        let custom_chrome = build_native_manifest_json_with_allowlist(
+            KnownWebBrowser::Chrome,
+            Path::new("/usr/local/bin/ferrite-native-host"),
+            &["*", "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/"],
+            &[],
+        );
+        assert_eq!(
+            custom_chrome["allowed_origins"],
+            json!(["chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/"])
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_binary_lookup_matches_platform_and_finds_sibling() {
+        let expected = if cfg!(windows) {
+            "ferrite.exe"
+        } else {
+            "ferrite"
+        };
+        assert_eq!(daemon_binary_name(), expected);
+
+        let dir = std::env::temp_dir().join(format!("ferrite_bin_lookup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let host_exe = dir.join("ferrite-native-host");
+        std::fs::write(&host_exe, b"").unwrap();
+        assert!(resolve_daemon_exe_near(&host_exe).is_none());
+
+        let daemon_exe = dir.join(expected);
+        std::fs::write(&daemon_exe, b"").unwrap();
+        assert_eq!(resolve_daemon_exe_near(&host_exe), Some(daemon_exe));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

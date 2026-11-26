@@ -174,16 +174,6 @@ pub enum FileExistsAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
-pub enum BtEncryptionPolicy {
-    NoEncryptionAllowed,
-    #[default]
-    PreferEncryption,
-    RequireEncryption,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum DownloadAbortReason {
     #[default]
     None,
@@ -471,15 +461,17 @@ pub struct DownloadRecord {
 
 impl DownloadRecord {
     pub fn output_path(&self) -> PathBuf {
-        self.target_dir.join(&self.file_name)
+        self.target_dir
+            .join(crate::routing::sanitize_filename(&self.file_name))
     }
 
     pub fn partial_path(&self) -> PathBuf {
-        if self.partial_suffix.is_empty() {
-            self.output_path()
+        let safe_name = crate::routing::sanitize_filename(&self.file_name);
+        let safe_suffix = crate::routing::sanitize_partial_suffix(&self.partial_suffix);
+        if safe_suffix.is_empty() {
+            self.target_dir.join(safe_name)
         } else {
-            self.target_dir
-                .join(format!("{}{}", self.file_name, self.partial_suffix))
+            self.target_dir.join(format!("{safe_name}{safe_suffix}"))
         }
     }
 
@@ -526,6 +518,7 @@ impl Default for Tag {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProxyEndpoint {
     pub host: String,
     pub port: u16,
@@ -534,14 +527,12 @@ pub struct ProxyEndpoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProxySettings {
     pub mode: NetworkProxyMode,
     pub http: ProxyEndpoint,
     pub https: ProxyEndpoint,
-    pub ftp: ProxyEndpoint,
     pub socks5: ProxyEndpoint,
-    pub dont_use_for_remote_access: bool,
-    pub dont_use_for_remote_access_listener: bool,
 }
 
 impl Default for ProxySettings {
@@ -550,10 +541,7 @@ impl Default for ProxySettings {
             mode: NetworkProxyMode::SystemProxy,
             http: ProxyEndpoint::default(),
             https: ProxyEndpoint::default(),
-            ftp: ProxyEndpoint::default(),
             socks5: ProxyEndpoint::default(),
-            dont_use_for_remote_access: true,
-            dont_use_for_remote_access_listener: true,
         }
     }
 }
@@ -666,4 +654,117 @@ pub enum EngineEvent {
         active_count: usize,
         preventer: AutoStartPreventer,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_record(target_dir: PathBuf, file_name: &str, partial_suffix: &str) -> DownloadRecord {
+        DownloadRecord {
+            id: 1,
+            uuid: "u1".into(),
+            parent_id: None,
+            children_ids: vec![],
+            order_index: 1,
+            download_type: DownloadType::Www,
+            state: DownloadState::Stopped,
+            priority: DownloadPriority::Normal,
+            resume_support: ResumeSupport::Unknown,
+            flags: DownloadFlags::default(),
+            title: "sample".into(),
+            url: "https://example.org/file.bin".into(),
+            target_dir,
+            file_name: file_name.into(),
+            partial_suffix: partial_suffix.into(),
+            total_bytes: None,
+            downloaded_bytes: 0,
+            uploaded_bytes: 0,
+            download_speed_bps: 0,
+            upload_speed_bps: 0,
+            eta_secs: None,
+            connections_active: 0,
+            etag: None,
+            last_modified: None,
+            file_type: FileType::Unknown,
+            http: HttpRequestOptions::default(),
+            torrent_info_hash: None,
+            torrent_source: None,
+            tags: vec![],
+            files: vec![],
+            segments: vec![],
+            peers: vec![],
+            trackers: vec![],
+            schedule: None,
+            retry_count: 0,
+            forbid_auto_retry_count: 0,
+            last_error: None,
+            abort_reason: DownloadAbortReason::None,
+            preview_path: None,
+            module_data: serde_json::Value::Null,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn output_and_partial_paths_prevent_path_traversal() {
+        let target = PathBuf::from("/tmp/ferrite-downloads");
+
+        let normal = sample_record(target.clone(), "ubuntu.iso", ".part");
+        assert_eq!(normal.output_path(), target.join("ubuntu.iso"));
+        assert_eq!(normal.partial_path(), target.join("ubuntu.iso.part"));
+
+        let no_suffix = sample_record(target.clone(), "ubuntu.iso", "");
+        assert_eq!(no_suffix.partial_path(), no_suffix.output_path());
+
+        for (mal_name, mal_suffix) in [
+            ("../../etc/passwd", "/../../evil"),
+            ("/etc/shadow", "../.part"),
+            ("..\\..\\Windows\\cmd.exe", "..\\..\\bad"),
+            ("subdir/../secret.txt", ".."),
+            ("..", "."),
+            (".", "/etc/passwd"),
+            ("../../", "/"),
+        ] {
+            let rec = sample_record(target.clone(), mal_name, mal_suffix);
+            let out = rec.output_path();
+            let part = rec.partial_path();
+            assert_eq!(
+                out.parent(),
+                Some(target.as_path()),
+                "output_path escaped for ({mal_name:?}, {mal_suffix:?}): {out:?}"
+            );
+            assert_eq!(
+                part.parent(),
+                Some(target.as_path()),
+                "partial_path escaped for ({mal_name:?}, {mal_suffix:?}): {part:?}"
+            );
+            assert!(
+                !out.file_name().unwrap().to_string_lossy().contains(".."),
+                "unexpected '..' in output filename: {out:?}"
+            );
+            assert!(
+                !part.file_name().unwrap().to_string_lossy().contains(".."),
+                "unexpected '..' in partial filename: {part:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_settings_deserializes_with_removed_legacy_fields() {
+        let json = r#"{
+            "mode": "manual_proxy",
+            "http": { "host": "127.0.0.1", "port": 8080 },
+            "ftp": { "host": "127.0.0.1", "port": 2121 },
+            "dont_use_for_remote_access": false,
+            "dont_use_for_remote_access_listener": false
+        }"#;
+        let proxy: ProxySettings = serde_json::from_str(json).unwrap();
+        assert_eq!(proxy.mode, NetworkProxyMode::ManualProxy);
+        assert_eq!(proxy.http.host, "127.0.0.1");
+        assert_eq!(proxy.http.port, 8080);
+        assert_eq!(proxy.socks5.port, 0);
+    }
 }

@@ -1,19 +1,18 @@
 use crate::app::{FerriteApp, SettingsTab};
 use crate::helpers::{
-    browser_display_name, convert_wb_threshold_input, detect_antivirus_presets,
-    expand_path_preview, is_native_host_installed, open_path_os, reaction_label,
-    set_macos_hide_dock_icon,
+    browser_display_name, convert_wb_threshold_input, expand_path_preview, open_path_os,
+    reaction_label, set_macos_hide_dock_icon,
 };
 use crate::i18n::l;
 use crate::theme::{ThemePalette, parse_hex_color};
 use crate::ui_widgets::{
-    action_btn, badge_themed, chip_toggle, danger_btn, fdm_checkbox, labeled_field,
+    action_btn, badge_themed, chip_toggle, danger_btn, ferrite_checkbox, labeled_field,
     password_field_row, radio_row, section_heading, sidebar_nav_item, svg_icon, switch_row_desc,
 };
 use ferrite_core::os_integration::play_notification_sound;
 use ferrite_core::{
-    BtEncryptionPolicy, DeleteButtonAction, ExistingFileReaction, KnownWebBrowser,
-    NetworkProxyMode, ShutdownType, ThemeMode, TrafficUsageMode, UiStyle,
+    DeleteButtonAction, ExistingFileReaction, KnownWebBrowser, NetworkProxyMode, RowDensity,
+    ShutdownType, ThemeMode, TrafficUsageMode, UiStyle,
 };
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, FontWeight, SharedString, div,
@@ -338,7 +337,7 @@ fn render_general_tab(
                     div()
                         .text_xs()
                         .text_color(p.text_primary)
-                        .child(s.layout_density_style),
+                        .child("Appearance Style"),
                 )
                 .child(
                     div()
@@ -346,13 +345,14 @@ fn render_general_tab(
                         .flex_row()
                         .gap_1p5()
                         .child(chip_toggle(
-                            "gen-ui-new",
-                            "Theme V2",
-                            cfg_app.ui_style == UiStyle::New,
+                            "gen-ui-modern",
+                            "Modern",
+                            cfg_app.ui_style == UiStyle::Modern,
                             p,
                             cx,
                             |this, _, w, cx| {
-                                this.settings_cfg.app.ui_style = UiStyle::New;
+                                this.settings_cfg.app.ui_style = UiStyle::Modern;
+                                this.settings_dirty = true;
                                 this.preview_appearance(w, cx);
                             },
                         ))
@@ -364,18 +364,51 @@ fn render_general_tab(
                             cx,
                             |this, _, w, cx| {
                                 this.settings_cfg.app.ui_style = UiStyle::Classic;
+                                this.settings_dirty = true;
                                 this.preview_appearance(w, cx);
                             },
-                        ))
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_primary)
+                        .child("Row Density"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1p5()
                         .child(chip_toggle(
-                            "gen-compact",
-                            "Compact Rows",
-                            cfg_app.compact_downloads_view,
+                            "gen-density-comfortable",
+                            "Comfortable",
+                            cfg_app.row_density == RowDensity::Comfortable,
                             p,
                             cx,
                             |this, _, _, cx| {
-                                this.settings_cfg.app.compact_downloads_view =
-                                    !this.settings_cfg.app.compact_downloads_view;
+                                this.settings_cfg.app.row_density = RowDensity::Comfortable;
+                                this.settings_dirty = true;
+                                cx.notify();
+                            },
+                        ))
+                        .child(chip_toggle(
+                            "gen-density-compact",
+                            "Compact",
+                            cfg_app.row_density == RowDensity::Compact,
+                            p,
+                            cx,
+                            |this, _, _, cx| {
+                                this.settings_cfg.app.row_density = RowDensity::Compact;
+                                this.settings_dirty = true;
                                 cx.notify();
                             },
                         )),
@@ -508,7 +541,7 @@ fn render_general_tab(
         ))
         .child(switch_row_desc(
             "gen-show-support",
-            "Show Support / Community entry in main menu",
+            "Show Help & Diagnostics entry in main menu",
             None,
             cfg_app.show_support_button,
             p,
@@ -516,6 +549,7 @@ fn render_general_tab(
             |this, _, _, cx| {
                 this.settings_cfg.app.show_support_button =
                     !this.settings_cfg.app.show_support_button;
+                this.settings_dirty = true;
                 cx.notify();
             },
         ))
@@ -599,20 +633,23 @@ fn render_general_tab(
                 cx.notify();
             },
         ))
-        .child(switch_row_desc(
-            "gen-hide-dock",
-            "Hide macOS Dock icon (accessory background mode)",
-            None,
-            cfg_app.hide_dock_icon,
-            p,
-            cx,
-            |this, _, _, cx| {
-                this.settings_cfg.app.hide_dock_icon = !this.settings_cfg.app.hide_dock_icon;
-                set_macos_hide_dock_icon(this.settings_cfg.app.hide_dock_icon);
-                this.refresh_dock_badge();
-                cx.notify();
-            },
-        ))
+        .when(cfg!(target_os = "macos"), |el| {
+            el.child(switch_row_desc(
+                "gen-hide-dock",
+                "Hide macOS Dock icon (accessory background mode)",
+                None,
+                cfg_app.hide_dock_icon,
+                p,
+                cx,
+                |this, _, _, cx| {
+                    this.settings_cfg.app.hide_dock_icon = !this.settings_cfg.app.hide_dock_icon;
+                    this.settings_dirty = true;
+                    set_macos_hide_dock_icon(this.settings_cfg.app.hide_dock_icon);
+                    this.refresh_dock_badge();
+                    cx.notify();
+                },
+            ))
+        })
         .child(switch_row_desc(
             "gen-tray-ind",
             "Show active download count / speed badge on Dock icon",
@@ -1228,7 +1265,11 @@ fn render_browser_tab(
                 .flex_col()
                 .gap_1p5()
                 .children(browsers.into_iter().map(|b| {
-                    let installed = is_native_host_installed(b);
+                    let installed = app
+                        .cached_native_host_installed
+                        .get(&b)
+                        .copied()
+                        .unwrap_or(false);
                     div()
                         .flex()
                         .flex_row()
@@ -1428,18 +1469,6 @@ fn render_network_tab(
                                 p,
                             )),
                     )
-                    .child(switch_row_desc(
-                        "net-proxy-ftp-eq",
-                        "Use HTTP proxy settings for FTP downloads",
-                        None,
-                        app.proxy_use_http_for_ftp,
-                        p,
-                        cx,
-                        |this, _, _, cx| {
-                            this.proxy_use_http_for_ftp = !this.proxy_use_http_for_ftp;
-                            cx.notify();
-                        },
-                    ))
                     .with_animation(
                         SharedString::from(format!("net-proxy-anim-{proxy_epoch}")),
                         Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
@@ -1799,10 +1828,8 @@ fn render_antivirus_tab(
 ) -> AnyElement {
     let s = l(&app.settings_cfg.app.locale_name);
     let cfg_core = &app.settings_cfg.core;
-    let custom_mode = cfg_core.antivirus_custom_mode;
-    let cur_uid = cfg_core.antivirus_uid.clone();
-    let av_epoch = app.av_preset_anim_epoch;
-    let presets = detect_antivirus_presets();
+    let cur_path = app.set_av_path.read(cx).text().trim().to_string();
+    let presets = app.cached_antivirus_presets.clone();
 
     div()
         .flex()
@@ -1826,17 +1853,16 @@ fn render_antivirus_tab(
             |this, _, _, cx| {
                 this.settings_cfg.core.auto_launch_antivirus =
                     !this.settings_cfg.core.auto_launch_antivirus;
+                this.settings_dirty = true;
                 if this.settings_cfg.core.auto_launch_antivirus
-                    && !this.settings_cfg.core.antivirus_custom_mode
                     && this.set_av_path.read(cx).text().trim().is_empty()
                 {
-                    let presets = detect_antivirus_presets();
-                    if let Some((uid, _, bin, args, _)) = presets
+                    let presets = this.cached_antivirus_presets.clone();
+                    if let Some((_, _, bin, args, _)) = presets
                         .iter()
                         .find(|(_, _, _, _, exists)| *exists)
                         .or_else(|| presets.first())
                     {
-                        this.settings_cfg.core.antivirus_uid = (*uid).into();
                         this.set_av_path.update(cx, |i, cx| i.set_text(bin, cx));
                         this.set_av_args.update(cx, |i, cx| i.set_text(args, cx));
                     }
@@ -1844,107 +1870,58 @@ fn render_antivirus_tab(
                 cx.notify();
             },
         ))
-        .child(radio_row(
-            "av-mode-preset",
-            "Detected Local Scanner Preset",
-            None,
-            !custom_mode,
-            p,
-            cx,
-            |this, _, _, cx| {
-                if this.settings_cfg.core.antivirus_custom_mode {
-                    this.av_preset_anim_epoch = this.av_preset_anim_epoch.wrapping_add(1);
-                }
-                this.settings_cfg.core.antivirus_custom_mode = false;
-                if this.set_av_path.read(cx).text().trim().is_empty() {
-                    let presets = detect_antivirus_presets();
-                    let cur = this.settings_cfg.core.antivirus_uid.clone();
-                    if let Some((uid, _, bin, args, _)) = presets
-                        .iter()
-                        .find(|(uid, _, _, _, _)| *uid == cur)
-                        .or_else(|| presets.iter().find(|(_, _, _, _, exists)| *exists))
-                        .or_else(|| presets.first())
-                    {
-                        this.settings_cfg.core.antivirus_uid = (*uid).into();
-                        this.set_av_path.update(cx, |i, cx| i.set_text(bin, cx));
-                        this.set_av_args.update(cx, |i, cx| i.set_text(args, cx));
-                    }
-                }
-                cx.notify();
-            },
-        ))
-        .when(!custom_mode, |el| {
-            el.child(
-                div()
-                    .id("av-presets-box")
-                    .pl_6()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .children(presets.into_iter().map(|(uid, name, bin, args, exists)| {
-                        let sel = cur_uid == uid;
-                        div()
-                            .id(SharedString::from(format!("av-preset-{uid}")))
-                            .p_2p5()
-                            .rounded(p.radius(8., 3.))
-                            .bg(if sel { p.accent_soft } else { p.bg_200 })
-                            .border_1()
-                            .border_color(if sel { p.accent } else { p.separator })
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.settings_cfg.core.antivirus_uid = uid.into();
-                                this.set_av_path.update(cx, |i, cx| i.set_text(bin, cx));
-                                this.set_av_args.update(cx, |i, cx| i.set_text(args, cx));
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(p.text_primary)
-                                            .child(name),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(p.fpx(11.))
-                                            .text_color(p.text_muted)
-                                            .child(bin),
-                                    ),
-                            )
-                            .child(badge_themed(
-                                if exists { "Found" } else { "Not Installed" },
-                                if exists { p.success } else { p.text_muted },
-                                p.bg_300,
-                                p,
-                            ))
-                    }))
-                    .with_animation(
-                        SharedString::from(format!("av-presets-anim-{av_epoch}")),
-                        Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
-                        |el, delta| el.opacity(delta).mt(px(-4.0 * (1.0 - delta))),
-                    ),
-            )
-        })
-        .child(radio_row(
-            "av-mode-custom",
-            "Custom Antivirus Command",
-            Some("Specify any local scanner executable & argument template".into()),
-            custom_mode,
-            p,
-            cx,
-            |this, _, _, cx| {
-                this.settings_cfg.core.antivirus_custom_mode = true;
-                cx.notify();
-            },
-        ))
+        .child(
+            div()
+                .id("av-presets-box")
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .children(presets.into_iter().map(|(uid, name, bin, args, exists)| {
+                    let sel = cur_path == bin;
+                    div()
+                        .id(SharedString::from(format!("av-preset-{uid}")))
+                        .p_2p5()
+                        .rounded(p.radius(8., 3.))
+                        .bg(if sel { p.accent_soft } else { p.bg_200 })
+                        .border_1()
+                        .border_color(if sel { p.accent } else { p.separator })
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_av_path.update(cx, |i, cx| i.set_text(bin, cx));
+                            this.set_av_args.update(cx, |i, cx| i.set_text(args, cx));
+                            this.settings_dirty = true;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.text_primary)
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(p.fpx(11.))
+                                        .text_color(p.text_muted)
+                                        .child(bin),
+                                ),
+                        )
+                        .child(badge_themed(
+                            if exists { "Found" } else { "Not Installed" },
+                            if exists { p.success } else { p.text_muted },
+                            p.bg_300,
+                            p,
+                        ))
+                })),
+        )
         .child(
             div()
                 .flex()
@@ -1987,7 +1964,6 @@ fn render_bittorrent_tab(
     let s = l(&app.settings_cfg.app.locale_name);
     let cfg_core = &app.settings_cfg.core;
     let cfg_app = &app.settings_cfg.app;
-    let enc = cfg_core.bt_encryption_policy;
 
     div()
         .flex()
@@ -2022,41 +1998,10 @@ fn render_bittorrent_tab(
                     |this, _, _, cx| {
                         this.settings_cfg.core.bt_use_random_port =
                             !this.settings_cfg.core.bt_use_random_port;
+                        this.settings_dirty = true;
                         cx.notify();
                     },
                 )),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(div().text_xs().text_color(p.text_primary).child("Peer traffic encryption"))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .children([
-                            (BtEncryptionPolicy::PreferEncryption, "Prefer"),
-                            (BtEncryptionPolicy::RequireEncryption, "Require"),
-                            (BtEncryptionPolicy::NoEncryptionAllowed, "Allow Unencrypted"),
-                        ].into_iter().map(|(pol, lbl)| {
-                            chip_toggle(
-                                format!("bt-enc-{pol:?}"),
-                                lbl,
-                                enc == pol,
-                                p,
-                                cx,
-                                move |this, _, _, cx| {
-                                    this.settings_cfg.core.bt_encryption_policy = pol;
-                                    cx.notify();
-                                },
-                            )
-                        })),
-                ),
         )
         .child(section_heading(s.sec_bt_protocol, p))
         .child(
@@ -2111,18 +2056,6 @@ fn render_bittorrent_tab(
             |this, _, _, cx| {
                 this.settings_cfg.core.bt_enable_port_forwarding =
                     !this.settings_cfg.core.bt_enable_port_forwarding;
-                cx.notify();
-            },
-        ))
-        .child(switch_row_desc(
-            "bt-pex",
-            "Enable Peer Exchange (PEX)",
-            None,
-            cfg_core.bt_enable_pex,
-            p,
-            cx,
-            |this, _, _, cx| {
-                this.settings_cfg.core.bt_enable_pex = !this.settings_cfg.core.bt_enable_pex;
                 cx.notify();
             },
         ))
@@ -2315,32 +2248,6 @@ fn render_remote_tab(
                     },
                 )),
         )
-        .child(switch_row_desc(
-            "rem-bypass-proxy",
-            "Bypass configured proxy for Remote Access traffic",
-            None,
-            cfg_app.proxy.dont_use_for_remote_access,
-            p,
-            cx,
-            |this, _, _, cx| {
-                this.settings_cfg.app.proxy.dont_use_for_remote_access =
-                    !this.settings_cfg.app.proxy.dont_use_for_remote_access;
-                cx.notify();
-            },
-        ))
-        .child(switch_row_desc(
-            "rem-bypass-listener",
-            "Bypass proxy when listening for incoming remote connections",
-            None,
-            cfg_app.proxy.dont_use_for_remote_access_listener,
-            p,
-            cx,
-            |this, _, _, cx| {
-                this.settings_cfg.app.proxy.dont_use_for_remote_access_listener =
-                    !this.settings_cfg.app.proxy.dont_use_for_remote_access_listener;
-                cx.notify();
-            },
-        ))
         .child(
             div().pt_1().child(action_btn(
                 "rem-show-qr",
@@ -2797,7 +2704,7 @@ fn render_advanced_tab(
                         }
                         cx.notify();
                     }))
-                    .child(fdm_checkbox(visible, p))
+                    .child(ferrite_checkbox(visible, p))
                     .child(
                         div()
                             .w(p.spx(7.))
@@ -2810,7 +2717,7 @@ fn render_advanced_tab(
         ))
         .child(section_heading(s.sec_backup_migration, p))
         .child(labeled_field(
-            "Import / Export path (.json, .txt, .csv, or legacy db.sqlite)",
+            "Import / Export path (.json, .txt, or .csv)",
             app.set_data_io_path.clone().into_any_element(),
             p,
         ))
@@ -2832,7 +2739,7 @@ fn render_advanced_tab(
                 ))
                 .child(action_btn(
                     "adv-imp-dl",
-                    "Import / Migrate Legacy FDM DB",
+                    "Import Downloads",
                     p,
                     false,
                     cx,

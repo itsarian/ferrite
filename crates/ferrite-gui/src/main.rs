@@ -1,8 +1,12 @@
+mod actions;
 mod app;
 mod assets;
 mod bottom_panel;
+mod downloads_table;
+mod engine_actions;
 mod helpers;
 mod i18n;
+mod macos_tray;
 mod menus;
 mod modals;
 mod plugins_page;
@@ -11,6 +15,7 @@ mod settings_page;
 mod standalone;
 mod text_input;
 mod theme;
+mod toolbar;
 mod ui_widgets;
 
 use app::{AppWindowGlobal, FerriteApp, bind_app_keys_and_menus};
@@ -21,7 +26,7 @@ use helpers::{
 use text_input::bind_text_input_keys;
 
 use ferrite_cli::DownloadEngine;
-use ferrite_core::FdmConfig;
+use ferrite_core::FerriteConfig;
 use gpui::{
     App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size,
 };
@@ -35,7 +40,7 @@ fn main() {
     let data_dir = launch
         .data_dir
         .clone()
-        .unwrap_or_else(|| FdmConfig::data_dir(portable));
+        .unwrap_or_else(|| FerriteConfig::data_dir(portable));
 
     let rt = Arc::new(
         tokio::runtime::Builder::new_multi_thread()

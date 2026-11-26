@@ -33,6 +33,7 @@ modules:
       - install -Dm755 target/release/ferrite /app/bin/ferrite
       - install -Dm755 target/release/ferrite-native-host /app/bin/ferrite-native-host
       - install -Dm644 resources/linux/ferrite.desktop /app/share/applications/io.ferrite.Ferrite.desktop
+      - sed -i 's/^Icon=ferrite$/Icon=io.ferrite.Ferrite/' /app/share/applications/io.ferrite.Ferrite.desktop
       - install -Dm644 resources/linux/io.ferrite.Ferrite.metainfo.xml /app/share/metainfo/io.ferrite.Ferrite.metainfo.xml
       - |
         for size in 16 32 48 64 128 256 512 1024; do

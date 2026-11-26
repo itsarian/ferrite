@@ -6,15 +6,15 @@ use crate::helpers::{
 use crate::i18n;
 use crate::theme::parse_hex_color;
 use crate::ui_widgets::{
-    action_btn, badge_themed, chip_toggle, danger_btn, ellipsis_text, fdm_checkbox, ghost_icon_btn,
-    slim_progress_bar, slim_progress_bar_active, svg_icon, tab_pill,
+    action_btn, badge_themed, chip_toggle, danger_btn, ellipsis_text, ferrite_checkbox,
+    ghost_icon_btn, slim_progress_bar, slim_progress_bar_active, svg_icon, tab_pill, tooltip_text,
 };
 use ferrite_core::{
     DownloadPriority, DownloadState, DownloadType, ResumeSupport, SegmentState, TrafficUsageMode,
 };
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, FontWeight, SharedString, div,
-    ease_out_quint, prelude::*, px, rgb,
+    ease_out_quint, prelude::*, px, rgb, uniform_list,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -220,7 +220,7 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                 .flex_row()
                 .gap_4()
                 .child(
-                    // Left preview box (FDM GeneralTab_V2 left card)
+                    // Left preview box
                     div()
                         .w(p.spx(128.))
                         .flex_shrink_0()
@@ -373,33 +373,48 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                                 .text_color(p.text_muted)
                                                 .child(ellipsis_text(out_path_str)),
                                         )
-                                        .child(ghost_icon_btn(
-                                            format!("insp-copy-path-{id}"),
-                                            "icons/content_copy.svg",
-                                            p.spx_f32(13.),
-                                            p.text_muted,
-                                            p.bg_300,
-                                            cx,
-                                            move |this, _, _, cx| {
-                                                this.copy_to_clipboard(
-                                                    out_copy.clone(),
-                                                    "Copied output path",
-                                                    cx,
-                                                );
-                                            },
-                                        ))
-                                        .child(ghost_icon_btn(
-                                            format!("insp-open-dir-{id}"),
-                                            "icons/folder_open.svg",
-                                            p.spx_f32(14.),
-                                            p.accent,
-                                            p.bg_300,
-                                            cx,
-                                            move |this, _, _, cx| {
-                                                this.reveal_download_file(id);
-                                                cx.notify();
-                                            },
-                                        )),
+                                        .child(
+                                            ghost_icon_btn(
+                                                format!("insp-copy-path-{id}"),
+                                                "icons/content_copy.svg",
+                                                p.spx_f32(13.),
+                                                p.text_muted,
+                                                p.bg_300,
+                                                cx,
+                                                move |this, _, _, cx| {
+                                                    this.copy_to_clipboard(
+                                                        out_copy.clone(),
+                                                        "Copied output path",
+                                                        cx,
+                                                    );
+                                                },
+                                            )
+                                            .tooltip(tooltip_text("Copy output path", &p)),
+                                        )
+                                        .child(
+                                            ghost_icon_btn(
+                                                format!("insp-open-dir-{id}"),
+                                                "icons/folder_open.svg",
+                                                p.spx_f32(14.),
+                                                p.accent,
+                                                p.bg_300,
+                                                cx,
+                                                move |this, _, _, cx| {
+                                                    this.reveal_download_file(id);
+                                                    cx.notify();
+                                                },
+                                            )
+                                            .tooltip(
+                                                tooltip_text(
+                                                    if cfg!(target_os = "macos") {
+                                                        "Reveal in Finder"
+                                                    } else {
+                                                        "Show in File Manager"
+                                                    },
+                                                    &p,
+                                                ),
+                                            ),
+                                        ),
                                 ),
                         )
                         .child(
@@ -489,21 +504,24 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                                 .child(ellipsis_text(rec.url.clone())),
                                         ),
                                 )
-                                .child(ghost_icon_btn(
-                                    format!("insp-copy-url-{id}"),
-                                    "icons/content_copy.svg",
-                                    13.,
-                                    p.text_muted,
-                                    p.bg_300,
-                                    cx,
-                                    move |this, _, _, cx| {
-                                        this.copy_to_clipboard(
-                                            url_copy.clone(),
-                                            "Copied source URL",
-                                            cx,
-                                        );
-                                    },
-                                )),
+                                .child(
+                                    ghost_icon_btn(
+                                        format!("insp-copy-url-{id}"),
+                                        "icons/content_copy.svg",
+                                        13.,
+                                        p.text_muted,
+                                        p.bg_300,
+                                        cx,
+                                        move |this, _, _, cx| {
+                                            this.copy_to_clipboard(
+                                                url_copy.clone(),
+                                                "Copied source URL",
+                                                cx,
+                                            );
+                                        },
+                                    )
+                                    .tooltip(tooltip_text("Copy source URL", &p)),
+                                ),
                         )
                         .when_some(rec.last_error.clone(), |el, err| {
                             el.child(
@@ -516,109 +534,154 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                     .child(ellipsis_text(format!("Error: {err}"))),
                             )
                         })
-                        .child(
-                            // Quick actions bar
+                        .child({
+                            let is_batch = rec.download_type == DownloadType::Batch;
+                            let is_completed = rec.state == DownloadState::Completed;
+                            let is_torrent = rec.download_type == DownloadType::BitTorrent;
+                            let is_media = matches!(
+                                rec.download_type,
+                                DownloadType::MediaParser | DownloadType::HlsM3u8
+                            ) || rec
+                                .output_path()
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .is_some_and(|ext| {
+                                    matches!(
+                                        ext.to_ascii_lowercase().as_str(),
+                                        "mp4"
+                                            | "mkv"
+                                            | "webm"
+                                            | "mov"
+                                            | "avi"
+                                            | "mp3"
+                                            | "m4a"
+                                            | "flac"
+                                            | "wav"
+                                            | "ogg"
+                                            | "opus"
+                                            | "aac"
+                                            | "ts"
+                                    )
+                                });
+
                             div()
                                 .flex()
                                 .flex_row()
                                 .flex_wrap()
                                 .items_center()
                                 .gap_1p5()
-                                .child(chip_toggle(
-                                    "insp-play-asap",
-                                    "Play ASAP",
-                                    rec.flags.sequential_play_asap,
-                                    &p,
-                                    cx,
-                                    move |this, _, _, cx| {
-                                        let next = !rec.flags.sequential_play_asap;
-                                        let eng = Arc::clone(&this.engine);
-                                        this.rt.spawn(async move {
-                                            let _ = eng.toggle_sequential_play_asap(id, next).await;
-                                        });
-                                        cx.notify();
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-hash",
-                                    "Hash",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, w, cx| {
-                                        this.open_hash_modal(id, w, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-conv",
-                                    "Convert",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, w, cx| {
-                                        this.open_convert_modal(id, w, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-move",
-                                    "Move",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, w, cx| {
-                                        this.open_move_dir_modal(id, w, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-rename",
-                                    "Rename",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, w, cx| {
-                                        this.open_rename_modal(id, w, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-src",
-                                    "URL / Mirrors",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, w, cx| {
-                                        this.open_change_source_modal(id, w, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-sched",
-                                    format!("Schedule ({sched_summary})"),
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, w, cx| {
-                                        this.open_schedule_modal(id, w, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-av",
-                                    "AV Scan",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, _, cx| {
-                                        this.check_virus_action(id, cx);
-                                    },
-                                ))
-                                .child(action_btn(
-                                    "insp-restart",
-                                    "Restart",
-                                    &p,
-                                    false,
-                                    cx,
-                                    move |this, _, _, cx| {
-                                        this.restart_download_action(id, cx);
-                                    },
-                                ))
+                                .when(!is_batch && !is_completed, |el| {
+                                    el.child(chip_toggle(
+                                        "insp-play-asap",
+                                        "Play ASAP",
+                                        rec.flags.sequential_play_asap,
+                                        &p,
+                                        cx,
+                                        move |this, _, _, cx| {
+                                            let next = !rec.flags.sequential_play_asap;
+                                            let eng = Arc::clone(&this.engine);
+                                            this.rt.spawn(async move {
+                                                let _ =
+                                                    eng.toggle_sequential_play_asap(id, next).await;
+                                            });
+                                            cx.notify();
+                                        },
+                                    ))
+                                })
+                                .when(is_completed && !is_batch, |el| {
+                                    el.child(action_btn(
+                                        "insp-hash",
+                                        "Hash",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, w, cx| {
+                                            this.open_hash_modal(id, w, cx);
+                                        },
+                                    ))
+                                })
+                                .when(is_completed && is_media, |el| {
+                                    el.child(action_btn(
+                                        "insp-conv",
+                                        "Convert",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, w, cx| {
+                                            this.open_convert_modal(id, w, cx);
+                                        },
+                                    ))
+                                })
+                                .when(!is_batch, |el| {
+                                    el.child(action_btn(
+                                        "insp-move",
+                                        "Move",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, w, cx| {
+                                            this.open_move_dir_modal(vec![id], w, cx);
+                                        },
+                                    ))
+                                    .child(action_btn(
+                                        "insp-rename",
+                                        "Rename",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, w, cx| {
+                                            this.open_rename_modal(id, w, cx);
+                                        },
+                                    ))
+                                })
+                                .when(!is_batch && !is_torrent, |el| {
+                                    el.child(action_btn(
+                                        "insp-src",
+                                        "URL / Mirrors",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, w, cx| {
+                                            this.open_change_source_modal(id, w, cx);
+                                        },
+                                    ))
+                                })
+                                .when(!is_completed, |el| {
+                                    el.child(action_btn(
+                                        "insp-sched",
+                                        format!("Schedule ({sched_summary})"),
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, w, cx| {
+                                            this.open_schedule_modal(id, w, cx);
+                                        },
+                                    ))
+                                })
+                                .when(is_completed && !is_batch, |el| {
+                                    el.child(action_btn(
+                                        "insp-av",
+                                        "AV Scan",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, _, cx| {
+                                            this.check_virus_action(id, cx);
+                                        },
+                                    ))
+                                })
+                                .when(!is_batch, |el| {
+                                    el.child(action_btn(
+                                        "insp-restart",
+                                        "Restart",
+                                        &p,
+                                        false,
+                                        cx,
+                                        move |this, _, _, cx| {
+                                            this.restart_download_action(id, cx);
+                                        },
+                                    ))
+                                })
                                 .child(danger_btn(
                                     "insp-del",
                                     "Delete...",
@@ -627,8 +690,8 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                     move |this, _, w, cx| {
                                         this.request_delete_downloads(vec![id], w, cx);
                                     },
-                                )),
-                        )
+                                ))
+                        })
                         .child(
                             // Tags row
                             div()
@@ -787,151 +850,191 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                     .filter(|f| f.priority != DownloadPriority::DontDownload)
                     .map(|f| f.index)
                     .collect();
+                let file_count = rec.files.len();
+                let files = rec.files.clone();
                 div()
                     .p_2p5()
                     .px_4()
+                    .h_full()
                     .flex()
                     .flex_col()
-                    .gap_1p5()
-                    .children(rec.files.iter().map(|f| {
-                        let f_idx = f.index;
-                        let checked = f.priority != DownloadPriority::DontDownload;
-                        let f_frac = if f.size_bytes > 0 {
-                            (f.downloaded_bytes as f64 / f.size_bytes as f64).clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        };
-                        let next_set = {
-                            let mut s = cur_selected.clone();
-                            if checked {
-                                s.remove(&f_idx);
-                            } else {
-                                s.insert(f_idx);
-                            }
-                            s
-                        };
-                        div()
-                            .id(SharedString::from(format!("insp-file-{id}-{f_idx}")))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
-                            .px_2p5()
-                            .py(px(6.))
-                            .rounded(px(8.))
-                            .bg(p.bg_200)
-                            .border_1()
-                            .border_color(p.separator)
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "insp-file-toggle-{id}-{f_idx}"
-                                    )))
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_2()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let eng = Arc::clone(&this.engine);
-                                        let sel = next_set.clone();
-                                        this.rt.spawn(async move {
-                                            let _ =
-                                                eng.update_torrent_file_selection(id, sel).await;
-                                        });
-                                        cx.notify();
-                                    }))
-                                    .child(fdm_checkbox(checked, &p))
-                                    .child(
+                    .child(
+                        uniform_list(
+                            "insp-files-list",
+                            file_count,
+                            cx.processor(move |this, range: std::ops::Range<usize>, _w, cx| {
+                                let p = this.theme;
+                                let mut rows = Vec::with_capacity(range.len());
+                                for idx in range {
+                                    let Some(f) = files.get(idx) else {
+                                        continue;
+                                    };
+                                    let f_idx = f.index;
+                                    let checked = f.priority != DownloadPriority::DontDownload;
+                                    let f_frac = if f.size_bytes > 0 {
+                                        (f.downloaded_bytes as f64 / f.size_bytes as f64)
+                                            .clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let next_set = {
+                                        let mut s = cur_selected.clone();
+                                        if checked {
+                                            s.remove(&f_idx);
+                                        } else {
+                                            s.insert(f_idx);
+                                        }
+                                        s
+                                    };
+                                    rows.push(
                                         div()
-                                            .text_xs()
-                                            .text_color(p.text_primary)
-                                            .truncate()
-                                            .child(f.relative_path.clone()),
-                                    )
-                                    .when(f.media_ready_to_play, |el| {
-                                        el.child(badge_themed(
-                                            "Ready to Play",
-                                            p.success,
-                                            p.bg_input,
-                                            &p,
-                                        ))
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_3()
-                                    .flex_shrink_0()
-                                    .child(
-                                        div().w(px(76.)).child(slim_progress_bar(
-                                            f_frac, 4.0, p.accent, p.bg_300,
-                                        )),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(110.))
-                                            .text_right()
-                                            .text_size(px(11.))
-                                            .text_color(p.text_muted)
-                                            .child(format!(
-                                                "{} / {}",
-                                                format_bytes(f.downloaded_bytes),
-                                                format_bytes(f.size_bytes)
-                                            )),
-                                    )
-                                    .child(
-                                        div()
+                                            .id(SharedString::from(format!("insp-file-{id}-{f_idx}")))
+                                            .w_full()
+                                            .h(px(36.))
+                                            .mb(px(4.))
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .gap(px(3.))
-                                            .children(
-                                                [
-                                                    (DownloadPriority::DontDownload, "Skip"),
-                                                    (DownloadPriority::Low, "Low"),
-                                                    (DownloadPriority::Normal, "Norm"),
-                                                    (DownloadPriority::High, "High"),
-                                                ]
-                                                .into_iter()
-                                                .map(|(pr, lbl)| {
-                                                    chip_toggle(
-                                                        format!("insp-fp-{id}-{f_idx}-{pr:?}"),
-                                                        lbl,
-                                                        f.priority == pr,
-                                                        &p,
-                                                        cx,
-                                                        move |this, _, _, cx| {
-                                                            let eng = Arc::clone(&this.engine);
-                                                            this.rt.spawn(async move {
-                                                                let _ = eng
-                                                                    .update_torrent_file_priority(
-                                                                        id, f_idx, pr,
-                                                                    )
-                                                                    .await;
-                                                            });
-                                                            cx.notify();
-                                                        },
+                                            .justify_between()
+                                            .gap_3()
+                                            .px_2p5()
+                                            .rounded(px(8.))
+                                            .bg(p.bg_200)
+                                            .border_1()
+                                            .border_color(p.separator)
+                                            .child(
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "insp-file-toggle-{id}-{f_idx}"
+                                                    )))
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .min_w_0()
+                                                    .flex_1()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        let eng = Arc::clone(&this.engine);
+                                                        let sel = next_set.clone();
+                                                        this.rt.spawn(async move {
+                                                            let _ = eng
+                                                                .update_torrent_file_selection(
+                                                                    id, sel,
+                                                                )
+                                                                .await;
+                                                        });
+                                                        cx.notify();
+                                                    }))
+                                                    .child(ferrite_checkbox(checked, &p))
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(p.text_primary)
+                                                            .truncate()
+                                                            .child(f.relative_path.clone()),
                                                     )
-                                                }),
+                                                    .when(f.media_ready_to_play, |el| {
+                                                        el.child(badge_themed(
+                                                            "Ready to Play",
+                                                            p.success,
+                                                            p.bg_input,
+                                                            &p,
+                                                        ))
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap_3()
+                                                    .flex_shrink_0()
+                                                    .child(div().w(px(76.)).child(
+                                                        slim_progress_bar(
+                                                            f_frac, 4.0, p.accent, p.bg_300,
+                                                        ),
+                                                    ))
+                                                    .child(
+                                                        div()
+                                                            .w(px(110.))
+                                                            .text_right()
+                                                            .text_size(px(11.))
+                                                            .text_color(p.text_muted)
+                                                            .child(format!(
+                                                                "{} / {}",
+                                                                format_bytes(f.downloaded_bytes),
+                                                                format_bytes(f.size_bytes)
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .items_center()
+                                                            .gap(px(3.))
+                                                            .children(
+                                                                [
+                                                                    (
+                                                                        DownloadPriority::DontDownload,
+                                                                        "Skip",
+                                                                    ),
+                                                                    (DownloadPriority::Low, "Low"),
+                                                                    (
+                                                                        DownloadPriority::Normal,
+                                                                        "Norm",
+                                                                    ),
+                                                                    (DownloadPriority::High, "High"),
+                                                                ]
+                                                                .into_iter()
+                                                                .map(|(pr, lbl)| {
+                                                                    chip_toggle(
+                                                                        format!(
+                                                                            "insp-fp-{id}-{f_idx}-{pr:?}"
+                                                                        ),
+                                                                        lbl,
+                                                                        f.priority == pr,
+                                                                        &p,
+                                                                        cx,
+                                                                        move |this, _, _, cx| {
+                                                                            let eng = Arc::clone(
+                                                                                &this.engine,
+                                                                            );
+                                                                            this.rt.spawn(
+                                                                                async move {
+                                                                                    let _ = eng
+                                                                                        .update_torrent_file_priority(
+                                                                                            id,
+                                                                                            f_idx,
+                                                                                            pr,
+                                                                                        )
+                                                                                        .await;
+                                                                                },
+                                                                            );
+                                                                            cx.notify();
+                                                                        },
+                                                                    )
+                                                                }),
+                                                            ),
+                                                    ),
                                             ),
-                                    ),
-                            )
-                    }))
+                                    );
+                                }
+                                rows
+                            }),
+                        )
+                        .flex_1(),
+                    )
                     .into_any_element()
             }
         }
         InspectorTab::Progress => {
             let frac = rec.progress_fraction();
             let pct_str = format!("{:.1}%", frac * 100.0);
-            let total_blocks = 48usize;
-            let cells: Vec<gpui::Div> = if !rec.segments.is_empty() {
-                let mut v = Vec::with_capacity(rec.segments.len().min(96));
+            let has_segments = !rec.segments.is_empty();
+
+            let map_or_stream_view: AnyElement = if has_segments {
+                let mut cells = Vec::with_capacity(rec.segments.len().min(96));
                 for seg in rec.segments.iter().take(96) {
                     let c = match seg.state {
                         SegmentState::Completed => p.success,
@@ -939,27 +1042,64 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                         SegmentState::Failed => p.danger,
                         SegmentState::Pending => p.bg_300,
                     };
-                    v.push(div().flex_1().h(px(18.)).rounded(px(3.)).bg(c));
+                    cells.push(div().flex_1().h(px(18.)).rounded(px(3.)).bg(c));
                 }
-                v
+                div()
+                    .p_2()
+                    .rounded(px(8.))
+                    .bg(p.bg_200)
+                    .border_1()
+                    .border_color(p.border)
+                    .flex()
+                    .flex_row()
+                    .gap(px(2.))
+                    .children(cells)
+                    .into_any_element()
             } else {
-                let filled = (frac * total_blocks as f64).round() as usize;
-                (0..total_blocks)
-                    .map(|i| {
-                        let c = if i < filled {
-                            if rec.state == DownloadState::Error {
-                                p.danger
-                            } else {
-                                p.success
-                            }
-                        } else if i == filled && rec.state.is_active() {
-                            p.accent
+                let stream_label = match rec.total_bytes {
+                    Some(total) => format!(
+                        "{} of {} transferred ({}) · {}",
+                        format_bytes(rec.downloaded_bytes),
+                        format_bytes(total),
+                        rec.download_type.display_name(),
+                        if rec.files.len() > 1 {
+                            format!("{} files", rec.files.len())
                         } else {
-                            p.bg_300
-                        };
-                        div().flex_1().h(px(18.)).rounded(px(3.)).bg(c)
-                    })
-                    .collect()
+                            "Single stream".into()
+                        }
+                    ),
+                    None => format!(
+                        "{} transferred · {} (size unknown)",
+                        format_bytes(rec.downloaded_bytes),
+                        rec.download_type.display_name()
+                    ),
+                };
+                let bar_color = if rec.state == DownloadState::Error {
+                    p.danger
+                } else if rec.state == DownloadState::Completed {
+                    p.success
+                } else {
+                    p.accent
+                };
+                div()
+                    .p_2p5()
+                    .rounded(px(8.))
+                    .bg(p.bg_200)
+                    .border_1()
+                    .border_color(p.border)
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(slim_progress_bar_active(
+                        format!("insp-prog-stream-{id}"),
+                        frac,
+                        8.0,
+                        bar_color,
+                        p.bg_300,
+                        rec.state == DownloadState::Downloading,
+                    ))
+                    .child(div().text_xs().text_color(p.text_muted).child(stream_label))
+                    .into_any_element()
             };
 
             let remaining = rec
@@ -984,7 +1124,11 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.text_primary)
-                                .child("Piece / Segment Availability Map"),
+                                .child(if has_segments {
+                                    "Piece / Segment Availability Map"
+                                } else {
+                                    "Transfer Progress"
+                                }),
                         )
                         .child(
                             div()
@@ -994,18 +1138,7 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                                 .child(pct_str),
                         ),
                 )
-                .child(
-                    div()
-                        .p_2()
-                        .rounded(px(8.))
-                        .bg(p.bg_200)
-                        .border_1()
-                        .border_color(p.border)
-                        .flex()
-                        .flex_row()
-                        .gap(px(2.))
-                        .children(cells),
-                )
+                .child(map_or_stream_view)
                 .child(
                     div()
                         .grid()
@@ -1288,23 +1421,62 @@ pub fn render_bottom_panel(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                         .border_color(p.border)
                         .flex()
                         .flex_row()
-                        .items_end()
-                        .gap(px(2.))
-                        .children(
-                            hist.into_iter()
-                                .rev()
-                                .take(60)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .map(|(d, u)| {
-                                    let frac = (d.max(u) as f32 / peak as f32).clamp(0.03, 1.0);
-                                    div()
-                                        .flex_1()
-                                        .h(gpui::relative(frac))
-                                        .rounded_sm()
-                                        .bg(if d >= u { p.accent } else { p.success })
-                                }),
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(58.))
+                                .h_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_col()
+                                .justify_between()
+                                .text_size(px(10.))
+                                .text_color(p.text_muted)
+                                .child(format_speed(peak))
+                                .child(format_speed(peak / 2))
+                                .child("0 B/s"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .h_full()
+                                .flex()
+                                .flex_row()
+                                .items_end()
+                                .gap(px(2.))
+                                .children(
+                                    hist.into_iter()
+                                        .rev()
+                                        .take(60)
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
+                                        .rev()
+                                        .map(|(d, u)| {
+                                            let d_frac = (d as f32 / peak as f32).clamp(0.03, 1.0);
+                                            let u_frac = (u as f32 / peak as f32).clamp(0.03, 1.0);
+                                            div()
+                                                .flex_1()
+                                                .h_full()
+                                                .flex()
+                                                .flex_row()
+                                                .items_end()
+                                                .gap(px(1.))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .h(gpui::relative(d_frac))
+                                                        .rounded_sm()
+                                                        .bg(p.accent),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .h(gpui::relative(u_frac))
+                                                        .rounded_sm()
+                                                        .bg(p.success),
+                                                )
+                                        }),
+                                ),
                         ),
                 )
                 .into_any_element()

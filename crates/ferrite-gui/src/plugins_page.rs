@@ -26,7 +26,7 @@ pub fn render_plugins_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
         .flex()
         .flex_col()
         .child(
-            // Header strip matching FDM PluginsPage.qml
+            // Header strip
             div()
                 .px_6()
                 .py_4()
@@ -215,6 +215,23 @@ pub fn render_plugins_page(app: &mut FerriteApp, cx: &mut Context<FerriteApp>) -
                             |this, _, _, cx| {
                                 this.settings_cfg.app.plugins_dev_ignore_sign =
                                     !this.settings_cfg.app.plugins_dev_ignore_sign;
+                                let _ = this.engine.update_config(this.settings_cfg.clone());
+                                cx.notify();
+                            },
+                        ))
+                        .child(switch_row_desc(
+                            "pl-opt-dev-python",
+                            "Allow Python execution in JS plugins (unsafe)",
+                            Some(
+                                "Permits installed JS plugins to invoke local Python helper scripts"
+                                    .into(),
+                            ),
+                            cfg_app.plugins_allow_python,
+                            &p,
+                            cx,
+                            |this, _, _, cx| {
+                                this.settings_cfg.app.plugins_allow_python =
+                                    !this.settings_cfg.app.plugins_allow_python;
                                 let _ = this.engine.update_config(this.settings_cfg.clone());
                                 cx.notify();
                             },

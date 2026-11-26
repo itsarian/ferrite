@@ -3,8 +3,10 @@ use crate::model::{
     DownloadFlags, DownloadPriority, DownloadRecord, DownloadState, DownloadType,
     HttpRequestOptions, ResumeSupport,
 };
-use crate::routing::{classify_file_type, infer_filename_from_url};
-use crate::settings::FdmConfig;
+use crate::routing::{
+    classify_file_type, infer_filename_from_url, sanitize_filename, sanitize_partial_suffix,
+};
+use crate::settings::FerriteConfig;
 use anyhow::{Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -37,7 +39,7 @@ pub struct ExportedSettingsBundle {
 
 pub fn export_downloads_json(downloads: &[DownloadRecord], path: &Path) -> Result<()> {
     let bundle = ExportedDownloadsBundle {
-        format_name: "FerriteDM-Downloads".into(),
+        format_name: "Ferrite-Downloads".into(),
         format_version: 1,
         file_contents: ExportedDownloadsContents {
             downloads: downloads.to_vec(),
@@ -87,15 +89,40 @@ pub fn export_downloads_csv(downloads: &[DownloadRecord], path: &Path) -> Result
     Ok(())
 }
 
-pub fn import_downloads_file(path: &Path, config: &FdmConfig) -> Result<Vec<DownloadRecord>> {
+fn sanitize_imported_record(mut rec: DownloadRecord) -> DownloadRecord {
+    rec.file_name = sanitize_filename(&rec.file_name);
+    rec.partial_suffix = sanitize_partial_suffix(&rec.partial_suffix);
+    rec
+}
+
+pub fn import_downloads_file(path: &Path, config: &FerriteConfig) -> Result<Vec<DownloadRecord>> {
     let raw = std::fs::read_to_string(path)?;
     let trimmed = raw.trim();
     if trimmed.starts_with('{') {
         if let Ok(bundle) = serde_json::from_str::<ExportedDownloadsBundle>(trimmed) {
-            return Ok(bundle.file_contents.downloads);
+            if matches!(
+                bundle.format_name.as_str(),
+                "Ferrite-Downloads" | "FerriteDM-Downloads"
+            ) {
+                return Ok(bundle
+                    .file_contents
+                    .downloads
+                    .into_iter()
+                    .map(sanitize_imported_record)
+                    .collect());
+            }
+            bail!(
+                "Unsupported downloads bundle format: {}",
+                bundle.format_name
+            );
         }
-        // Fallback: parse generic FDM JSON export shapes if they contain a `downloads` or `FileContents` object
+        // Fallback: parse generic JSON export shapes containing `FileContents.downloads` or `downloads`.
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(fmt) = val.get("FormatName").and_then(|v| v.as_str())
+                && !matches!(fmt, "Ferrite-Downloads" | "FerriteDM-Downloads")
+            {
+                bail!("Unsupported downloads bundle format: {fmt}");
+            }
             let arr = val
                 .get("FileContents")
                 .and_then(|fc| fc.get("downloads"))
@@ -105,7 +132,7 @@ pub fn import_downloads_file(path: &Path, config: &FdmConfig) -> Result<Vec<Down
                 let mut out = Vec::new();
                 for item in items {
                     if let Ok(rec) = serde_json::from_value::<DownloadRecord>(item.clone()) {
-                        out.push(rec);
+                        out.push(sanitize_imported_record(rec));
                     } else if let Some(url) = item
                         .get("Url")
                         .or_else(|| item.get("url"))
@@ -135,11 +162,17 @@ pub fn import_downloads_file(path: &Path, config: &FdmConfig) -> Result<Vec<Down
     Ok(out)
 }
 
-pub fn export_settings_json(config: &FdmConfig, path: &Path) -> Result<()> {
-    let inner = serde_json::to_string_pretty(config)?;
+pub fn export_settings_json(config: &FerriteConfig, path: &Path) -> Result<()> {
+    let mut redacted = config.clone();
+    redacted.app.remote_access_password.clear();
+    redacted.app.proxy.http.password.clear();
+    redacted.app.proxy.https.password.clear();
+    redacted.app.proxy.socks5.password.clear();
+
+    let inner = serde_json::to_string_pretty(&redacted)?;
     let hash = sha256_str(&inner);
     let bundle = ExportedSettingsBundle {
-        app_name: "FerriteDM".into(),
+        app_name: "Ferrite".into(),
         settings_file: inner,
         settings_hash: hash,
     };
@@ -147,20 +180,20 @@ pub fn export_settings_json(config: &FdmConfig, path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn import_settings_json(path: &Path) -> Result<FdmConfig> {
+pub fn import_settings_json(path: &Path) -> Result<FerriteConfig> {
     let raw = std::fs::read_to_string(path)?;
     if let Ok(bundle) = serde_json::from_str::<ExportedSettingsBundle>(&raw) {
         let actual = sha256_str(&bundle.settings_file);
         if !actual.eq_ignore_ascii_case(&bundle.settings_hash) {
             bail!("SettingsHash verification failed (corrupted or tampered settings file)");
         }
-        let cfg: FdmConfig = serde_json::from_str(&bundle.settings_file)?;
+        let cfg: FerriteConfig = serde_json::from_str(&bundle.settings_file)?;
         return Ok(cfg);
     }
-    Ok(serde_json::from_str::<FdmConfig>(&raw)?)
+    Ok(serde_json::from_str::<FerriteConfig>(&raw)?)
 }
 
-fn record_from_imported_url(url: &str, config: &FdmConfig) -> DownloadRecord {
+fn record_from_imported_url(url: &str, config: &FerriteConfig) -> DownloadRecord {
     let file_name = infer_filename_from_url(url);
     let dl_type = if url.starts_with("magnet:") || url.ends_with(".torrent") {
         DownloadType::BitTorrent
@@ -219,90 +252,38 @@ fn record_from_imported_url(url: &str, config: &FdmConfig) -> DownloadRecord {
     }
 }
 
-/// Best-effort reader for an existing Free Download Manager SQLite database (`db.sqlite`),
-/// scanning tables dynamically via `PRAGMA table_info` so user migration works safely without hardcoding internal schema versions.
-pub fn inspect_legacy_fdm_sqlite(
-    db_path: &Path,
-    config: &FdmConfig,
-) -> Result<Vec<DownloadRecord>> {
-    let conn =
-        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut tbl_stmt = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-    )?;
-    let tables: Vec<String> = tbl_stmt
-        .query_map([], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let mut imported = Vec::new();
-    for table in tables {
-        let mut info_stmt = conn.prepare(&format!("PRAGMA table_info(\"{}\")", table))?;
-        let cols: Vec<String> = info_stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let url_col = cols
-            .iter()
-            .find(|c| c.eq_ignore_ascii_case("url") || c.eq_ignore_ascii_case("sourceUrl"));
-        if let Some(ucol) = url_col {
-            let file_col = cols.iter().find(|c| {
-                c.eq_ignore_ascii_case("fileName") || c.eq_ignore_ascii_case("outputPath")
-            });
-            let sql = if let Some(fcol) = file_col {
-                format!("SELECT \"{}\", \"{}\" FROM \"{}\"", ucol, fcol, table)
-            } else {
-                format!("SELECT \"{}\", '' FROM \"{}\"", ucol, table)
-            };
-            if let Ok(mut stmt) = conn.prepare(&sql)
-                && let Ok(rows) = stmt.query_map([], |r| {
-                    Ok((
-                        r.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                        r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    ))
-                })
-            {
-                for row in rows.flatten() {
-                    if !row.0.is_empty() {
-                        let mut rec = record_from_imported_url(&row.0, config);
-                        if !row.1.is_empty() {
-                            let p = Path::new(&row.1);
-                            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                                rec.file_name = name.to_string();
-                                rec.title = name.to_string();
-                            }
-                            if let Some(dir) = p.parent()
-                                && !dir.as_os_str().is_empty()
-                            {
-                                rec.target_dir = dir.to_path_buf();
-                            }
-                        }
-                        imported.push(rec);
-                    }
-                }
-            }
-        }
-    }
-    Ok(imported)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn settings_export_import_verifies_hash() {
-        let dir = std::env::temp_dir().join(format!("ferrite_exp_{}", std::process::id()));
+    fn settings_export_import_verifies_hash_and_redacts_secrets() {
+        let dir = std::env::temp_dir().join(format!("ferrite_exp_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("settings.json");
-        let cfg = FdmConfig::default();
+        let mut cfg = FerriteConfig::default();
+        cfg.app.remote_access_password = "super-secret-rc-pass".into();
+        cfg.app.proxy.http.password = "http-secret-pass".into();
+        cfg.app.proxy.https.password = "https-secret-pass".into();
+        cfg.app.proxy.socks5.password = "socks-secret-pass".into();
+
         export_settings_json(&cfg, &p).unwrap();
+        let exported_raw = std::fs::read_to_string(&p).unwrap();
+        assert!(exported_raw.contains("\"AppName\": \"Ferrite\""));
+        assert!(!exported_raw.contains("super-secret-rc-pass"));
+        assert!(!exported_raw.contains("http-secret-pass"));
+        assert!(!exported_raw.contains("https-secret-pass"));
+        assert!(!exported_raw.contains("socks-secret-pass"));
+
         let loaded = import_settings_json(&p).unwrap();
         assert_eq!(
             loaded.core.partial_download_suffix,
             cfg.core.partial_download_suffix
         );
+        assert!(loaded.app.remote_access_password.is_empty());
+        assert!(loaded.app.proxy.http.password.is_empty());
+        assert!(loaded.app.proxy.https.password.is_empty());
+        assert!(loaded.app.proxy.socks5.password.is_empty());
 
         let rec = record_from_imported_url("https://example.org/test.iso", &cfg);
         let txt_p = dir.join("urls.txt");
@@ -319,6 +300,39 @@ mod tests {
                 .unwrap()
                 .contains("id,title,url")
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn downloads_export_import_accepts_current_and_legacy_format_and_sanitizes() {
+        let dir = std::env::temp_dir().join(format!("ferrite_dl_exp_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&dir);
+        let cfg = FerriteConfig::default();
+
+        let mut rec = record_from_imported_url("https://example.org/ubuntu.iso", &cfg);
+        rec.target_dir = dir.clone();
+        rec.file_name = "../../etc/passwd".into();
+        rec.partial_suffix = "/../../evil".into();
+
+        let current_path = dir.join("current.json");
+        export_downloads_json(std::slice::from_ref(&rec), &current_path).unwrap();
+        let raw_current = std::fs::read_to_string(&current_path).unwrap();
+        assert!(raw_current.contains("\"FormatName\": \"Ferrite-Downloads\""));
+
+        let imported_current = import_downloads_file(&current_path, &cfg).unwrap();
+        assert_eq!(imported_current.len(), 1);
+        assert_eq!(imported_current[0].file_name, "passwd");
+        assert_eq!(imported_current[0].partial_suffix, "evil");
+        assert_eq!(imported_current[0].output_path(), dir.join("passwd"));
+        assert_eq!(imported_current[0].partial_path(), dir.join("passwdevil"));
+
+        let legacy_path = dir.join("legacy.json");
+        let legacy_raw = raw_current.replace("Ferrite-Downloads", "FerriteDM-Downloads");
+        std::fs::write(&legacy_path, legacy_raw).unwrap();
+        let imported_legacy = import_downloads_file(&legacy_path, &cfg).unwrap();
+        assert_eq!(imported_legacy.len(), 1);
+        assert_eq!(imported_legacy[0].file_name, "passwd");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
