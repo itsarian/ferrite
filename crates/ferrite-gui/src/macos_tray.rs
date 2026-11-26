@@ -241,13 +241,6 @@ mod imp {
     use super::TrayAction;
 
     pub fn has_pending_tray_actions() -> bool {
-        action_queue()
-            .lock()
-            .map(|q| !q.is_empty())
-            .unwrap_or(false)
-    }
-
-    pub fn has_pending_tray_actions() -> bool {
         false
     }
 
