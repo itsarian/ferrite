@@ -37,13 +37,13 @@ use ferrite_core::{
 };
 use ferrite_ipc::RemotePairingInfo;
 use ferrite_media::JsPluginInfo;
+#[cfg(target_os = "macos")]
+use gpui::SystemMenuType;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Entity, FocusHandle, Focusable, Global,
-    Menu, MenuItem, MouseButton, Pixels, Point, Render, SharedString, UniformListScrollHandle,
-    Window, div, ease_out_quint, prelude::*, px,
+    Menu, MenuItem, MouseButton, OsAction, Pixels, Point, Render, SharedString,
+    UniformListScrollHandle, Window, div, ease_out_quint, prelude::*, px,
 };
-#[cfg(target_os = "macos")]
-use gpui::{OsAction, SystemMenuType};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
